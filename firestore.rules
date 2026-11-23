@@ -708,7 +708,7 @@ service cloud.firestore {
       }
 
       match /chat_channels/{channelId} {
-        allow get: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && canReadChatChannel(companyId, existing());
+        allow get: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && (resource == null || canReadChatChannel(companyId, existing()));
         allow list: if isValidId(companyId) && meExists(companyId) && canReadChatChannel(companyId, resource.data);
         allow create: if isValidId(companyId) && isValidId(channelId) &&
                          meExists(companyId) &&

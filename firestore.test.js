@@ -910,7 +910,8 @@ test("Scenario 10: Profile photo update, 1:1 & Department chat privacy, DEPT_QUE
     })
   );
 
-  // DM privacy: Non-participant OTHER_STAFF cannot list or get ch_dm_pair, MUST use scoped queries
+  // Pre-creation existence checks on uncreated channel IDs succeed; DM privacy blocks non-participants on existing DMs
+  await assertSucceeds(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_dm_uncreated_check").get());
   await assertFails(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_dm_pair").get());
   await assertSucceeds(
     otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_channels")

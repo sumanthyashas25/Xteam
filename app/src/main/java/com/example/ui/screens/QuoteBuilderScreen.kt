@@ -66,8 +66,9 @@ fun QuoteBuilderScreen(
     onSaveOrIssueQuote: (Quotation, Boolean, (Quotation) -> Unit) -> Unit,
     onCreateRevision: (Quotation, (Quotation) -> Unit) -> Unit,
     onGeneratePdf: (Quotation, Boolean, (File) -> Unit) -> Unit,
-    onMarkSent: (Quotation) -> Unit,
-    onMarkClientApproved: (Quotation, String) -> Unit
+    onMarkSent: (Quotation, () -> Unit) -> Unit,
+    onMarkClientApproved: (Quotation, String, () -> Unit) -> Unit,
+    onOpenPayments: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val company = state.company
@@ -113,6 +114,7 @@ fun QuoteBuilderScreen(
     var showCustomItemDialog by remember { mutableStateOf(false) }
     var showClientApproveDialog by remember { mutableStateOf(false) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
+    var savedFeedbackBanner by remember { mutableStateOf<String?>(null) }
 
     val selectedClient = state.clients.firstOrNull { it.id == selectedClientId }
     val calc = remember(lines, urgentEnabled, discountRupees, gstEnabled, advancePercentText, workingQuote.gstRatePercent) {
@@ -162,6 +164,8 @@ fun QuoteBuilderScreen(
         if (qDraft.requestId.isNotBlank()) {
             onSaveOrIssueQuote(qDraft, issueNow) { saved ->
                 workingQuote = saved
+                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                savedFeedbackBanner = if (issueNow) "Saved ✓ — Issued ${saved.quoteNumber}" else "Saved ✓ — Draft saved"
                 afterSave(saved)
             }
         } else {
@@ -177,6 +181,8 @@ fun QuoteBuilderScreen(
                 val linked = qDraft.copy(requestId = req.id)
                 onSaveOrIssueQuote(linked, issueNow) { saved ->
                     workingQuote = saved
+                    AppHapticsAndNotifier.triggerCompletionVibration(context)
+                    savedFeedbackBanner = if (issueNow) "Saved ✓ — Issued ${saved.quoteNumber}" else "Saved ✓ — Draft saved"
                     afterSave(saved)
                 }
             }
@@ -208,7 +214,11 @@ fun QuoteBuilderScreen(
                 actions = {
                     if (!isEditable && canIssue) {
                         TextButton(onClick = {
-                            onCreateRevision(workingQuote) { rev -> workingQuote = rev }
+                            onCreateRevision(workingQuote) { rev ->
+                                workingQuote = rev
+                                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                savedFeedbackBanner = "Created Revision v${rev.revision}"
+                            }
                         }) { Text("New Revision", color = ObsidianCharcoal, fontWeight = FontWeight.SemiBold) }
                     }
                 }
@@ -303,7 +313,18 @@ fun QuoteBuilderScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             if (workingQuote.statusEnum() == QuotationStatus.ISSUED) {
                                 OutlinedButton(
-                                    onClick = { onMarkSent(workingQuote) },
+                                    onClick = {
+                                        AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                        val updated = workingQuote.copy(
+                                            status = QuotationStatus.SENT.name,
+                                            sentAtMillis = System.currentTimeMillis()
+                                        )
+                                        workingQuote = updated
+                                        savedFeedbackBanner = "Saved ✓ — ${updated.quoteNumber} marked Sent to Client"
+                                        onMarkSent(updated) {
+                                            savedFeedbackBanner = "Saved ✓ — ${updated.quoteNumber} marked Sent to Client"
+                                        }
+                                    },
                                     shape = RoundedCornerShape(999.dp),
                                     border = BorderStroke(1.dp, SubtleOutline),
                                     colors = ButtonDefaults.outlinedButtonColors(containerColor = PureWhite, contentColor = ObsidianCharcoal),
@@ -334,6 +355,89 @@ fun QuoteBuilderScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Saved Feedback Notification Banner
+            if (!savedFeedbackBanner.isNullOrBlank()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = SoftMint,
+                        border = BorderStroke(1.dp, DeepMintInk.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth().testTag("quote_saved_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = DeepMintInk, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = savedFeedbackBanner.orEmpty(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = DeepMintInk,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { savedFeedbackBanner = null }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Filled.Close, contentDescription = "Dismiss", tint = DeepMintInk, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Client Approved Advance Payment Tracker Reminder
+            if (workingQuote.statusEnum() == QuotationStatus.CLIENT_APPROVED && calc.advancePaise > 0L) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = ButterYellow,
+                        border = BorderStroke(1.dp, WarmAlarmAmber.copy(alpha = 0.5f)),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier.fillMaxWidth().testTag("quote_advance_payment_reminder")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Filled.Payments, contentDescription = null, tint = DeepAmberInk)
+                                    Text(
+                                        text = "Client Approved • Advance Due",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = DeepAmberInk
+                                    )
+                                }
+                                StatusPill("Advance: ${MoneyFormatter.formatInr(calc.advancePaise)}", PureWhite, DeepAmberInk)
+                            }
+                            Text(
+                                text = "The client approved ${workingQuote.quoteNumber}. Track or record the advance deposit (${workingQuote.advancePercent}%) in the Payment Tracker to start work smoothly.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = ObsidianCharcoal
+                            )
+                            Button(
+                                onClick = onOpenPayments,
+                                shape = RoundedCornerShape(999.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                                modifier = Modifier.fillMaxWidth().height(44.dp).testTag("quote_open_payments_button")
+                            ) {
+                                Icon(Icons.Filled.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Track Advance Payment in Tracker →", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Client & Project Header Card
             item {
                 Card(
@@ -604,8 +708,13 @@ fun QuoteBuilderScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        onMarkClientApproved(workingQuote, approvalNote)
-                        workingQuote = workingQuote.copy(status = QuotationStatus.CLIENT_APPROVED.name, clientApprovalNote = approvalNote)
+                        val updated = workingQuote.copy(status = QuotationStatus.CLIENT_APPROVED.name, clientApprovalNote = approvalNote)
+                        workingQuote = updated
+                        AppHapticsAndNotifier.triggerCompletionVibration(context)
+                        savedFeedbackBanner = "Saved ✓ — Client Approval confirmed for ${updated.quoteNumber}"
+                        onMarkClientApproved(workingQuote, approvalNote) {
+                            savedFeedbackBanner = "Saved ✓ — Client Approval confirmed for ${updated.quoteNumber}"
+                        }
                         showClientApproveDialog = false
                     },
                     shape = RoundedCornerShape(999.dp),

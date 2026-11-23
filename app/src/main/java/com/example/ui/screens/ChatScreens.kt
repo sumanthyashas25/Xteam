@@ -6,12 +6,22 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -101,11 +111,11 @@ fun TeamChatScreen(
     initialChannelId: String? = null,
     observeMessages: (String) -> Flow<SyncedData<List<ChatMessage>>>,
     onEnsureGeneralChannel: () -> Unit,
-    onCreateChannel: (title: String, topic: String, type: ChatChannelType, project: Project?, onReady: (ChatChannel) -> Unit) -> Unit,
+    onCreateChannel: (title: String, topic: String, type: ChatChannelType, project: Project?, onReady: (ChatChannel) -> Unit, onError: (String) -> Unit) -> Unit,
     onSendMessage: (channelId: String, body: String, parent: ChatMessage?, attachment: StagedChatAttachment?, onSent: () -> Unit) -> Unit,
     onReportMessage: (String, Boolean) -> Unit,
-    onOpenDirectChat: (Member, (ChatChannel) -> Unit) -> Unit = { _, _ -> },
-    onOpenDepartmentChat: (Department, (ChatChannel) -> Unit) -> Unit = { _, _ -> },
+    onOpenDirectChat: (Member, onReady: (ChatChannel) -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _ -> },
+    onOpenDepartmentChat: (Department, onReady: (ChatChannel) -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _ -> },
     onDeleteChannel: (String, () -> Unit) -> Unit = { _, _ -> },
     onDeleteMessage: (String, String) -> Unit = { _, _ -> },
     onCloseChat: () -> Unit
@@ -229,70 +239,167 @@ fun TeamChatScreen(
         }
     }
 
-    if (mode == ChatScreenMode.HUB) {
-        ChatHubView(
-            member = member,
-            isSuperAdmin = state.isSuperAdmin,
-            channels = state.chatChannels,
-            colleagues = state.members.filter {
-                it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid
-            },
-            departments = state.departments.filter { it.active },
-            activeChannel = activeChannel,
-            composerText = composerText,
-            onComposerTextChange = { composerText = it },
-            stagedAttachment = stagedAttachment,
-            isProcessingFile = isProcessingFile,
-            openingThreadLabel = openingThreadLabel,
-            onClearAttachment = { stagedAttachment = null },
-            onOpenChannelsSheet = {
-                AppHapticsAndNotifier.triggerTickHaptic(context)
-                showChannelPicker = true
-            },
-            onPickAudio = ::launchAudioPicker,
-            onPickFiles = ::launchDocumentPicker,
-            onPickImages = ::launchImagePicker,
-            onSelectChannel = { ch ->
-                AppHapticsAndNotifier.triggerTickHaptic(context)
-                activeChannelId = ch.id
-                mode = ChatScreenMode.THREAD
-            },
-            onOpenDirectChat = { colleague ->
-                AppHapticsAndNotifier.triggerTickHaptic(context)
-                openingThreadLabel = "Opening chat with ${formatTitleCase(colleague.fullName)}…"
-                onOpenDirectChat(colleague) { ch ->
-                    openingThreadLabel = null
+    AnimatedContent(
+        targetState = mode,
+        transitionSpec = {
+            if (targetState == ChatScreenMode.THREAD) {
+                (fadeIn(tween(260, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 4 })
+                    .togetherWith(fadeOut(tween(180)) + slideOutHorizontally(tween(180)) { -it / 6 })
+            } else {
+                (fadeIn(tween(260, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 4 })
+                    .togetherWith(fadeOut(tween(180)) + slideOutHorizontally(tween(180)) { it / 6 })
+            }
+        },
+        label = "chat_screen_mode_transition"
+    ) { currentMode ->
+        if (currentMode == ChatScreenMode.HUB) {
+            ChatHubView(
+                member = member,
+                isSuperAdmin = state.isSuperAdmin,
+                channels = state.chatChannels,
+                colleagues = state.members.filter {
+                    it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid
+                },
+                departments = state.departments.filter { it.active },
+                activeChannel = activeChannel,
+                composerText = composerText,
+                onComposerTextChange = { composerText = it },
+                stagedAttachment = stagedAttachment,
+                isProcessingFile = isProcessingFile,
+                openingThreadLabel = openingThreadLabel,
+                onClearAttachment = { stagedAttachment = null },
+                onOpenChannelsSheet = {
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                    showChannelPicker = true
+                },
+                onPickAudio = ::launchAudioPicker,
+                onPickFiles = ::launchDocumentPicker,
+                onPickImages = ::launchImagePicker,
+                onSelectChannel = { ch ->
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
                     activeChannelId = ch.id
                     mode = ChatScreenMode.THREAD
-                }
-            },
-            onOpenDepartmentChat = { dept ->
-                AppHapticsAndNotifier.triggerTickHaptic(context)
-                openingThreadLabel = "Opening ${formatTitleCase(dept.name)} chat…"
-                onOpenDepartmentChat(dept) { ch ->
-                    openingThreadLabel = null
-                    activeChannelId = ch.id
-                    mode = ChatScreenMode.THREAD
-                }
-            },
-            onDeleteChannel = { chId ->
-                onDeleteChannel(chId) {
-                    if (activeChannelId == chId) {
-                        activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
+                },
+                onOpenDirectChat = { colleague ->
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                    openingThreadLabel = "Opening chat with ${formatTitleCase(colleague.fullName)}…"
+                    onOpenDirectChat(
+                        colleague,
+                        { ch ->
+                            openingThreadLabel = null
+                            activeChannelId = ch.id
+                            mode = ChatScreenMode.THREAD
+                        },
+                        { err ->
+                            openingThreadLabel = null
+                            onReportMessage("Unable to open chat: $err", true)
+                        }
+                    )
+                },
+                onOpenDepartmentChat = { dept ->
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                    openingThreadLabel = "Opening ${formatTitleCase(dept.name)} chat…"
+                    onOpenDepartmentChat(
+                        dept,
+                        { ch ->
+                            openingThreadLabel = null
+                            activeChannelId = ch.id
+                            mode = ChatScreenMode.THREAD
+                        },
+                        { err ->
+                            openingThreadLabel = null
+                            onReportMessage("Unable to open department chat: $err", true)
+                        }
+                    )
+                },
+                onDeleteChannel = { chId ->
+                    onDeleteChannel(chId) {
+                        if (activeChannelId == chId) {
+                            activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
+                        }
                     }
-                }
-            },
-            onCreateNewChannelClick = { showNewChannelDialog = true },
-            onSend = { sendCurrentMessage(openThreadAfter = true) },
-            onBack = onCloseChat,
-            onClose = onCloseChat
-        )
-    } else {
-        ChatThreadView(
-            member = member,
-            isSuperAdmin = state.isSuperAdmin,
-            memberPhotoByUid = memberPhotoByUid,
-            channel = activeChannel,
+                },
+                onCreateNewChannelClick = { showNewChannelDialog = true },
+                onSend = { sendCurrentMessage(openThreadAfter = true) },
+                onBack = onCloseChat,
+                onClose = onCloseChat
+            )
+        } else {
+            ChatThreadView(
+                member = member,
+                isSuperAdmin = state.isSuperAdmin,
+                memberPhotoByUid = memberPhotoByUid,
+                channel = activeChannel,
+                messages = syncedMessages.data,
+                hasPendingWrites = syncedMessages.hasPendingWrites,
+                composerText = composerText,
+                onComposerTextChange = { composerText = it },
+                stagedAttachment = stagedAttachment,
+                isProcessingFile = isProcessingFile,
+                replyTarget = replyTarget,
+                onClearReply = { replyTarget = null },
+                onSetReply = { replyTarget = it },
+                onClearAttachment = { stagedAttachment = null },
+                onPickFiles = ::launchDocumentPicker,
+                onPickImages = ::launchImagePicker,
+                onPickAudio = ::launchAudioPicker,
+                onOpenChannelsSheet = { showChannelPicker = true },
+                onOpenMessageAttachment = { msg ->
+                    if (msg.attachmentTypeEnum() == ChatAttachmentType.IMAGE) {
+                        scope.launch {
+                            val bmp = withContext(Dispatchers.IO) {
+                                ChatFileManager.decodeMessageBitmap(msg, maxEdgePx = 1400)
+                            }
+                            if (bmp != null) {
+                                previewImageMessage = msg to bmp.asImageBitmap()
+                            } else {
+                                val file = ChatFileManager.resolveLocalFile(context, msg)
+                                if (file != null) {
+                                    ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, msg.attachmentName)
+                                } else {
+                                    onReportMessage("Unable to open image preview.", true)
+                                }
+                            }
+                        }
+                    } else {
+                        scope.launch {
+                            val file = ChatFileManager.resolveLocalFile(context, msg)
+                            if (file != null) {
+                                ChatFileManager.openOrShareAttachment(
+                                    context,
+                                    file,
+                                    msg.attachmentMimeType,
+                                    msg.attachmentName.ifBlank { file.name }
+                                )
+                            } else {
+                                onReportMessage("Attachment file is unavailable offline.", true)
+                            }
+                        }
+                    }
+                },
+                onDownloadAttachment = { msg ->
+                    scope.launch {
+                        val res = ChatFileManager.downloadAttachmentToDevice(context, msg)
+                        res.onSuccess { savedPath ->
+                            onReportMessage("Saved ${msg.attachmentName.ifBlank { "file" }} to $savedPath", false)
+                        }.onFailure { err ->
+                            onReportMessage(err.message ?: "Failed to save attachment.", true)
+                        }
+                    }
+                },
+                onDeleteChannel = {
+                    onDeleteChannel(activeChannel.id) {
+                        activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
+                        mode = ChatScreenMode.HUB
+                    }
+                },
+                onDeleteMessage = { msg -> onDeleteMessage(activeChannel.id, msg.id) },
+                onSend = { sendCurrentMessage(openThreadAfter = false) },
+                onBackToHub = { mode = ChatScreenMode.HUB },
+                onClose = onCloseChat
+            )
+        }
+    }
             messages = syncedMessages.data,
             hasPendingWrites = syncedMessages.hasPendingWrites,
             composerText = composerText,
@@ -391,12 +498,23 @@ fun TeamChatScreen(
     if (showNewChannelDialog) {
         CreateChatChannelDialog(
             projects = state.projects.filter { !it.deleted },
-            onCreate = { title, topic, type, project ->
-                onCreateChannel(title, topic, type, project) { created ->
-                    showNewChannelDialog = false
-                    activeChannelId = created.id
-                    mode = ChatScreenMode.THREAD
-                }
+            onCreate = { title, topic, type, project, onCreated, onError ->
+                onCreateChannel(
+                    title,
+                    topic,
+                    type,
+                    project,
+                    { created ->
+                        onCreated()
+                        showNewChannelDialog = false
+                        activeChannelId = created.id
+                        mode = ChatScreenMode.THREAD
+                    },
+                    { err ->
+                        onError(err)
+                        onReportMessage("Unable to create channel: $err", true)
+                    }
+                )
             },
             onDismiss = { showNewChannelDialog = false }
         )
@@ -484,7 +602,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
         initialValue = 0f,
         targetValue = (2.0 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 9500, easing = LinearEasing),
+            animation = tween(durationMillis = 12000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "glow_primary_orbit"
@@ -493,7 +611,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
         initialValue = 0f,
         targetValue = (2.0 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 14000, easing = LinearEasing),
+            animation = tween(durationMillis = 17500, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "glow_secondary_orbit"
@@ -502,7 +620,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
         initialValue = 0f,
         targetValue = (2.0 * PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 18500, easing = LinearEasing),
+            animation = tween(durationMillis = 22000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "glow_drift_orbit"
@@ -522,15 +640,15 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
             brush = Brush.linearGradient(
                 colors = if (isThread) {
                     listOf(
-                        Color(0xFFFFE4DA),
-                        Color(0xFFF3E8FF),
-                        Color(0xFFE0F4FF)
+                        Color(0xFFFFE4DA).copy(alpha = 0.95f),
+                        Color(0xFFF3E8FF).copy(alpha = 0.95f),
+                        Color(0xFFE0F4FF).copy(alpha = 0.95f)
                     )
                 } else {
                     listOf(
-                        Color(0xFFD6FFF0),
-                        Color(0xFFECE4FF),
-                        Color(0xFFFFE5D9)
+                        Color(0xFFD6FFF0).copy(alpha = 0.95f),
+                        Color(0xFFECE4FF).copy(alpha = 0.95f),
+                        Color(0xFFFFE5D9).copy(alpha = 0.95f)
                     )
                 },
                 start = sweepStart,
@@ -555,14 +673,14 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
             y = size.height * (0.78f - 0.20f * cos(secondaryOrbit))
         )
 
-        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.38f) else Color(0xFF10B981).copy(alpha = 0.42f)
-        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.40f) else Color(0xFF8B5CF6).copy(alpha = 0.38f)
-        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.36f) else Color(0xFFFB923C).copy(alpha = 0.40f)
-        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.36f) else Color(0xFF38BDF8).copy(alpha = 0.34f)
+        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.33f) else Color(0xFF10B981).copy(alpha = 0.37f)
+        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.35f) else Color(0xFF8B5CF6).copy(alpha = 0.33f)
+        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.31f) else Color(0xFFFB923C).copy(alpha = 0.35f)
+        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.31f) else Color(0xFF38BDF8).copy(alpha = 0.29f)
 
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(primaryColor, primaryColor.copy(alpha = 0.14f), Color.Transparent),
+                colors = listOf(primaryColor, primaryColor.copy(alpha = 0.09f), Color.Transparent),
                 center = c1,
                 radius = size.width * 0.90f
             ),
@@ -571,7 +689,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
         )
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(secondColor, secondColor.copy(alpha = 0.12f), Color.Transparent),
+                colors = listOf(secondColor, secondColor.copy(alpha = 0.07f), Color.Transparent),
                 center = c2,
                 radius = size.width * 0.78f
             ),
@@ -580,7 +698,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
         )
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(thirdColor, thirdColor.copy(alpha = 0.12f), Color.Transparent),
+                colors = listOf(thirdColor, thirdColor.copy(alpha = 0.07f), Color.Transparent),
                 center = c3,
                 radius = size.width * 0.74f
             ),
@@ -684,31 +802,40 @@ private fun ChatHubView(
                 }
             }
 
-            if (!openingThreadLabel.isNullOrBlank()) {
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = ObsidianCharcoal,
+            AnimatedVisibility(
+                visible = !openingThreadLabel.isNullOrBlank(),
+                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) + expandVertically(tween(240, easing = FastOutSlowInEasing)),
+                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) + shrinkVertically(tween(200, easing = FastOutSlowInEasing))
+            ) {
+                Box(
                     modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .padding(bottom = 6.dp)
-                        .testTag("chat_opening_indicator")
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Surface(
+                        shape = RoundedCornerShape(999.dp),
+                        color = ObsidianCharcoal,
+                        shadowElevation = 4.dp,
+                        modifier = Modifier.testTag("chat_opening_indicator")
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = PureWhite
-                        )
-                        Text(
-                            text = openingThreadLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = PureWhite,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = PureWhite
+                            )
+                            Text(
+                                text = openingThreadLabel.orEmpty(),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = PureWhite,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -719,12 +846,12 @@ private fun ChatHubView(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 6.dp, bottom = 2.dp),
+                        .padding(top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
@@ -747,68 +874,6 @@ private fun ChatHubView(
                             fontWeight = FontWeight.ExtraBold,
                             color = ObsidianCharcoal
                         )
-                    }
-                }
-
-                // 2x2 Frosted Bento Grid (matching left screen of chat_page_ui_6bb989de.jpg)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("chat_bento_grid"),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        FrostedChatBentoTile(
-                            label = "Channels",
-                            icon = Icons.AutoMirrored.Filled.Chat,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("chat_tile_channels"),
-                            onClick = onOpenChannelsSheet
-                        ) {
-                            ChannelsBentoArtwork()
-                        }
-
-                        FrostedChatBentoTile(
-                            label = "Audio Clip",
-                            icon = Icons.Filled.Mic,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("chat_tile_audio"),
-                            onClick = onPickAudio
-                        ) {
-                            AudioWaveformArtwork()
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        FrostedChatBentoTile(
-                            label = "Chat Files",
-                            icon = Icons.Filled.FolderCopy,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("chat_tile_files"),
-                            onClick = onPickFiles
-                        ) {
-                            ChatFilesBentoArtwork()
-                        }
-
-                        FrostedChatBentoTile(
-                            label = "Images",
-                            icon = Icons.Filled.Image,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("chat_tile_images"),
-                            onClick = onPickImages
-                        ) {
-                            ImagesBentoArtwork()
-                        }
                     }
                 }
 
@@ -2386,34 +2451,52 @@ private fun ChannelPickerBottomSheet(
 @Composable
 private fun CreateChatChannelDialog(
     projects: List<Project>,
-    onCreate: (title: String, topic: String, type: ChatChannelType, project: Project?) -> Unit,
+    onCreate: (title: String, topic: String, type: ChatChannelType, project: Project?, onCreated: () -> Unit, onError: (String) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     var title by remember { mutableStateOf("") }
     var topic by remember { mutableStateOf("") }
     var selectedProject by remember { mutableStateOf<Project?>(null) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isSubmitting) onDismiss() },
         containerColor = PureWhite,
-        title = { Text("New Team Channel", fontWeight = FontWeight.Bold) },
+        title = { Text("New Team Channel", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (!errorMessage.isNullOrBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = SoftBlush,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = errorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = DeepBlushInk,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = title,
-                    onValueChange = { title = it },
+                    onValueChange = { title = it; errorMessage = null },
                     label = { Text("Channel Name") },
                     placeholder = { Text("e.g. Design Critiques") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    enabled = !isSubmitting,
+                    modifier = Modifier.fillMaxWidth().testTag("new_channel_title_input")
                 )
                 OutlinedTextField(
                     value = topic,
-                    onValueChange = { topic = it },
+                    onValueChange = { topic = it; errorMessage = null },
                     label = { Text("Topic / Description") },
-                    placeholder = { Text("Deliverables, PDFs & feedback") },
+                    placeholder = { Text("Deliverables, briefs & shared updates") },
                     maxLines = 2,
-                    modifier = Modifier.fillMaxWidth()
+                    enabled = !isSubmitting,
+                    modifier = Modifier.fillMaxWidth().testTag("new_channel_topic_input")
                 )
                 if (projects.isNotEmpty()) {
                     Text("Or link a Project:", style = MaterialTheme.typography.labelMedium, color = StudioTextSecondary)
@@ -2428,9 +2511,12 @@ private fun CreateChatChannelDialog(
                             FilterChip(
                                 selected = isSel,
                                 onClick = {
-                                    selectedProject = if (isSel) null else proj
-                                    if (!isSel && title.isBlank()) {
-                                        title = proj.title
+                                    if (!isSubmitting) {
+                                        selectedProject = if (isSel) null else proj
+                                        if (!isSel && title.isBlank()) {
+                                            title = proj.title
+                                        }
+                                        errorMessage = null
                                     }
                                 },
                                 label = { Text(proj.title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -2445,16 +2531,33 @@ private fun CreateChatChannelDialog(
                 onClick = {
                     val proj = selectedProject
                     val type = if (proj != null) ChatChannelType.PROJECT else ChatChannelType.GENERAL
-                    onCreate(title.ifBlank { proj?.title ?: "Team Thread" }, topic, type, proj)
+                    isSubmitting = true
+                    errorMessage = null
+                    onCreate(
+                        title.ifBlank { proj?.title ?: "Team Thread" },
+                        topic,
+                        type,
+                        proj,
+                        { isSubmitting = false },
+                        { err ->
+                            isSubmitting = false
+                            errorMessage = err
+                        }
+                    )
                 },
-                enabled = title.isNotBlank() || selectedProject != null,
-                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite)
+                enabled = !isSubmitting && (title.isNotBlank() || selectedProject != null),
+                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                modifier = Modifier.testTag("confirm_create_channel_button")
             ) {
-                Text("Create")
+                if (isSubmitting) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = PureWhite)
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(if (isSubmitting) "Creating…" else "Create")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss, enabled = !isSubmitting) { Text("Cancel") }
         }
     )
 }

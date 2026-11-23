@@ -260,7 +260,7 @@ fun RequestDecisionDialog(
         DecisionStatus.PENDING -> InfoPillBg to InfoPillInk
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
@@ -416,7 +416,7 @@ fun RequestDecisionDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                                .padding(horizontal = 18.dp, vertical = 12.dp)
+                                .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 18.dp)
                         ) {
                             if (canAccept) {
                                 SlideToActionButton(
@@ -738,7 +738,7 @@ private fun ProjectDetailDialog(
     val anyBlocked = deliverables.any { it.statusEnum() == DeliverableStatus.BLOCKED }
     val earliestDue = deliverables.mapNotNull { it.dueDateMillis.takeIf { d -> d > 0L } }.minOrNull() ?: 0L
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas

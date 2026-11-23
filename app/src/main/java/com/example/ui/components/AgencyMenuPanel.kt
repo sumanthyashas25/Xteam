@@ -248,7 +248,7 @@ fun AgencyMenuDrawerContent(
                         onClick = { onSelectSecondary(SecondaryDestination.PROJECTS) }
                     )
                 }
-                if (permittedSecondary.contains(SecondaryDestination.CHAT)) {
+                if (!visibleTabs.contains(PrimaryTab.CHAT) && permittedSecondary.contains(SecondaryDestination.CHAT)) {
                     MinimalSidebarRow(
                         title = formatTitleCase(SecondaryDestination.CHAT.label),
                         icon = SecondaryDestination.CHAT.icon,

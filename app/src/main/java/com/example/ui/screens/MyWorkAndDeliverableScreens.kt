@@ -1121,7 +1121,7 @@ fun DeliverableDetailDialog(
     val timeFmt = remember { SimpleDateFormat("h:mma", Locale.getDefault()) }
     val dateFmt = remember { SimpleDateFormat("d MMM yyyy", Locale.getDefault()) }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
@@ -1234,6 +1234,7 @@ fun DeliverableDetailDialog(
                     modifier = Modifier
                         .weight(1f)
                         .testTag("deliverable_detail_list"),
+                    contentPadding = PaddingValues(bottom = 36.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     if (detailTab == 0) {
@@ -1411,7 +1412,7 @@ fun DeliverableDetailDialog(
                                                         modifier = Modifier.size(16.dp)
                                                     )
                                                     Spacer(Modifier.width(4.dp))
-                                                    Text(if (isTimerRunning) "Pause" else "Start", fontWeight = FontWeight.Bold)
+                                                    Text(if (isTimerRunning) "Pause" else "Start", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                                                 }
                                                 if (elapsedSecs > 0L) {
                                                     OutlinedButton(

@@ -792,7 +792,8 @@ fun StaffPlanCalendarSection(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f).padding(end = 6.dp)
                         ) {
                             Surface(
                                 shape = CircleShape,
@@ -808,12 +809,14 @@ fun StaffPlanCalendarSection(
                                     )
                                 }
                             }
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "Deep Work Focus Sprint",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = ObsidianCharcoal
+                                    color = ObsidianCharcoal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = formatCountdownMmSs(state.focusSecondsRemaining),
@@ -824,15 +827,18 @@ fun StaffPlanCalendarSection(
                             }
                         }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             OutlinedButton(
                                 onClick = onResetFocusTimer,
                                 shape = RoundedCornerShape(999.dp),
                                 border = BorderStroke(1.dp, SubtleOutline),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                 modifier = Modifier.height(38.dp)
                             ) {
-                                Text("Reset", color = ObsidianCharcoal, fontWeight = FontWeight.SemiBold)
+                                Text("Reset", color = ObsidianCharcoal, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                             }
                             Button(
                                 onClick = onToggleFocusTimer,
@@ -841,9 +847,10 @@ fun StaffPlanCalendarSection(
                                     containerColor = if (state.isFocusTimerRunning) DeepBlushInk else ObsidianCharcoal,
                                     contentColor = PureWhite
                                 ),
-                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                 modifier = Modifier
                                     .height(38.dp)
+                                    .defaultMinSize(minWidth = 84.dp)
                                     .testTag("focus_timer_toggle_button")
                             ) {
                                 Icon(
@@ -852,7 +859,12 @@ fun StaffPlanCalendarSection(
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (state.isFocusTimerRunning) "Pause" else "Start", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (state.isFocusTimerRunning) "Pause" else "Start",
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                     }

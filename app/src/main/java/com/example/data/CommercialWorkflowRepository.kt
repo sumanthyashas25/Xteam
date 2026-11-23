@@ -384,6 +384,16 @@ class CommercialWorkflowRepository(private val core: AgencyRepository) {
             }
         }.await()
         core.logActivity(ActivityCategory.QUOTATION, "Client Approved Quote", "${quote.quoteNumber} v${quote.revision} (${MoneyFormatter.formatInr(quote.totalPaise)})", actor.uid, actor.fullName, quote.id)
+        if (quote.advancePaise > 0L) {
+            core.createNotification(
+                category = NotificationCategory.PAYMENT,
+                title = "ADVANCE PAYMENT REMINDER: ${quote.quoteNumber}".take(160),
+                body = "Client approved ${quote.projectTitle} (${quote.clientSnapshot.companyName}). Track advance of ${MoneyFormatter.formatInr(quote.advancePaise)} in Payment Tracker.".take(600),
+                actor = actor,
+                targetUid = "MANAGERS",
+                entityId = quote.linkedProjectId.ifBlank { quote.id }
+            )
+        }
     }
 
     // --- Project Acceptance (Concurrency-Safe Transaction) & Decline / Delete ---
@@ -775,12 +785,34 @@ class CommercialWorkflowRepository(private val core: AgencyRepository) {
         core.logActivity(ActivityCategory.DELIVERABLE, "${action.label}: ${deliverable.title}", feedback.trim(), actor.uid, actor.fullName, deliverable.id)
         core.createNotification(
             category = NotificationCategory.DELIVERABLE,
-            title = "${action.label.uppercase()}: ${deliverable.title.uppercase()}",
-            body = feedback.trim().ifBlank { "Reviewed by ${actor.fullName}." },
+            title = "${action.label.uppercase()}: ${deliverable.title.uppercase()}".take(160),
+            body = feedback.trim().ifBlank { "Reviewed by ${actor.fullName}." }.take(600),
             actor = actor,
             targetUid = deliverable.assignedToUid.ifBlank { "ALL" },
             entityId = deliverable.id
         )
+        if (nextStatus == DeliverableStatus.APPROVED &&
+            updatedList.isNotEmpty() &&
+            updatedList.all {
+                val st = it.statusEnum()
+                st == DeliverableStatus.APPROVED || st == DeliverableStatus.READY_FOR_REVIEW
+            }
+        ) {
+            val projSnap = runCatching { sub("projects").document(deliverable.projectId).get().await() }.getOrNull()
+            val agreed = projSnap?.getLong("agreedValuePaise") ?: 0L
+            val paid = projSnap?.getLong("paidPaise") ?: 0L
+            val outstanding = (agreed - paid).coerceAtLeast(0L)
+            if (outstanding > 0L) {
+                core.createNotification(
+                    category = NotificationCategory.PAYMENT,
+                    title = "FINAL PAYMENT REMINDER: ${deliverable.projectTitle}".take(160),
+                    body = "All deliverables submitted/approved for ${deliverable.projectTitle}. Collect remaining balance of ${MoneyFormatter.formatInr(outstanding)} in Payment Tracker.".take(600),
+                    actor = actor,
+                    targetUid = "MANAGERS",
+                    entityId = deliverable.projectId
+                )
+            }
+        }
     }
 
     suspend fun recordPayment(

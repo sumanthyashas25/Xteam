@@ -121,8 +121,8 @@ class ChatRepository(private val core: AgencyRepository) {
 
     suspend fun ensureDefaultGeneralChannel(actor: Member): ChatChannel {
         val ref = sub("chat_channels").document(GENERAL_CHANNEL_ID)
-        val snap = ref.get().await()
-        if (snap.exists()) {
+        val snap = runCatching { ref.get().await() }.getOrNull()
+        if (snap != null && snap.exists()) {
             snap.toObject(ChatChannel::class.java)?.let { return it }
         }
         val now = System.currentTimeMillis()
@@ -166,15 +166,18 @@ class ChatRepository(private val core: AgencyRepository) {
         project: Project?,
         actor: Member
     ): ChatChannel {
+        val isProjectDeterministic = project != null
         val channelId = if (project != null) {
             "ch_proj_" + project.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
         } else {
             "ch_" + UUID.randomUUID().toString().take(8)
         }
         val ref = sub("chat_channels").document(channelId)
-        val existing = ref.get().await()
-        if (existing.exists()) {
-            existing.toObject(ChatChannel::class.java)?.let { return it }
+        if (isProjectDeterministic) {
+            val existing = runCatching { ref.get().await() }.getOrNull()
+            if (existing != null && existing.exists()) {
+                existing.toObject(ChatChannel::class.java)?.let { return it }
+            }
         }
 
         val cleanTitle = title.trim().ifBlank { project?.title ?: "Team Thread" }.take(100)
@@ -222,8 +225,8 @@ class ChatRepository(private val core: AgencyRepository) {
         val rawSuffix = sortedUids.joinToString("_").replace(Regex("[^A-Za-z0-9_-]"), "_")
         val channelId = "ch_dm_$rawSuffix".take(120)
         val ref = sub("chat_channels").document(channelId)
-        val existing = ref.get().await()
-        if (existing.exists()) {
+        val existing = runCatching { ref.get().await() }.getOrNull()
+        if (existing != null && existing.exists()) {
             existing.toObject(ChatChannel::class.java)?.let { return it }
         }
         val cleanTitle = "${actor.fullName.substringBefore(" ")} & ${otherMember.fullName}".take(100)
@@ -267,8 +270,8 @@ class ChatRepository(private val core: AgencyRepository) {
         val safeDept = dept.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val channelId = "ch_dept_$safeDept".take(120)
         val ref = sub("chat_channels").document(channelId)
-        val existing = ref.get().await()
-        if (existing.exists()) {
+        val existing = runCatching { ref.get().await() }.getOrNull()
+        if (existing != null && existing.exists()) {
             existing.toObject(ChatChannel::class.java)?.let { return it }
         }
         val cleanTitle = "${dept.name} Dept".take(100)

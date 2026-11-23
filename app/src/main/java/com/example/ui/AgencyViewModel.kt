@@ -750,16 +750,18 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun markQuoteSent(quote: Quotation) = runWrite("quotations/${quote.id}") {
+    fun markQuoteSent(quote: Quotation, onDone: () -> Unit = {}) = runWrite("quotations/${quote.id}") {
         val actor = uiState.value.myMember ?: error("No active member")
         workRepo.markQuotationSent(quote, actor)
         _statusMessage.value = "${quote.quoteNumber} marked Sent to Client."
+        onDone()
     }
 
-    fun markQuoteClientApproved(quote: Quotation, note: String) = runWrite("quotations/${quote.id}") {
+    fun markQuoteClientApproved(quote: Quotation, note: String, onDone: () -> Unit = {}) = runWrite("quotations/${quote.id}") {
         val actor = uiState.value.myMember ?: error("No active member")
         workRepo.markQuotationClientApproved(quote, note, actor)
         _statusMessage.value = "${quote.quoteNumber} marked Client Approved."
+        onDone()
     }
 
     fun acceptRequest(request: ProjectRequest, quote: Quotation, drafts: List<DeliverableDraft>, onAccepted: (String) -> Unit = {}) = runWrite("projects") {
@@ -835,8 +837,9 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         topic: String,
         channelType: ChatChannelType,
         project: Project? = null,
-        onReady: (ChatChannel) -> Unit = {}
-    ) = runWrite("chat_channels") {
+        onReady: (ChatChannel) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) = runWrite("chat_channels", onError = onError) {
         val actor = uiState.value.myMember ?: error("No active member")
         val ch = chatRepo.createOrGetChannel(title, topic, channelType, project, actor)
         _statusMessage.value = "Opened #${ch.title}"
@@ -956,18 +959,59 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         AppHapticsAndNotifier.saveTimerSeconds(getApplication(), deliverableId, 0L)
     }
 
-    fun openDirectChat(otherMember: Member, onReady: (ChatChannel) -> Unit = {}) = runWrite("chat_channels/dm") {
-        val actor = uiState.value.myMember ?: error("No active member")
-        val ch = chatRepo.createOrGetDirectChannel(otherMember, actor)
-        _statusMessage.value = "Direct chat: ${otherMember.fullName}"
-        onReady(ch)
+    fun openDirectChat(
+        otherMember: Member,
+        onReady: (ChatChannel) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val actor = uiState.value.myMember ?: run {
+            val err = "No active member"
+            _errorMessage.value = err
+            onError(err)
+            return
+        }
+        val existing = uiState.value.chatChannels.firstOrNull { ch ->
+            ch.channelTypeEnum() == ChatChannelType.DIRECT &&
+                (ch.id == ChatRepository.directChannelId(actor.uid, otherMember.uid) ||
+                 (ch.participantUids.contains(otherMember.uid) && ch.participantUids.contains(actor.uid)))
+        }
+        if (existing != null) {
+            _statusMessage.value = "Direct chat: ${otherMember.fullName}"
+            onReady(existing)
+            return
+        }
+        runWrite("chat_channels/dm", onError = onError) {
+            val ch = chatRepo.createOrGetDirectChannel(otherMember, actor)
+            _statusMessage.value = "Direct chat: ${otherMember.fullName}"
+            onReady(ch)
+        }
     }
 
-    fun openDepartmentChat(dept: Department, onReady: (ChatChannel) -> Unit = {}) = runWrite("chat_channels/dept") {
-        val actor = uiState.value.myMember ?: error("No active member")
-        val ch = chatRepo.createOrGetDepartmentChannel(dept, actor)
-        _statusMessage.value = "Opened ${dept.name} chat"
-        onReady(ch)
+    fun openDepartmentChat(
+        dept: Department,
+        onReady: (ChatChannel) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val actor = uiState.value.myMember ?: run {
+            val err = "No active member"
+            _errorMessage.value = err
+            onError(err)
+            return
+        }
+        val existing = uiState.value.chatChannels.firstOrNull { ch ->
+            ch.channelTypeEnum() == ChatChannelType.DEPARTMENT &&
+                (ch.departmentId == dept.id || ch.id == ChatRepository.departmentChannelId(dept.id))
+        }
+        if (existing != null) {
+            _statusMessage.value = "Opened ${dept.name} chat"
+            onReady(existing)
+            return
+        }
+        runWrite("chat_channels/dept", onError = onError) {
+            val ch = chatRepo.createOrGetDepartmentChannel(dept, actor)
+            _statusMessage.value = "Opened ${dept.name} chat"
+            onReady(ch)
+        }
     }
 
     fun markNotificationRead(notification: WorkspaceNotification) {
@@ -1156,7 +1200,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun runWrite(path: String, block: suspend () -> Unit) {
+    private fun runWrite(path: String, onError: (String) -> Unit = {}, block: suspend () -> Unit) {
         viewModelScope.launch {
             _syncFeedback.value = SyncFeedback.SAVING
             _errorMessage.value = null
@@ -1168,11 +1212,15 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
             } catch (e: FirebaseFirestoreException) {
                 handleFirestoreError(e, OperationType.WRITE, path)
                 _syncFeedback.value = SyncFeedback.ERROR
-                _errorMessage.value = e.localizedMessage ?: "Permission or sync error while saving."
+                val msg = e.localizedMessage ?: "Permission or sync error while saving."
+                _errorMessage.value = msg
+                onError(msg)
             } catch (e: Exception) {
                 handleFirestoreError(e, OperationType.WRITE, path)
                 _syncFeedback.value = SyncFeedback.ERROR
-                _errorMessage.value = e.localizedMessage ?: "Operation failed."
+                val msg = e.localizedMessage ?: "Operation failed."
+                _errorMessage.value = msg
+                onError(msg)
             }
         }
     }

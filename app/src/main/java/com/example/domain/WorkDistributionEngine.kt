@@ -200,4 +200,146 @@ object WorkDistributionEngine {
         if (blocked > 0) parts += "$blocked blocked"
         return parts.joinToString(", ")
     }
+
+    enum class PaymentReminderType(val label: String) {
+        ADVANCE_DUE("Advance Payment Due"),
+        FINAL_SUBMITTED("Work Submitted • Final Payment Due"),
+        FINAL_DEADLINE("Deadline Near • Final Payment Due")
+    }
+
+    data class QuotationAdvanceReminder(
+        val quotation: com.example.model.Quotation,
+        val advanceDuePaise: Long,
+        val linkedProject: com.example.model.Project?
+    )
+
+    data class ProjectPaymentReminder(
+        val project: com.example.model.Project,
+        val type: PaymentReminderType,
+        val amountDuePaise: Long,
+        val detail: String,
+        val priority: Int
+    )
+
+    data class PaymentReminderSummary(
+        val quoteAdvanceReminders: List<QuotationAdvanceReminder>,
+        val projectReminders: List<ProjectPaymentReminder>
+    ) {
+        val totalCount: Int get() = quoteAdvanceReminders.size + projectReminders.size
+        val advanceCount: Int get() = quoteAdvanceReminders.size + projectReminders.count { it.type == PaymentReminderType.ADVANCE_DUE }
+        val finalCount: Int get() = projectReminders.count {
+            it.type == PaymentReminderType.FINAL_SUBMITTED || it.type == PaymentReminderType.FINAL_DEADLINE
+        }
+    }
+
+    fun computePaymentReminders(
+        projects: List<com.example.model.Project>,
+        deliverables: List<Deliverable>,
+        quotations: List<com.example.model.Quotation>,
+        nowMillis: Long = System.currentTimeMillis()
+    ): PaymentReminderSummary {
+        val activeProjects = projects.filter { !it.deleted }
+        val deadlineHorizonMillis = nowMillis + 3L * 86_400_000L
+
+        val quoteAdvanceReminders = quotations
+            .filter {
+                it.statusEnum() == com.example.model.QuotationStatus.CLIENT_APPROVED && it.advancePaise > 0L
+            }
+            .mapNotNull { quote ->
+                val matchingProject = activeProjects.firstOrNull { p ->
+                    p.approvedQuoteId == quote.id ||
+                        (quote.linkedProjectId.isNotBlank() && p.id == quote.linkedProjectId) ||
+                        (quote.requestId.isNotBlank() && p.requestId == quote.requestId)
+                }
+                val alreadyPaidAdvance = matchingProject != null && matchingProject.paidPaise >= quote.advancePaise
+                if (alreadyPaidAdvance) {
+                    null
+                } else {
+                    QuotationAdvanceReminder(
+                        quotation = quote,
+                        advanceDuePaise = if (matchingProject != null) {
+                            (quote.advancePaise - matchingProject.paidPaise).coerceAtLeast(0L)
+                        } else {
+                            quote.advancePaise
+                        },
+                        linkedProject = matchingProject
+                    )
+                }
+            }
+
+        val projectReminders = activeProjects.mapNotNull { proj ->
+            if (proj.outstandingPaise <= 0L) return@mapNotNull null
+
+            val projDelivs = deliverables.filter { it.projectId == proj.id }
+            val readyOrApprovedCount = projDelivs.count {
+                val st = it.statusEnum()
+                st == DeliverableStatus.READY_FOR_REVIEW || st == DeliverableStatus.APPROVED
+            }
+            val anyReadyForReview = projDelivs.any { it.statusEnum() == DeliverableStatus.READY_FOR_REVIEW }
+            val allSubmittedOrApproved = projDelivs.isNotEmpty() && readyOrApprovedCount == projDelivs.size
+            val pendingDeliverables = projDelivs.filter { it.statusEnum() != DeliverableStatus.APPROVED }
+            val nearestDueMillis = pendingDeliverables
+                .mapNotNull { it.dueDateMillis.takeIf { d -> d > 0L } }
+                .minOrNull()
+            val deadlineNear = nearestDueMillis != null && nearestDueMillis <= deadlineHorizonMillis
+
+            val advanceUnpaid = proj.advanceDuePaise > 0L && proj.paidPaise < proj.advanceDuePaise
+            when {
+                proj.statusEnum() == com.example.model.ProjectStatus.COMPLETED || allSubmittedOrApproved -> {
+                    val detail = if (proj.statusEnum() == com.example.model.ProjectStatus.COMPLETED) {
+                        "Project completed with ${MoneyFormatter.formatInr(proj.outstandingPaise)} final balance pending"
+                    } else {
+                        "All ${projDelivs.size} deliverables submitted/approved — collect final ${MoneyFormatter.formatInr(proj.outstandingPaise)}"
+                    }
+                    ProjectPaymentReminder(
+                        project = proj,
+                        type = PaymentReminderType.FINAL_SUBMITTED,
+                        amountDuePaise = proj.outstandingPaise,
+                        detail = detail,
+                        priority = 1
+                    )
+                }
+                anyReadyForReview && !advanceUnpaid -> {
+                    ProjectPaymentReminder(
+                        project = proj,
+                        type = PaymentReminderType.FINAL_SUBMITTED,
+                        amountDuePaise = proj.outstandingPaise,
+                        detail = "$readyOrApprovedCount of ${projDelivs.size} deliverables submitted/approved — track final ${MoneyFormatter.formatInr(proj.outstandingPaise)}",
+                        priority = 2
+                    )
+                }
+                deadlineNear -> {
+                    val isOverdue = nearestDueMillis!! < nowMillis
+                    val dateLabel = MoneyFormatter.formatDate(nearestDueMillis)
+                    ProjectPaymentReminder(
+                        project = proj,
+                        type = PaymentReminderType.FINAL_DEADLINE,
+                        amountDuePaise = proj.outstandingPaise,
+                        detail = if (isOverdue) {
+                            "Deadline passed ($dateLabel) — follow up on ${MoneyFormatter.formatInr(proj.outstandingPaise)} balance"
+                        } else {
+                            "Deadline due $dateLabel — prepare final ${MoneyFormatter.formatInr(proj.outstandingPaise)} collection"
+                        },
+                        priority = 2
+                    )
+                }
+                advanceUnpaid -> {
+                    val remainingAdv = (proj.advanceDuePaise - proj.paidPaise).coerceAtLeast(0L)
+                    ProjectPaymentReminder(
+                        project = proj,
+                        type = PaymentReminderType.ADVANCE_DUE,
+                        amountDuePaise = remainingAdv,
+                        detail = "Client approved scope — collect ${MoneyFormatter.formatInr(remainingAdv)} advance payment",
+                        priority = 3
+                    )
+                }
+                else -> null
+            }
+        }.sortedBy { it.priority }
+
+        return PaymentReminderSummary(
+            quoteAdvanceReminders = quoteAdvanceReminders,
+            projectReminders = projectReminders
+        )
+    }
 }
