@@ -19,18 +19,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.MoneyFormatter
 import com.example.model.*
+import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
 import com.example.ui.components.CatalogueServiceTicketCard
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.MetricStatCard
 import com.example.ui.components.MonochromeSearchBar
 import com.example.ui.components.StatusPill
+import com.example.ui.components.formatTitleCase
 import com.example.ui.theme.*
 
 @Composable
@@ -70,7 +74,7 @@ fun ClientsScreen(
                     ) {
                         Icon(Icons.Filled.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("ADD CLIENT", fontWeight = FontWeight.Bold)
+                        Text("Add Client", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -83,7 +87,7 @@ fun ClientsScreen(
             )
         }
         if (filtered.isEmpty()) {
-            item { EmptyStateCard(Icons.Filled.Contacts, "NO CLIENTS FOUND", "Add your first client during a meeting or from here.") }
+            item { EmptyStateCard(Icons.Filled.Contacts, "No Clients Found", "Add your first client during a meeting or from here.") }
         } else {
             items(filtered, key = { it.id }) { cli ->
                 Surface(
@@ -106,8 +110,8 @@ fun ClientsScreen(
                             Icon(Icons.Filled.Business, contentDescription = null, tint = KpiSkyStroke, modifier = Modifier.size(20.dp))
                         }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(cli.companyName.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
-                            Text("${cli.contactPerson.uppercase()} • ${cli.phone.ifBlank { cli.email.ifBlank { "No contact" } }}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
+                            Text(formatTitleCase(cli.companyName), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                            Text("${formatTitleCase(cli.contactPerson)} • ${cli.phone.ifBlank { cli.email.ifBlank { "No contact" } }}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = StudioTextSecondary)
                             if (cli.meetingNotes.isNotBlank()) {
                                 Text("Notes: ${cli.meetingNotes}", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary, maxLines = 2)
                             }
@@ -131,8 +135,8 @@ fun ClientsScreen(
             onDismissRequest = { deleteConfirmClient = null },
             containerColor = PureWhite,
             shape = RoundedCornerShape(26.dp),
-            title = { Text("DELETE CLIENT?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
-            text = { Text("Permanently remove ${target.companyName.uppercase()} from your workspace clients? Existing projects keep their stored client name.", color = StudioTextSecondary) },
+            title = { Text("Delete Client?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            text = { Text("Permanently remove ${formatTitleCase(target.companyName)} from your workspace clients? Existing projects keep their stored client name.", color = StudioTextSecondary) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -142,7 +146,7 @@ fun ClientsScreen(
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite),
                     modifier = Modifier.testTag("confirm_delete_client_button")
-                ) { Text("DELETE", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete", fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { deleteConfirmClient = null }) { Text("Cancel", color = StudioTextSecondary) } }
         )
@@ -160,7 +164,7 @@ fun ClientsScreen(
             onDismissRequest = { editingClient = null },
             containerColor = PureWhite,
             shape = RoundedCornerShape(26.dp),
-            title = { Text(if (cli.id.isBlank()) "NEW CLIENT" else "EDIT CLIENT", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
+            title = { Text(if (cli.id.isBlank()) "New Client" else "Edit Client", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = companyName, onValueChange = { companyName = it }, label = { Text("Company Name *") }, singleLine = true, shape = RoundedCornerShape(14.dp))
@@ -223,7 +227,7 @@ fun QuotationsScreen(
                         shape = RoundedCornerShape(999.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
                         modifier = Modifier.height(42.dp)
-                    ) { Text("+ NEW QUOTE", fontWeight = FontWeight.Bold) }
+                    ) { Text("+ New Quote", fontWeight = FontWeight.Bold) }
                 }
             }
         }
@@ -299,7 +303,7 @@ fun QuotationsScreen(
                                 }
                             }
                         }
-                        Text("${q.projectTitle.uppercase()} • ${q.clientSnapshot.companyName.uppercase()}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+                        Text("${formatTitleCase(q.projectTitle)} • ${formatTitleCase(q.clientSnapshot.companyName)}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 "Total: ${MoneyFormatter.formatInr(q.totalPaise)}",
@@ -324,8 +328,8 @@ fun QuotationsScreen(
             onDismissRequest = { deleteConfirmQuote = null },
             containerColor = PureWhite,
             shape = RoundedCornerShape(26.dp),
-            title = { Text("DELETE QUOTATION?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
-            text = { Text("Permanently delete quotation ${target.quoteNumber} (v${target.revision}) for ${target.clientSnapshot.companyName.uppercase()}?", color = StudioTextSecondary) },
+            title = { Text("Delete Quotation?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            text = { Text("Permanently delete quotation ${target.quoteNumber} (v${target.revision}) for ${formatTitleCase(target.clientSnapshot.companyName)}?", color = StudioTextSecondary) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -335,7 +339,7 @@ fun QuotationsScreen(
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite),
                     modifier = Modifier.testTag("confirm_delete_quote_button")
-                ) { Text("DELETE", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete", fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { deleteConfirmQuote = null }) { Text("Cancel", color = StudioTextSecondary) } }
         )
@@ -348,9 +352,11 @@ fun CatalogueScreen(
     onSaveItem: (CatalogueItem) -> Unit,
     onToggleArchive: (CatalogueItem, Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     var showArchived by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<CatalogueItem?>(null) }
+    var viewingItem by remember { mutableStateOf<CatalogueItem?>(null) }
     val canEdit = state.hasPerm(AppPermission.EDIT_CATALOGUE_PRICES)
 
     val filtered = remember(state.catalogue, query, showArchived) {
@@ -406,13 +412,60 @@ fun CatalogueScreen(
                 index = index,
                 buttonLabel = if (canEdit) "Check" else "Details",
                 onButtonClick = {
-                    if (canEdit) editing = item
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                    if (canEdit) editing = item else viewingItem = item
                 },
                 onCardClick = {
-                    if (canEdit) editing = item
+                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                    if (canEdit) editing = item else viewingItem = item
                 }
             )
         }
+    }
+
+    viewingItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { viewingItem = null },
+            containerColor = PureWhite,
+            shape = RoundedCornerShape(26.dp),
+            title = { Text(item.name, fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    StatusPill(
+                        label = "${item.kindEnum().label} • ${item.category}",
+                        containerColor = KpiLavenderBg,
+                        contentColor = VioletPrimary
+                    )
+                    Text(
+                        text = when (item.pricingModeEnum()) {
+                            PricingMode.PERCENTAGE_SURCHARGE -> "+${item.surchargePercent}% Urgent Surcharge"
+                            PricingMode.CUSTOM_QUOTE -> "Custom Quote"
+                            PricingMode.ACTUAL_COST -> "Actual Cost"
+                            else -> MoneyFormatter.formatInr(item.pricePaise)
+                        },
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ObsidianCharcoal
+                    )
+                    if (item.description.isNotBlank()) {
+                        Text(item.description, style = MaterialTheme.typography.bodyMedium, color = StudioTextSecondary)
+                    }
+                    if (item.inclusions.isNotEmpty()) {
+                        Text("Included Deliverables", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                        item.inclusions.forEach { inc ->
+                            Text("• ${inc.title} (x${inc.quantity})", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewingItem = null },
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite)
+                ) { Text("Close") }
+            }
+        )
     }
 
     editing?.let { item ->
@@ -463,74 +516,264 @@ fun PaymentsScreen(
     state: AgencyUiState,
     onRecordPayment: (Project, Long, Long, PaymentMethod, String, String) -> Unit
 ) {
+    val context = LocalContext.current
     var recordTarget by remember { mutableStateOf<Project?>(null) }
-    val activeProjects = state.projects.filter { !it.deleted }
-    val totalAgreed = activeProjects.sumOf { it.agreedValuePaise }
-    val totalPaid = activeProjects.sumOf { it.paidPaise }
-    val totalBalance = activeProjects.sumOf { it.outstandingPaise }
+    var searchQuery by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf("ALL") }
+
+    val activeProjects = remember(state.projects) { state.projects.filter { !it.deleted } }
+    val totalAgreed = remember(activeProjects) { activeProjects.sumOf { it.agreedValuePaise } }
+    val totalPaid = remember(activeProjects) { activeProjects.sumOf { it.paidPaise } }
+    val totalBalance = remember(activeProjects) { activeProjects.sumOf { it.outstandingPaise } }
+    val collectionPct = remember(totalAgreed, totalPaid) {
+        if (totalAgreed <= 0L) 0 else ((totalPaid.toDouble() / totalAgreed.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+    }
+    val advanceDueCount = remember(activeProjects) { activeProjects.count { it.advanceDuePaise > 0L } }
+    val balanceDueCount = remember(activeProjects) { activeProjects.count { it.outstandingPaise > 0L } }
+    val settledCount = remember(activeProjects) { activeProjects.count { it.outstandingPaise <= 0L } }
     val canRecord = state.hasPerm(AppPermission.RECORD_PAYMENTS)
 
+    val filteredProjects = remember(activeProjects, statusFilter, searchQuery) {
+        activeProjects.filter { p ->
+            val filterOk = when (statusFilter) {
+                "ADVANCE_DUE" -> p.advanceDuePaise > 0L
+                "OPEN" -> p.outstandingPaise > 0L
+                "SETTLED" -> p.outstandingPaise <= 0L
+                else -> true
+            }
+            val queryOk = searchQuery.isBlank() ||
+                p.title.contains(searchQuery, ignoreCase = true) ||
+                p.clientCompanyName.contains(searchQuery, ignoreCase = true)
+            filterOk && queryOk
+        }
+    }
+
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(CrispCanvas),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(CrispCanvas)
+            .testTag("payments_lazy_list"),
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 108.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { Text("Payments & Receivables", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                MetricStatCard("Collected", MoneyFormatter.formatInr(totalPaid), "of ${MoneyFormatter.formatInr(totalAgreed)}", Icons.Filled.AccountBalanceWallet, containerColor = SoftMint, accentColor = DeepMintInk, modifier = Modifier.weight(1f))
-                MetricStatCard("Outstanding", MoneyFormatter.formatInr(totalBalance), "${activeProjects.count { it.outstandingPaise > 0L }} open projects", Icons.Filled.Schedule, containerColor = MutedSurface, accentColor = ObsidianCharcoal, modifier = Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Payment Tracker", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                    Text("${activeProjects.size} projects • ${state.payments.size} receipts logged", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                }
+                StatusPill("$collectionPct% Collected", SoftMint, DeepMintInk)
             }
         }
-        item { Text("Project Balances", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
-        items(activeProjects, key = { it.id }) { proj ->
-            Card(
+
+        // Collection Progress Tracker Overview
+        item {
+            Surface(
                 shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = MutedSurface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                color = PureWhite,
+                border = BorderStroke(1.dp, SubtleOutline),
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("payment_tracker_overview")
             ) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(proj.title.uppercase(), fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal, modifier = Modifier.weight(1f))
-                        StatusPill(proj.statusEnum().label, InfoPillBg, InfoPillInk)
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Collection Progress", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                        Text(
+                            "${MoneyFormatter.formatInr(totalPaid)} / ${MoneyFormatter.formatInr(totalAgreed)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = VioletPrimary
+                        )
                     }
-                    Text("${proj.clientCompanyName.uppercase()} • Advance Due: ${MoneyFormatter.formatInr(proj.advanceDuePaise)}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
-                    Text(
-                        "Agreed: ${MoneyFormatter.formatInr(proj.agreedValuePaise)} | Paid: ${MoneyFormatter.formatInr(proj.paidPaise)} | Balance: ${MoneyFormatter.formatInr(proj.outstandingPaise)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = ObsidianCharcoal
+                    LinearProgressIndicator(
+                        progress = { (collectionPct / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .clip(RoundedCornerShape(999.dp)),
+                        color = EmeraldApproved,
+                        trackColor = MutedSurface
                     )
-                    if (canRecord && proj.outstandingPaise > 0L) {
-                        Button(
-                            onClick = { recordTarget = proj },
-                            shape = RoundedCornerShape(999.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                            modifier = Modifier.testTag("record_payment_${proj.id}")
-                        ) { Text("RECORD PAYMENT", fontWeight = FontWeight.Bold) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        StatusPill("Settled: $settledCount", SoftMint, DeepMintInk)
+                        if (advanceDueCount > 0) {
+                            StatusPill("Advance Due: $advanceDueCount", ButterYellow, DeepAmberInk)
+                        }
+                        if (balanceDueCount > 0) {
+                            StatusPill("Open Balances: $balanceDueCount", KpiLavenderBg, VioletPrimary)
+                        }
                     }
                 }
             }
         }
-        item { Text("Payment Ledger (${state.payments.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
-        items(state.payments, key = { it.id }) { p ->
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MutedSurface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                MetricStatCard("Collected", MoneyFormatter.formatInr(totalPaid), "of ${MoneyFormatter.formatInr(totalAgreed)}", Icons.Filled.AccountBalanceWallet, containerColor = SoftMint, accentColor = DeepMintInk, modifier = Modifier.weight(1f))
+                MetricStatCard("Outstanding", MoneyFormatter.formatInr(totalBalance), "$balanceDueCount open projects", Icons.Filled.Schedule, containerColor = MutedSurface, accentColor = ObsidianCharcoal, modifier = Modifier.weight(1f))
+            }
+        }
+
+        item {
+            MonochromeSearchBar(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                placeholder = "Search project or client payment status…"
+            )
+        }
+
+        item {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("${MoneyFormatter.formatInr(p.amountPaise)} • ${p.projectTitle.uppercase()}", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
-                    Text(
-                        "${p.clientCompanyName.uppercase()} • ${p.methodEnum().label} • Ref: ${p.reference.ifBlank { "N/A" }}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = StudioTextSecondary
+                listOf(
+                    "ALL" to "All (${activeProjects.size})",
+                    "ADVANCE_DUE" to "Advance Due ($advanceDueCount)",
+                    "OPEN" to "Balance Due ($balanceDueCount)",
+                    "SETTLED" to "Settled ($settledCount)"
+                ).forEach { (key, label) ->
+                    FilterChip(
+                        selected = statusFilter == key,
+                        onClick = {
+                            AppHapticsAndNotifier.triggerTickHaptic(context)
+                            statusFilter = key
+                        },
+                        shape = RoundedCornerShape(999.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = ObsidianCharcoal,
+                            selectedLabelColor = PureWhite,
+                            containerColor = PureWhite,
+                            labelColor = ObsidianCharcoal
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(enabled = true, selected = statusFilter == key, borderColor = SubtleOutline),
+                        label = { Text(label, fontWeight = FontWeight.SemiBold) }
                     )
-                    Text(
-                        "By ${p.recordedByName.uppercase()} on ${MoneyFormatter.formatDate(p.paymentDateMillis)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary
-                    )
+                }
+            }
+        }
+
+        item { Text("Project Balances (${filteredProjects.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal) }
+
+        if (filteredProjects.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    Icons.Filled.AccountBalanceWallet,
+                    "No Matching Payment Records",
+                    "Try clearing the filter or search query to see all projects."
+                )
+            }
+        } else {
+            items(filteredProjects, key = { it.id }) { proj ->
+                val projPct = if (proj.agreedValuePaise <= 0L) 100 else ((proj.paidPaise.toDouble() / proj.agreedValuePaise.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                val (badgeBg, badgeFg, badgeLabel) = when {
+                    proj.outstandingPaise <= 0L -> Triple(SoftMint, DeepMintInk, "Settled ✓")
+                    proj.advanceDuePaise > 0L -> Triple(ButterYellow, DeepAmberInk, "Advance Due")
+                    else -> Triple(InfoPillBg, InfoPillInk, "$projPct% Paid")
+                }
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = PureWhite,
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                                Text(formatTitleCase(proj.title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(formatTitleCase(proj.clientCompanyName), style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                            }
+                            StatusPill(badgeLabel, badgeBg, badgeFg)
+                        }
+                        LinearProgressIndicator(
+                            progress = { (projPct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(7.dp)
+                                .clip(RoundedCornerShape(999.dp)),
+                            color = if (proj.outstandingPaise <= 0L) EmeraldApproved else VioletPrimary,
+                            trackColor = MutedSurface
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Agreed: ${MoneyFormatter.formatInr(proj.agreedValuePaise)}", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                            Text("Paid: ${MoneyFormatter.formatInr(proj.paidPaise)}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = DeepMintInk)
+                            Text("Due: ${MoneyFormatter.formatInr(proj.outstandingPaise)}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = if (proj.outstandingPaise > 0L) DeepBlushInk else DeepMintInk)
+                        }
+                        if (proj.advanceDuePaise > 0L) {
+                            Text(
+                                "Pending Advance: ${MoneyFormatter.formatInr(proj.advanceDuePaise)}",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = DeepAmberInk
+                            )
+                        }
+                        if (canRecord && proj.outstandingPaise > 0L) {
+                            Button(
+                                onClick = {
+                                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                                    recordTarget = proj
+                                },
+                                shape = RoundedCornerShape(999.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                                modifier = Modifier.fillMaxWidth().height(44.dp).testTag("record_payment_${proj.id}")
+                            ) { Text("Record Payment", fontWeight = FontWeight.Bold) }
+                        }
+                    }
+                }
+            }
+        }
+
+        item { Text("Payment Ledger (${state.payments.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal) }
+        if (state.payments.isEmpty()) {
+            item {
+                EmptyStateCard(
+                    Icons.Filled.Receipt,
+                    "No Receipts Logged Yet",
+                    "Recorded client payments appear here with payment method and reference details."
+                )
+            }
+        } else {
+            items(state.payments, key = { it.id }) { p ->
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = PureWhite,
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text(MoneyFormatter.formatInr(p.amountPaise), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = DeepMintInk)
+                            StatusPill(p.methodEnum().label, KpiLavenderBg, VioletPrimary)
+                        }
+                        Text(formatTitleCase(p.projectTitle), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = ObsidianCharcoal)
+                        Text(
+                            "${formatTitleCase(p.clientCompanyName)} • Ref: ${p.reference.ifBlank { "N/A" }}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = StudioTextSecondary
+                        )
+                        Text(
+                            "Recorded by ${formatTitleCase(p.recordedByName)} on ${MoneyFormatter.formatDate(p.paymentDateMillis)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioTextSecondary
+                        )
+                    }
                 }
             }
         }
@@ -546,7 +789,7 @@ fun PaymentsScreen(
             onDismissRequest = { recordTarget = null },
             containerColor = PureWhite,
             shape = RoundedCornerShape(26.dp),
-            title = { Text("Record Payment — ${proj.title}", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            title = { Text("Record Payment — ${formatTitleCase(proj.title)}", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Remaining balance: ${MoneyFormatter.formatInr(proj.outstandingPaise)}", style = MaterialTheme.typography.labelMedium, color = StudioTextSecondary)
@@ -571,7 +814,7 @@ fun PaymentsScreen(
                                     labelColor = ObsidianCharcoal
                                 ),
                                 border = null,
-                                label = { Text(m.name, fontWeight = FontWeight.SemiBold) }
+                                label = { Text(m.label, fontWeight = FontWeight.SemiBold) }
                             )
                         }
                     }
@@ -583,6 +826,7 @@ fun PaymentsScreen(
                 val paise = MoneyFormatter.rupeesToPaise(amountRupees) ?: 0L
                 Button(
                     onClick = {
+                        AppHapticsAndNotifier.triggerCompletionVibration(context)
                         onRecordPayment(proj, paise, System.currentTimeMillis(), method, ref, note)
                         recordTarget = null
                     },
@@ -632,13 +876,13 @@ fun ActivityLogScreen(
                     ) {
                         Icon(Icons.Filled.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("CLEAR ALL LOGS", fontWeight = FontWeight.Bold)
+                        Text("Clear All Logs", fontWeight = FontWeight.Bold)
                     }
                 }
             }
         }
         if (state.activityLog.isEmpty()) {
-            item { EmptyStateCard(Icons.Filled.History, "NO ACTIVITY ENTRIES YET", "Key agency actions appear here automatically.") }
+            item { EmptyStateCard(Icons.Filled.History, "No Activity Entries Yet", "Key agency actions appear here automatically.") }
         } else {
             items(state.activityLog, key = { it.id }) { act ->
                 Card(
@@ -658,9 +902,9 @@ fun ActivityLogScreen(
                             Icon(Icons.Filled.History, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(16.dp))
                         }
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(act.title.uppercase(), fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                            Text(formatTitleCase(act.title), fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                             Text(act.detail, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
-                            Text("By ${act.actorName.uppercase()} • ${act.categoryEnum().label}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
+                            Text("By ${formatTitleCase(act.actorName)} • ${act.categoryEnum().label}", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
                         }
                         if (state.isSuperAdmin) {
                             IconButton(
@@ -681,7 +925,7 @@ fun ActivityLogScreen(
             onDismissRequest = { showClearConfirm = false },
             containerColor = PureWhite,
             shape = RoundedCornerShape(26.dp),
-            title = { Text("CLEAR ALL ACTIVITY LOGS?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
+            title = { Text("Clear All Activity Logs?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
             text = { Text("Permanently delete all ${state.activityLog.size} activity log entries? This cannot be undone.", color = StudioTextSecondary) },
             confirmButton = {
                 Button(
@@ -692,7 +936,7 @@ fun ActivityLogScreen(
                     shape = RoundedCornerShape(999.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite),
                     modifier = Modifier.testTag("confirm_clear_all_logs_button")
-                ) { Text("CLEAR LOGS", fontWeight = FontWeight.Bold) }
+                ) { Text("Clear Logs", fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel", color = StudioTextSecondary) } }
         )

@@ -380,7 +380,7 @@ fun HomeScreen(
                             ) {
                                 Icon(Icons.Outlined.DeleteSweep, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(6.dp))
-                                Text("CLEAN OLD DONE (${completedProjects.size})", fontWeight = FontWeight.Bold)
+                                Text("Clean Old Done (${completedProjects.size})", fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -402,8 +402,8 @@ fun HomeScreen(
                         val dateMillis = proj.createdAt?.seconds?.times(1000L) ?: System.currentTimeMillis()
                         DashboardReferenceProjectCard(
                             dateText = formatShortDate(dateMillis),
-                            title = proj.title.uppercase(),
-                            subtitle = "${proj.clientCompanyName.uppercase()} • ${proj.approvedQuoteNumber.ifBlank { "ACTIVE" }}",
+                            title = formatTitleCase(proj.title),
+                            subtitle = "${formatTitleCase(proj.clientCompanyName)} • ${proj.approvedQuoteNumber.ifBlank { "Active" }}",
                             primaryDotColor = VioletPrimary,
                             primaryStatText = "Tasks: ${projDelivs.size}",
                             secondaryDotColor = EmeraldApproved,
@@ -438,12 +438,12 @@ fun HomeScreen(
                         val dateMillis = if (req.targetDateMillis > 0L) req.targetDateMillis else System.currentTimeMillis()
                         DashboardReferenceProjectCard(
                             dateText = formatShortDate(dateMillis),
-                            title = req.projectTitle.uppercase(),
-                            subtitle = "${req.clientCompanyName.uppercase()} • ${req.latestQuoteNumber.ifBlank { "AWAITING QUOTE" }}",
+                            title = formatTitleCase(req.projectTitle),
+                            subtitle = "${formatTitleCase(req.clientCompanyName)} • ${req.latestQuoteNumber.ifBlank { "Awaiting Quote" }}",
                             primaryDotColor = VioletPrimary,
                             primaryStatText = "Scope: ${req.desiredServices.size.coerceAtLeast(1)}",
                             secondaryDotColor = KpiPeachStroke,
-                            secondaryStatText = req.decisionStatusEnum().label.uppercase(),
+                            secondaryStatText = req.decisionStatusEnum().label,
                             trailingBadge = null,
                             canEdit = canCreateQuote,
                             canDelete = false,
@@ -452,6 +452,85 @@ fun HomeScreen(
                             onDelete = {},
                             modifier = Modifier.animateItem()
                         )
+                    }
+                }
+            }
+        }
+
+        // Compact Payment Tracker Widget for roles with Payment permissions
+        if ((state.hasPerm(AppPermission.VIEW_PAYMENTS) || state.hasPerm(AppPermission.RECORD_PAYMENTS)) && activeProjects.isNotEmpty()) {
+            item {
+                val totalAgreed = activeProjects.sumOf { it.agreedValuePaise }
+                val totalPaid = activeProjects.sumOf { it.paidPaise }
+                val totalDue = activeProjects.sumOf { it.outstandingPaise }
+                val pct = if (totalAgreed <= 0L) 0 else ((totalPaid.toDouble() / totalAgreed.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                Surface(
+                    onClick = onNavigatePayments,
+                    shape = RoundedCornerShape(22.dp),
+                    color = PureWhite,
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("home_payment_tracker_card")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(SoftMint),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = DeepMintInk, modifier = Modifier.size(18.dp))
+                                }
+                                Text(
+                                    text = "Payment Tracker",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                            }
+                            StatusPill("$pct% Collected", SoftMint, DeepMintInk)
+                        }
+                        LinearProgressIndicator(
+                            progress = { (pct / 100f).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(8.dp)
+                                .clip(RoundedCornerShape(999.dp)),
+                            color = EmeraldApproved,
+                            trackColor = MutedSurface
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Paid ${MoneyFormatter.formatInr(totalPaid)} • Due ${MoneyFormatter.formatInr(totalDue)}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = StudioTextSecondary
+                            )
+                            Text(
+                                text = "Open →",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = VioletPrimary
+                            )
+                        }
                     }
                 }
             }
@@ -496,7 +575,7 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = { showCleanupConfirm = false },
             containerColor = PureWhite,
-            title = { Text("CLEAN OLD DONE PROJECTS?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
+            title = { Text("Clean Old Done Projects?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
             text = { Text("This permanently deletes completed and archived projects along with their deliverables.") },
             confirmButton = {
                 Button(
@@ -505,10 +584,10 @@ fun HomeScreen(
                         onCleanupOldDoneProjects()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("DELETE ALL", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete All", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showCleanupConfirm = false }) { Text("CANCEL") }
+                TextButton(onClick = { showCleanupConfirm = false }) { Text("Cancel") }
             }
         )
     }
@@ -686,9 +765,9 @@ private fun DashboardReferenceProjectCard(
 
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = title.uppercase(),
+                    text = formatTitleCase(title),
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
+                    fontWeight = FontWeight.Bold,
                     color = ObsidianCharcoal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -838,15 +917,15 @@ fun DeliverableCompactCard(
                     }
                     Column {
                         Text(
-                            d.title.uppercase(),
+                            formatTitleCase(d.title),
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = ObsidianCharcoal,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            "${d.projectTitle.uppercase()} • ${d.clientCompanyName.uppercase()}",
+                            "${formatTitleCase(d.projectTitle)} • ${formatTitleCase(d.clientCompanyName)}",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
                             color = StudioTextSecondary,
@@ -855,7 +934,7 @@ fun DeliverableCompactCard(
                         )
                     }
                 }
-                StatusPill(st.label.uppercase(), pillBg, pillFg)
+                StatusPill(st.label, pillBg, pillFg)
             }
 
             LinearProgressIndicator(

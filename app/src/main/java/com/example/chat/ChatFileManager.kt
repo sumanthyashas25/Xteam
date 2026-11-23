@@ -1,5 +1,6 @@
 package com.example.chat
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -7,6 +8,9 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.core.content.FileProvider
@@ -146,36 +150,101 @@ object ChatFileManager {
     suspend fun loadProfilePhotoPreview(context: Context, uri: Uri): Result<ProfilePhotoPreview> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("Could not read selected image.")
-                if (rawBytes.isEmpty()) error("Selected image is empty.")
-                if (rawBytes.size > 15_000_000) error("Image is too large (max 15 MB).")
+                val resolver = context.contentResolver
+                val tempDir = File(context.cacheDir, "profile_tmp").apply { mkdirs() }
+                val tempFile = File(tempDir, "picked_${UUID.randomUUID().toString().take(8)}.img")
+                try {
+                    val copiedBytes = runCatching {
+                        val input = resolver.openInputStream(uri)
+                            ?: resolver.openAssetFileDescriptor(uri, "r")?.createInputStream()
+                            ?: if (uri.scheme == "file") uri.path?.let { File(it).takeIf(File::exists)?.inputStream() } else null
+                        input?.use { src ->
+                            tempFile.outputStream().use { dst ->
+                                src.copyTo(dst)
+                            }
+                        } ?: -1L
+                    }.getOrDefault(-1L)
 
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
-                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                    error("Selected file is not a valid image.")
-                }
-                if (bounds.outWidth < 64 || bounds.outHeight < 64) {
-                    error("Image is too small (minimum 64×64 px).")
-                }
+                    if (copiedBytes <= 0L || !tempFile.exists() || tempFile.length() == 0L) {
+                        error("Could not read selected image.")
+                    }
 
-                var sample = 1
-                val largest = max(bounds.outWidth, bounds.outHeight)
-                while (largest / sample > 1024) {
-                    sample *= 2
-                }
-                val opts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
-                val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, opts)
-                    ?: error("Unable to decode selected image.")
+                    val orientation = runCatching {
+                        ExifInterface(tempFile.absolutePath).getAttributeInt(
+                            ExifInterface.TAG_ORIENTATION,
+                            ExifInterface.ORIENTATION_NORMAL
+                        )
+                    }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
 
-                val oriented = applyExifOrientation(decoded, rawBytes)
-                ProfilePhotoPreview(
-                    bitmap = oriented,
-                    width = oriented.width,
-                    height = oriented.height,
-                    byteSize = rawBytes.size.toLong()
-                )
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(tempFile.absolutePath, bounds)
+
+                    var decoded: Bitmap? = null
+                    if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                        if (bounds.outWidth < 64 || bounds.outHeight < 64) {
+                            error("Image is too small (minimum 64×64 px).")
+                        }
+                        var sample = 1
+                        val largest = max(bounds.outWidth, bounds.outHeight)
+                        while (largest / sample > 1024) {
+                            sample *= 2
+                        }
+                        val opts = BitmapFactory.Options().apply {
+                            inSampleSize = sample.coerceAtLeast(1)
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                        }
+                        decoded = BitmapFactory.decodeFile(tempFile.absolutePath, opts)
+                    }
+
+                    if (decoded == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        decoded = runCatching {
+                            val source = android.graphics.ImageDecoder.createSource(tempFile)
+                            android.graphics.ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                                decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                                val w = info.size.width
+                                val h = info.size.height
+                                val maxSide = max(w, h)
+                                if (maxSide > 1024) {
+                                    val ratio = 1024f / maxSide.toFloat()
+                                    decoder.setTargetSize(
+                                        (w * ratio).roundToInt().coerceAtLeast(1),
+                                        (h * ratio).roundToInt().coerceAtLeast(1)
+                                    )
+                                }
+                            }
+                        }.getOrNull()
+                    }
+
+                    val finalRaw = decoded ?: error("Selected file is not a valid image.")
+                    if (finalRaw.width < 64 || finalRaw.height < 64) {
+                        error("Image is too small (minimum 64×64 px).")
+                    }
+
+                    val oriented = rotateBitmapByOrientation(finalRaw, orientation)
+                    val scaled = if (max(oriented.width, oriented.height) > 1024) {
+                        val ratio = 1024f / max(oriented.width, oriented.height).toFloat()
+                        val target = Bitmap.createScaledBitmap(
+                            oriented,
+                            (oriented.width * ratio).roundToInt().coerceAtLeast(1),
+                            (oriented.height * ratio).roundToInt().coerceAtLeast(1),
+                            true
+                        )
+                        if (target !== oriented) oriented.recycle()
+                        target
+                    } else {
+                        oriented
+                    }
+
+                    val sizeBytes = queryFileSize(context, uri).takeIf { it > 0L } ?: tempFile.length()
+                    ProfilePhotoPreview(
+                        bitmap = scaled,
+                        width = scaled.width,
+                        height = scaled.height,
+                        byteSize = sizeBytes
+                    )
+                } finally {
+                    runCatching { tempFile.delete() }
+                }
             }
         }
 
@@ -230,7 +299,10 @@ object ChatFileManager {
             ExifInterface(ByteArrayInputStream(rawBytes))
                 .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
         }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+        return rotateBitmapByOrientation(bitmap, orientation)
+    }
 
+    private fun rotateBitmapByOrientation(bitmap: Bitmap, orientation: Int): Bitmap {
         val matrix = Matrix()
         when (orientation) {
             ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
@@ -327,6 +399,79 @@ object ChatFileManager {
         }
     }
 
+    suspend fun downloadAttachmentToDevice(
+        context: Context,
+        message: ChatMessage
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val bytes = when {
+                message.attachmentLocalPath.isNotBlank() -> {
+                    val local = File(message.attachmentLocalPath)
+                    if (local.exists() && local.length() > 0L) local.readBytes() else null
+                }
+                else -> null
+            } ?: message.attachmentDataBase64
+                .takeIf { it.isNotBlank() }
+                ?.let { Base64.decode(it, Base64.DEFAULT) }
+                ?: error("Attachment bytes are unavailable offline.")
+
+            if (bytes.isEmpty()) error("Attachment file is empty.")
+
+            val isImage = message.attachmentTypeEnum() == ChatAttachmentType.IMAGE
+            val rawName = message.attachmentName.ifBlank {
+                if (isImage) "xmax_image_${message.id.ifBlank { "photo" }}.jpg"
+                else "xmax_file_${message.id.ifBlank { "doc" }}"
+            }
+            val safeName = sanitizeFileName(rawName)
+            val mime = message.attachmentMimeType.ifBlank { inferMimeFromExtension(safeName) }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val collection = if (isImage) {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                } else {
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                }
+                val relDir = if (isImage) {
+                    "${Environment.DIRECTORY_PICTURES}/X.MAX"
+                } else {
+                    "${Environment.DIRECTORY_DOWNLOADS}/X.MAX"
+                }
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relDir)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val insertedUri = runCatching { resolver.insert(collection, values) }.getOrNull()
+                if (insertedUri != null) {
+                    val wrote = runCatching {
+                        resolver.openOutputStream(insertedUri)?.use { out ->
+                            out.write(bytes)
+                            out.flush()
+                            true
+                        } ?: false
+                    }.getOrDefault(false)
+                    if (wrote) {
+                        val doneValues = ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        }
+                        runCatching { resolver.update(insertedUri, doneValues, null, null) }
+                        return@runCatching "$relDir/$safeName"
+                    } else {
+                        runCatching { resolver.delete(insertedUri, null, null) }
+                    }
+                }
+            }
+
+            val fallbackDir = (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: File(context.filesDir, "chat_downloads")).apply { mkdirs() }
+            val outFile = File(fallbackDir, safeName)
+            outFile.writeBytes(bytes)
+            "Downloads/$safeName"
+        }
+    }
+
     fun formatFileSize(bytes: Long): String {
         if (bytes <= 0L) return "0 KB"
         val kb = bytes / 1024.0
@@ -349,7 +494,8 @@ object ChatFileManager {
                 sample *= 2
             }
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
-            val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts) ?: return null
+            val rawDecoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts) ?: return null
+            val decoded = applyExifOrientation(rawDecoded, rawBytes)
 
             val scaled = if (max(decoded.width, decoded.height) > MAX_IMAGE_EDGE_PX) {
                 val ratio = MAX_IMAGE_EDGE_PX.toFloat() / max(decoded.width, decoded.height).toFloat()
@@ -387,6 +533,17 @@ object ChatFileManager {
                 } else null
             }
         }.getOrNull()
+    }
+
+    private fun queryFileSize(context: Context, uri: Uri): Long {
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx >= 0) cursor.getLong(idx) else 0L
+                } else 0L
+            } ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun inferFallbackName(type: ChatAttachmentType?, mime: String): String {

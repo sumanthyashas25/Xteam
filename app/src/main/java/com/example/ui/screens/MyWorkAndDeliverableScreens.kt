@@ -1,5 +1,10 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -18,12 +23,14 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -35,9 +42,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.SyncedData
 import com.example.domain.MoneyFormatter
 import com.example.model.*
+import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
 import com.example.ui.components.*
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -68,14 +77,25 @@ fun MyWorkScreen(
     onStartDeliverable: (Deliverable) -> Unit = {},
     onClaimDepartmentTask: (Deliverable) -> Unit = {},
     onToggleTimer: (String) -> Unit = {},
-    onQuickSubmitReview: (Deliverable) -> Unit = {}
+    onQuickSubmitReview: (Deliverable) -> Unit = {},
+    planModeRequestKey: Int = 0,
+    onSavePlanItem: (StaffPlanItem, () -> Unit) -> Unit = { _, onDone -> onDone() },
+    onTogglePlanCompleted: (StaffPlanItem) -> Unit = {},
+    onReschedulePlanTomorrow: (StaffPlanItem) -> Unit = {},
+    onCarryOverIncompletePlans: (List<StaffPlanItem>, Long) -> Unit = { _, _ -> },
+    onDeletePlanItem: (String) -> Unit = {},
+    onToggleFocusTimer: () -> Unit = {},
+    onResetFocusTimer: () -> Unit = {},
+    onSetFocusPreset: (Int) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val member = state.myMember
     val uid = member?.uid.orEmpty()
     val myDeptId = member?.departmentId.orEmpty()
     var filter by remember { mutableStateOf<DeliverableStatus?>(null) }
+    var quickDueFilter by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
-    var showMonthCalendar by remember { mutableStateOf(false) }
+    var showQuickWeekStrip by remember { mutableStateOf(false) }
 
     val todayStart = remember { startOfDayMillis(System.currentTimeMillis()) }
     var selectedDayMillis by remember { mutableStateOf<Long?>(null) }
@@ -135,9 +155,16 @@ fun MyWorkScreen(
         map
     }
 
-    val myDeliverables = remember(allMyDeliverables, filter, searchQuery, selectedDayMillis) {
+    val myDeliverables = remember(allMyDeliverables, filter, quickDueFilter, searchQuery, selectedDayMillis, todayStart, endOfTodayMillis) {
         allMyDeliverables
             .filter { filter == null || it.statusEnum() == filter }
+            .filter { d ->
+                when (quickDueFilter) {
+                    "TODAY" -> d.statusEnum() != DeliverableStatus.APPROVED && d.dueDateMillis in todayStart..endOfTodayMillis
+                    "OVERDUE" -> d.statusEnum() != DeliverableStatus.APPROVED && d.dueDateMillis in 1 until todayStart
+                    else -> true
+                }
+            }
             .filter { d ->
                 selectedDayMillis == null || (d.dueDateMillis > 0L && startOfDayMillis(d.dueDateMillis) == selectedDayMillis)
             }
@@ -212,6 +239,37 @@ fun MyWorkScreen(
         cells.chunked(7)
     }
 
+    var showPlanMode by rememberSaveable { mutableStateOf(planModeRequestKey > 0) }
+    LaunchedEffect(planModeRequestKey) {
+        if (planModeRequestKey > 0) {
+            showPlanMode = true
+        }
+    }
+
+    if (showPlanMode) {
+        StaffPlanCalendarSection(
+            state = state,
+            onSavePlanItem = onSavePlanItem,
+            onTogglePlanCompleted = onTogglePlanCompleted,
+            onRescheduleTomorrow = onReschedulePlanTomorrow,
+            onCarryOverIncomplete = onCarryOverIncompletePlans,
+            onDeletePlanItem = onDeletePlanItem,
+            onOpenDeliverable = onOpenDeliverable,
+            onToggleFocusTimer = onToggleFocusTimer,
+            onResetFocusTimer = onResetFocusTimer,
+            onSetFocusPreset = onSetFocusPreset,
+            topModeSwitcher = {
+                MyWorkPlanSwitcher(
+                    showPlanMode = true,
+                    taskCount = allMyDeliverables.size,
+                    planCount = state.staffPlanItems.size,
+                    onSelectPlan = { showPlanMode = it }
+                )
+            }
+        )
+        return
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -220,6 +278,14 @@ fun MyWorkScreen(
         contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 116.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item {
+            MyWorkPlanSwitcher(
+                showPlanMode = false,
+                taskCount = allMyDeliverables.size,
+                planCount = state.staffPlanItems.size,
+                onSelectPlan = { showPlanMode = it }
+            )
+        }
         // 1. Primary Page Title + Compact Inline Productivity Summary Pill
         item {
             Row(
@@ -245,10 +311,11 @@ fun MyWorkScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (filter != null || selectedDayMillis != null || searchQuery.isNotBlank()) {
+                    if (filter != null || quickDueFilter != null || selectedDayMillis != null || searchQuery.isNotBlank()) {
                         TextButton(
                             onClick = {
                                 filter = null
+                                quickDueFilter = null
                                 selectedDayMillis = null
                                 searchQuery = ""
                             },
@@ -309,35 +376,63 @@ fun MyWorkScreen(
             }
         }
 
-        // Staff Priority Summary Strip
+        // 2. Staff Priority Summary Strip + Plan Calendar Shortcut + Collapsible Week Strip
         item {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
                     .testTag("staff_priority_strip"),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                StatusPill(
-                    label = if (overdueCount > 0) "OVERDUE: $overdueCount" else "NO OVERDUE",
-                    containerColor = if (overdueCount > 0) SoftBlush else SoftMint,
-                    contentColor = if (overdueCount > 0) DeepBlushInk else DeepMintInk
+                FilterChip(
+                    selected = quickDueFilter == "OVERDUE",
+                    onClick = {
+                        AppHapticsAndNotifier.triggerTickHaptic(context)
+                        quickDueFilter = if (quickDueFilter == "OVERDUE") null else "OVERDUE"
+                    },
+                    shape = RoundedCornerShape(999.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = CrimsonBlocked,
+                        selectedLabelColor = PureWhite,
+                        containerColor = if (overdueCount > 0) SoftBlush else SoftMint,
+                        labelColor = if (overdueCount > 0) DeepBlushInk else DeepMintInk
+                    ),
+                    border = null,
+                    label = {
+                        Text(
+                            if (overdueCount > 0) "Overdue ($overdueCount)" else "No Overdue",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 )
-                StatusPill(
-                    label = "DUE TODAY: $dueTodayCount",
-                    containerColor = if (dueTodayCount > 0) ButterYellow else MutedSurface,
-                    contentColor = if (dueTodayCount > 0) DeepAmberInk else ObsidianCharcoal
+                FilterChip(
+                    selected = quickDueFilter == "TODAY",
+                    onClick = {
+                        AppHapticsAndNotifier.triggerTickHaptic(context)
+                        quickDueFilter = if (quickDueFilter == "TODAY") null else "TODAY"
+                    },
+                    shape = RoundedCornerShape(999.dp),
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = ObsidianCharcoal,
+                        selectedLabelColor = PureWhite,
+                        containerColor = if (dueTodayCount > 0) ButterYellow else MutedSurface,
+                        labelColor = if (dueTodayCount > 0) DeepAmberInk else ObsidianCharcoal
+                    ),
+                    border = null,
+                    label = { Text("Due Today ($dueTodayCount)", fontWeight = FontWeight.SemiBold) }
                 )
                 if (urgentIssueCount > 0) {
                     StatusPill(
-                        label = "BLOCKED / CHANGES: $urgentIssueCount",
+                        label = "Attention ($urgentIssueCount)",
                         containerColor = SoftBlush,
                         contentColor = DeepBlushInk
                     )
                 }
                 if (deptQueueTasks.isNotEmpty()) {
                     StatusPill(
-                        label = "DEPT QUEUE: ${deptQueueTasks.size}",
+                        label = "Dept Queue (${deptQueueTasks.size})",
                         containerColor = KpiLavenderBg,
                         contentColor = VioletPrimary
                     )
@@ -345,16 +440,15 @@ fun MyWorkScreen(
             }
         }
 
-        // 2. Interactive Calendar & Schedule Card (matching UI_referance_2_46ddc3ee.jpg)
         item {
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(20.dp),
                 color = PureWhite,
                 border = BorderStroke(1.dp, SubtleOutline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
@@ -362,59 +456,55 @@ fun MyWorkScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                        Column {
                             Text(
-                                text = headerDateText,
+                                text = "$headerDateText • $headerWeekdayText",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = ObsidianCharcoal
                             )
                             Text(
-                                text = headerWeekdayText,
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "Tap Plan tab above for monthly task blocks",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = StudioTextSecondary
                             )
                         }
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            IconButton(
-                                onClick = { calendarMonthOffset -= 1 },
-                                modifier = Modifier.size(36.dp)
+                            Surface(
+                                onClick = {
+                                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                                    showPlanMode = true
+                                },
+                                shape = RoundedCornerShape(999.dp),
+                                color = KpiLavenderBg
                             ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.KeyboardArrowLeft,
-                                    contentDescription = "Previous month",
-                                    tint = ObsidianCharcoal
-                                )
-                            }
-                            IconButton(
-                                onClick = { calendarMonthOffset += 1 },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                    contentDescription = "Next month",
-                                    tint = ObsidianCharcoal
+                                Text(
+                                    text = "Plan →",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = VioletPrimary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
                                 )
                             }
                             Surface(
-                                onClick = { showMonthCalendar = !showMonthCalendar },
+                                onClick = {
+                                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                                    showQuickWeekStrip = !showQuickWeekStrip
+                                },
                                 shape = RoundedCornerShape(10.dp),
-                                color = VioletPrimary,
+                                color = if (showQuickWeekStrip) ObsidianCharcoal else MutedSurface,
                                 modifier = Modifier
                                     .size(36.dp)
                                     .testTag("toggle_calendar_view_button")
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = if (showMonthCalendar) Icons.Filled.ViewWeek else Icons.Filled.CalendarMonth,
-                                        contentDescription = if (showMonthCalendar) "Show week strip" else "Expand month calendar",
-                                        tint = PureWhite,
+                                        imageVector = if (showQuickWeekStrip) Icons.Filled.ExpandLess else Icons.Filled.DateRange,
+                                        contentDescription = if (showQuickWeekStrip) "Hide due dates" else "Filter by due date",
+                                        tint = if (showQuickWeekStrip) PureWhite else ObsidianCharcoal,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -422,74 +512,82 @@ fun MyWorkScreen(
                         }
                     }
 
-                    // Weekday Headers
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat").forEach { dLabel ->
-                            Text(
-                                text = dLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioTextSecondary,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    if (showMonthCalendar) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            monthCells.forEach { rowCells ->
-                                Row(modifier = Modifier.fillMaxWidth()) {
-                                    rowCells.forEach { cell ->
-                                        if (cell == null) {
-                                            Spacer(Modifier.weight(1f).height(38.dp))
-                                        } else {
-                                            CalendarDayItem(
-                                                cell = cell,
-                                                isSelected = selectedDayMillis == cell.dayKey || (selectedDayMillis == null && cell.dayKey == todayStart),
-                                                dotColor = dueDotColorByDay[cell.dayKey],
-                                                onClick = {
-                                                    selectedDayMillis = if (selectedDayMillis == cell.dayKey) null else cell.dayKey
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            )
-                                        }
+                    AnimatedVisibility(
+                        visible = showQuickWeekStrip,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Filter tasks by due day",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioTextSecondary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    IconButton(
+                                        onClick = { calendarMonthOffset -= 1 },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous", tint = ObsidianCharcoal)
+                                    }
+                                    IconButton(
+                                        onClick = { calendarMonthOffset += 1 },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next", tint = ObsidianCharcoal)
                                     }
                                 }
                             }
-                        }
-                    } else {
-                        Row(modifier = Modifier.fillMaxWidth()) {
-                            weekDays.forEach { cell ->
-                                CalendarDayItem(
-                                    cell = cell,
-                                    isSelected = selectedDayMillis == cell.dayKey || (selectedDayMillis == null && cell.dayKey == todayStart),
-                                    dotColor = dueDotColorByDay[cell.dayKey],
-                                    onClick = {
-                                        selectedDayMillis = if (selectedDayMillis == cell.dayKey) null else cell.dayKey
-                                    },
-                                    modifier = Modifier.weight(1f)
-                                )
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat").forEach { dLabel ->
+                                    Text(
+                                        text = dLabel,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioTextSecondary,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
                             }
-                        }
-                    }
-
-                    if (selectedDayMillis != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Filtered by ${MoneyFormatter.formatDate(selectedDayMillis!!)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = VioletPrimary,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            TextButton(
-                                onClick = { selectedDayMillis = null },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text("Show All Dates", style = MaterialTheme.typography.labelSmall, color = ObsidianCharcoal)
+                            Row(modifier = Modifier.fillMaxWidth()) {
+                                weekDays.forEach { cell ->
+                                    CalendarDayItem(
+                                        cell = cell,
+                                        isSelected = selectedDayMillis == cell.dayKey || (selectedDayMillis == null && cell.dayKey == todayStart),
+                                        dotColor = dueDotColorByDay[cell.dayKey],
+                                        onClick = {
+                                            AppHapticsAndNotifier.triggerTickHaptic(context)
+                                            selectedDayMillis = if (selectedDayMillis == cell.dayKey) null else cell.dayKey
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                            if (selectedDayMillis != null) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Due on ${MoneyFormatter.formatDate(selectedDayMillis!!)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = VioletPrimary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    TextButton(
+                                        onClick = { selectedDayMillis = null },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                    ) {
+                                        Text("Show All Dates", style = MaterialTheme.typography.labelSmall, color = ObsidianCharcoal)
+                                    }
+                                }
                             }
                         }
                     }
@@ -582,15 +680,15 @@ fun MyWorkScreen(
                             verticalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Text(
-                                text = qTask.title.uppercase(),
+                                text = formatTitleCase(qTask.title),
                                 style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.ExtraBold,
+                                fontWeight = FontWeight.Bold,
                                 color = ObsidianCharcoal,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "${qTask.projectTitle.uppercase()} • ${MoneyFormatter.formatDate(qTask.dueDateMillis)}",
+                                text = "${formatTitleCase(qTask.projectTitle)} • ${MoneyFormatter.formatDate(qTask.dueDateMillis)}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = StudioTextSecondary,
                                 maxLines = 1,
@@ -598,7 +696,10 @@ fun MyWorkScreen(
                             )
                         }
                         Button(
-                            onClick = { onClaimDepartmentTask(qTask) },
+                            onClick = {
+                                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                onClaimDepartmentTask(qTask)
+                            },
                             shape = RoundedCornerShape(999.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
                             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
@@ -606,7 +707,7 @@ fun MyWorkScreen(
                                 .height(42.dp)
                                 .testTag("claim_task_${qTask.id}")
                         ) {
-                            Text("CLAIM TASK", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Text("Claim Task", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -653,6 +754,90 @@ fun MyWorkScreen(
 }
 
 @Composable
+private fun MyWorkPlanSwitcher(
+    showPlanMode: Boolean,
+    taskCount: Int,
+    planCount: Int,
+    onSelectPlan: (Boolean) -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(999.dp),
+        color = PureWhite,
+        border = BorderStroke(1.dp, SubtleOutline),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("my_work_plan_switcher")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Surface(
+                onClick = { onSelectPlan(false) },
+                shape = RoundedCornerShape(999.dp),
+                color = if (!showPlanMode) ObsidianCharcoal else Color.Transparent,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .testTag("my_work_mode_tasks")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.TaskAlt,
+                        contentDescription = null,
+                        tint = if (!showPlanMode) PureWhite else ObsidianCharcoal,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (taskCount > 0) "Tasks ($taskCount)" else "Tasks",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (!showPlanMode) PureWhite else ObsidianCharcoal
+                    )
+                }
+            }
+
+            Surface(
+                onClick = { onSelectPlan(true) },
+                shape = RoundedCornerShape(999.dp),
+                color = if (showPlanMode) Color(0xFF6C3BF5) else Color.Transparent,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .testTag("my_work_mode_plan")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.CalendarMonth,
+                        contentDescription = null,
+                        tint = if (showPlanMode) PureWhite else ObsidianCharcoal,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (planCount > 0) "Plan ($planCount)" else "Plan",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = if (showPlanMode) PureWhite else ObsidianCharcoal
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CalendarDayItem(
     cell: DayCell,
     isSelected: Boolean,
@@ -692,13 +877,13 @@ private fun CalendarDayItem(
 }
 
 private fun formatCountdownLabel(dueMillis: Long, todayStartMillis: Long, nowMillis: Long): Pair<String, Boolean> {
-    if (dueMillis <= 0L) return "SCHEDULED" to false
+    if (dueMillis <= 0L) return "Scheduled" to false
     val diffDays = ((startOfDayMillis(dueMillis) - todayStartMillis) / 86_400_000L).toInt()
     return when {
-        diffDays < 0 -> "OVERDUE ${-diffDays}D" to true
-        diffDays == 0 -> "DUE TODAY" to false
-        diffDays == 1 -> "DUE TOMORROW" to false
-        else -> "DUE IN ${diffDays}D" to false
+        diffDays < 0 -> "Overdue ${-diffDays}d" to true
+        diffDays == 0 -> "Due Today" to false
+        diffDays == 1 -> "Due Tomorrow" to false
+        else -> "Due in ${diffDays}d" to false
     }
 }
 
@@ -758,15 +943,15 @@ private fun PastelDeliverableScheduleCard(
                 ) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
-                            text = deliverable.title.uppercase(),
+                            text = formatTitleCase(deliverable.title),
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = ObsidianCharcoal,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${deliverable.projectTitle.uppercase()} • ${deliverable.departmentName.uppercase()}",
+                            text = "${formatTitleCase(deliverable.projectTitle)} • ${formatTitleCase(deliverable.departmentName)}",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium,
                             color = StudioTextSecondary,
@@ -776,7 +961,7 @@ private fun PastelDeliverableScheduleCard(
                     }
                     Spacer(Modifier.width(8.dp))
                     Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        StatusPill(st.label.uppercase(), pillBg, pillFg)
+                        StatusPill(st.label, pillBg, pillFg)
                         if (st != DeliverableStatus.APPROVED) {
                             StatusPill(
                                 label = countdownText,
@@ -853,7 +1038,7 @@ private fun PastelDeliverableScheduleCard(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = if (isTimerRunning || elapsedTimerSeconds > 0L) formatElapsedTimer(elapsedTimerSeconds) else "START TIMER",
+                                text = if (isTimerRunning || elapsedTimerSeconds > 0L) formatElapsedTimer(elapsedTimerSeconds) else "Start Timer",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isTimerRunning) PureWhite else ObsidianCharcoal
@@ -871,7 +1056,7 @@ private fun PastelDeliverableScheduleCard(
                                 .height(38.dp)
                                 .testTag("quick_submit_review_${deliverable.id}")
                         ) {
-                            Text("SUBMIT REVIEW", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                            Text("Submit Review", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -892,6 +1077,7 @@ fun DeliverableDetailDialog(
     onResetTimer: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     val updatesSynced by updatesFlow.collectAsStateWithLifecycle(initialValue = SyncedData(emptyList(), false))
     val uid = state.myMember?.uid.orEmpty()
     val isAssignee = deliverable.assignedToUid == uid
@@ -913,6 +1099,16 @@ fun DeliverableDetailDialog(
     var blockedReason by remember(deliverable.id) { mutableStateOf(deliverable.blockedReason) }
     var helpNeeded by remember(deliverable.id) { mutableStateOf(deliverable.helpNeeded) }
     var reviewFeedback by remember { mutableStateOf("") }
+    var savedFeedbackBanner by remember(deliverable.id) { mutableStateOf<String?>(null) }
+    var justSavedButton by remember(deliverable.id) { mutableStateOf(false) }
+
+    LaunchedEffect(savedFeedbackBanner) {
+        if (!savedFeedbackBanner.isNullOrBlank()) {
+            delay(3800L)
+            savedFeedbackBanner = null
+            justSavedButton = false
+        }
+    }
 
     val st = deliverable.statusEnum()
     val (stBg, stFg) = statusColorsForDeliverable(st)
@@ -933,9 +1129,10 @@ fun DeliverableDetailDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .systemBarsPadding()
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                     .padding(horizontal = 18.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -945,8 +1142,38 @@ fun DeliverableDetailDialog(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
                     }
-                    Text("DELIVERABLE DETAILS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                    Text("Deliverable Details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                     Spacer(Modifier.size(48.dp))
+                }
+
+                AnimatedVisibility(
+                    visible = !savedFeedbackBanner.isNullOrBlank(),
+                    enter = fadeIn() + expandVertically(),
+                    exit = fadeOut() + shrinkVertically()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = SoftMint,
+                        border = BorderStroke(1.dp, EmeraldApproved.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("deliverable_saved_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = EmeraldApproved, modifier = Modifier.size(20.dp))
+                            Text(
+                                text = savedFeedbackBanner.orEmpty(),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = DeepMintInk,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
 
                 Row(
@@ -961,25 +1188,27 @@ fun DeliverableDetailDialog(
                         Icon(Icons.Outlined.Inventory2, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("DELIVERABLE:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+                        Text("Deliverable", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
                         Text(
-                            text = deliverable.title.uppercase(),
+                            text = formatTitleCase(deliverable.title),
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = ObsidianCharcoal,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    StatusPill(st.label.uppercase(), stBg, stFg)
+                    StatusPill(st.label, stBg, stFg)
                 }
 
                 if (isAssignee && st == DeliverableStatus.NOT_STARTED) {
                     SlideToActionButton(
                         label = "SLIDE TO START WORK",
                         onSlideComplete = {
+                            AppHapticsAndNotifier.triggerCompletionVibration(context)
                             onStartWork(deliverable)
                             selectedStatus = DeliverableStatus.IN_PROGRESS
+                            savedFeedbackBanner = "Progress saved — started work (In Progress)"
                         },
                         modifier = Modifier.fillMaxWidth(),
                         testTag = "dialog_slide_start_button"
@@ -1001,7 +1230,12 @@ fun DeliverableDetailDialog(
                     onSelect = { detailTab = it }
                 )
 
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("deliverable_detail_list"),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     if (detailTab == 0) {
                         item {
                             val rows = buildList {
@@ -1023,7 +1257,7 @@ fun DeliverableDetailDialog(
                             )
                         }
 
-                        // Assignee Card matching Screen 2 Contact Rider card
+                        // Assignee Card
                         item {
                             val ownerName = deliverable.assignedToName.ifBlank { deliverable.assignmentStatusEnum().label }
                             Surface(
@@ -1038,8 +1272,8 @@ fun DeliverableDetailDialog(
                                 ) {
                                     StudioAvatar(name = ownerName, size = 44.dp, photoBase64 = ownerPhoto)
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text(ownerName.uppercase(), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
-                                        Text("${deliverable.jobRoleName.uppercase()} • ASSIGNEE", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                                        Text(formatTitleCase(ownerName), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                                        Text("${formatTitleCase(deliverable.jobRoleName)} • Assignee", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                                     }
                                     Surface(
                                         onClick = { detailTab = 1 },
@@ -1123,6 +1357,7 @@ fun DeliverableDetailDialog(
                                             enabled = isAssignee,
                                             colors = CheckboxDefaults.colors(checkedColor = ObsidianCharcoal),
                                             onCheckedChange = { checked ->
+                                                AppHapticsAndNotifier.triggerTickHaptic(context)
                                                 checklist = checklist.mapIndexed { i, c -> if (i == idx) c.copy(done = checked) else c }
                                             }
                                         )
@@ -1147,7 +1382,7 @@ fun DeliverableDetailDialog(
                                         ) {
                                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                                 Text(
-                                                    text = "FOCUS WORK TIMER",
+                                                    text = "Focus Work Timer",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontWeight = FontWeight.Bold,
                                                     color = VioletPrimary
@@ -1161,7 +1396,10 @@ fun DeliverableDetailDialog(
                                             }
                                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Button(
-                                                    onClick = { onToggleTimer(deliverable.id) },
+                                                    onClick = {
+                                                        AppHapticsAndNotifier.triggerTickHaptic(context)
+                                                        onToggleTimer(deliverable.id)
+                                                    },
                                                     shape = RoundedCornerShape(999.dp),
                                                     colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
                                                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -1173,7 +1411,7 @@ fun DeliverableDetailDialog(
                                                         modifier = Modifier.size(16.dp)
                                                     )
                                                     Spacer(Modifier.width(4.dp))
-                                                    Text(if (isTimerRunning) "PAUSE" else "START", fontWeight = FontWeight.Bold)
+                                                    Text(if (isTimerRunning) "Pause" else "Start", fontWeight = FontWeight.Bold)
                                                 }
                                                 if (elapsedSecs > 0L) {
                                                     OutlinedButton(
@@ -1186,7 +1424,7 @@ fun DeliverableDetailDialog(
                                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                                         modifier = Modifier.height(40.dp)
                                                     ) {
-                                                        Text("LOG TIME", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                                        Text("Log Time", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                                     }
                                                 }
                                             }
@@ -1198,7 +1436,7 @@ fun DeliverableDetailDialog(
                             item {
                                 Surface(shape = RoundedCornerShape(22.dp), color = MutedSurface) {
                                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Text("UPDATE PROGRESS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                                        Text("Update Progress", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                                         Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                             listOf(
                                                 DeliverableStatus.NOT_STARTED,
@@ -1208,7 +1446,10 @@ fun DeliverableDetailDialog(
                                             ).forEach { opt ->
                                                 FilterChip(
                                                     selected = selectedStatus == opt,
-                                                    onClick = { selectedStatus = opt },
+                                                    onClick = {
+                                                        AppHapticsAndNotifier.triggerTickHaptic(context)
+                                                        selectedStatus = opt
+                                                    },
                                                     shape = RoundedCornerShape(999.dp),
                                                     colors = FilterChipDefaults.filterChipColors(
                                                         selectedContainerColor = ObsidianCharcoal,
@@ -1249,17 +1490,31 @@ fun DeliverableDetailDialog(
                                             minLines = 2,
                                             modifier = Modifier.fillMaxWidth()
                                         )
-                                        Button(
-                                            onClick = {
-                                                onSubmitProgress(deliverable, selectedStatus, checklist, note, previewUrl, blockedReason, helpNeeded)
-                                                note = ""
-                                            },
-                                            enabled = selectedStatus != DeliverableStatus.BLOCKED || blockedReason.isNotBlank(),
-                                            shape = RoundedCornerShape(999.dp),
-                                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                                            modifier = Modifier.fillMaxWidth().height(50.dp).testTag("submit_progress_button")
-                                        ) { Text("Save Progress Update", fontWeight = FontWeight.SemiBold) }
                                     }
+                                }
+                            }
+
+                            item {
+                                Button(
+                                    onClick = {
+                                        AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                        onSubmitProgress(deliverable, selectedStatus, checklist, note, previewUrl, blockedReason, helpNeeded)
+                                        savedFeedbackBanner = "Progress saved (${selectedStatus.label}) • ${checklist.count { it.done }}/${checklist.size} steps"
+                                        justSavedButton = true
+                                        note = ""
+                                    },
+                                    enabled = selectedStatus != DeliverableStatus.BLOCKED || blockedReason.isNotBlank(),
+                                    shape = RoundedCornerShape(999.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (justSavedButton) EmeraldApproved else ObsidianCharcoal,
+                                        contentColor = PureWhite
+                                    ),
+                                    modifier = Modifier.fillMaxWidth().height(50.dp).testTag("submit_progress_button")
+                                ) {
+                                    Text(
+                                        if (justSavedButton) "Saved ✓" else "Save Progress Update",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
@@ -1278,7 +1533,9 @@ fun DeliverableDetailDialog(
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                                             OutlinedButton(
                                                 onClick = {
+                                                    AppHapticsAndNotifier.triggerCompletionVibration(context)
                                                     onReviewDeliverable(deliverable, UpdateActionType.CHANGES_REQUESTED, reviewFeedback.ifBlank { "Please refine deliverable per brief." })
+                                                    savedFeedbackBanner = "Review saved: Changes Requested"
                                                     reviewFeedback = ""
                                                 },
                                                 shape = RoundedCornerShape(999.dp),
@@ -1287,7 +1544,9 @@ fun DeliverableDetailDialog(
                                             ) { Text("Request Changes", color = ObsidianCharcoal) }
                                             Button(
                                                 onClick = {
+                                                    AppHapticsAndNotifier.triggerCompletionVibration(context)
                                                     onReviewDeliverable(deliverable, UpdateActionType.APPROVED, reviewFeedback.ifBlank { "Approved for client delivery." })
+                                                    savedFeedbackBanner = "Deliverable Approved ✓"
                                                     reviewFeedback = ""
                                                 },
                                                 shape = RoundedCornerShape(999.dp),
@@ -1297,7 +1556,9 @@ fun DeliverableDetailDialog(
                                         }
                                         TextButton(
                                             onClick = {
+                                                AppHapticsAndNotifier.triggerCompletionVibration(context)
                                                 onReviewDeliverable(deliverable, UpdateActionType.CLIENT_REVISION, reviewFeedback.ifBlank { "Client requested revision round." })
+                                                savedFeedbackBanner = "Logged client revision round"
                                                 reviewFeedback = ""
                                             },
                                             modifier = Modifier.fillMaxWidth()

@@ -416,14 +416,14 @@ fun LoadingDestinationScreen(
                             Text("Retry Sync", fontWeight = FontWeight.SemiBold)
                         }
                         if (canSignOut) {
-                            OutlinedButton(
+                            Button(
                                 onClick = onSignOut,
                                 shape = RoundedCornerShape(999.dp),
-                                border = BorderStroke(1.dp, SubtleOutline),
-                                colors = ButtonDefaults.outlinedButtonColors(
-                                    containerColor = PureWhite,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFECEDF1),
                                     contentColor = ObsidianCharcoal
                                 ),
+                                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp)

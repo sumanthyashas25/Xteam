@@ -1133,3 +1133,113 @@ test("Scenario 11: Logs, projects, clients, deliverables, and chats can ONLY be 
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").collection("messages").doc("m_del").delete());
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").delete());
 });
+
+test("Scenario 12: Staff Plan items are strictly owner-isolated and enforce valid schema", async () => {
+  await seedCompanyAndMembers();
+  const now = pastDate(5000);
+  const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
+  const otherStaffDb = testEnv.authenticatedContext(OTHER_STAFF_UID).firestore();
+  const pendingDb = testEnv.authenticatedContext(PENDING_UID).firestore();
+
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await ctx.firestore().collection("companies").doc(COMPANY_ID).collection("members").doc(PENDING_UID).set({
+      uid: PENDING_UID,
+      fullName: "Pending User",
+      accessLevel: "STAFF",
+      status: "PENDING",
+      active: true,
+      scopeType: "TEAM",
+      scopeDepartmentIds: [],
+      permissions: {},
+      delegatedGrants: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  // Owner creates a valid plan item
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").set({
+      ownerUid: STAFF_UID,
+      title: "Website audit & moodboard",
+      category: "TO_DO",
+      creativeTag: "Design",
+      dateMillis: Date.now(),
+      timeRange: "11:20AM - 12:20 PM",
+      notes: "Check typography contrast",
+      linkedDeliverableId: "",
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Owner updates completion & reschedules
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").update({
+      completed: true,
+      updatedAt: pastDate(1000),
+    })
+  );
+
+  // Scoped owner query succeeds; unfiltered query fails
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans")
+      .where("ownerUid", "==", STAFF_UID).get()
+  );
+  await assertFails(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").get()
+  );
+
+  // Other staff CANNOT read, update, or delete owner's plan
+  await assertFails(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").get()
+  );
+  await assertFails(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").update({
+      completed: false,
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").delete()
+  );
+
+  // Spoofed ownerUid & pending member creation fail
+  await assertFails(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_spoof").set({
+      ownerUid: STAFF_UID,
+      title: "Spoof",
+      category: "TO_DO",
+      creativeTag: "General",
+      dateMillis: Date.now(),
+      timeRange: "",
+      notes: "",
+      linkedDeliverableId: "",
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(
+    pendingDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_pend").set({
+      ownerUid: PENDING_UID,
+      title: "Pending attempt",
+      category: "TO_DO",
+      creativeTag: "General",
+      dateMillis: Date.now(),
+      timeRange: "",
+      notes: "",
+      linkedDeliverableId: "",
+      completed: false,
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  // Owner deletes own plan item cleanly
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").delete()
+  );
+});
+

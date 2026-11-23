@@ -26,6 +26,28 @@ object AppHapticsAndNotifier {
     private const val PREFS_NAME = "xmax_workspace_prefs"
     private const val KEY_SOUND_ENABLED = "sound_enabled"
     private const val KEY_TIMER_PREFIX = "work_timer_secs_"
+    private const val KEY_DAILY_NOTE_PREFIX = "staff_daily_note_"
+
+    fun loadDailyNote(context: Context, uid: String): String {
+        if (uid.isBlank()) return ""
+        return runCatching {
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString("$KEY_DAILY_NOTE_PREFIX$uid", "")
+                .orEmpty()
+        }.getOrDefault("")
+    }
+
+    fun saveDailyNote(context: Context, uid: String, note: String) {
+        if (uid.isBlank()) return
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString("$KEY_DAILY_NOTE_PREFIX$uid", note.take(1200))
+                .apply()
+        }
+    }
 
     fun isSoundEnabled(context: Context): Boolean {
         return runCatching {
@@ -185,7 +207,7 @@ object AppHapticsAndNotifier {
             val builder = NotificationCompat.Builder(appCtx, NOTIFICATION_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_xteam)
                 .setColor(android.graphics.Color.parseColor("#111318"))
-                .setContentTitle(title.uppercase())
+                .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

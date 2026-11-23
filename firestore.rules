@@ -441,6 +441,20 @@ service cloud.firestore {
              isValidTimestamp(data.createdAt);
     }
 
+    function isValidStaffPlan(data) {
+      return data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.category in ['TO_DO', 'EVENT', 'REMINDER', 'MILESTONE'] &&
+             data.creativeTag is string && data.creativeTag.size() <= 40 &&
+             data.dateMillis is int && data.dateMillis > 0 &&
+             data.timeRange is string && data.timeRange.size() <= 60 &&
+             data.notes is string && data.notes.size() <= 600 &&
+             data.linkedDeliverableId is string && data.linkedDeliverableId.size() <= 128 &&
+             data.completed is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
     // --- Collection Rules ---
     match /companies/{companyId} {
       allow get: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
@@ -745,6 +759,28 @@ service cloud.firestore {
                          incoming().readByUids.size() <= 100 &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['readByUids']);
         allow delete: if isValidId(companyId) && isValidId(notificationId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /staff_plans/{planId} {
+        allow get: if isValidId(companyId) && isValidId(planId) &&
+                      meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                      existing().ownerUid == request.auth.uid;
+        allow list: if isValidId(companyId) &&
+                       meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                       resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(companyId) && isValidId(planId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                         isValidStaffPlan(incoming()) &&
+                         incoming().ownerUid == request.auth.uid;
+        allow update: if isValidId(companyId) && isValidId(planId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                         existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidStaffPlan(incoming());
+        allow delete: if isValidId(companyId) && isValidId(planId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                         existing().ownerUid == request.auth.uid;
       }
     }
 

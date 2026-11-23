@@ -13,6 +13,7 @@ import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -941,5 +942,176 @@ class AgencyRepository(context: Context) {
         )
         if (isCreate) map["createdAt"] = FieldValue.serverTimestamp()
         return map
+    }
+
+    // --- Staff Monthly Planner & Day-to-Day Tasks ---
+
+    fun observeMyPlanItems(uid: String): Flow<List<StaffPlanItem>> = callbackFlow {
+        val reg = sub("staff_plans")
+            .whereEqualTo("ownerUid", uid)
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    handleFirestoreError(err, OperationType.LIST, "companies/$companyId/staff_plans")
+                    close(err)
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.mapNotNull { doc ->
+                    doc.get("createdAt", estimate)
+                    doc.get("updatedAt", estimate)
+                    doc.toObject(StaffPlanItem::class.java)
+                }?.sortedWith(
+                    compareBy<StaffPlanItem> { it.dateMillis }.thenBy { it.completed }
+                ).orEmpty()
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    suspend fun savePlanItem(item: StaffPlanItem, uid: String): Result<StaffPlanItem> {
+        val isCreate = item.id.isBlank()
+        val id = item.id.ifBlank { "plan_" + UUID.randomUUID().toString().take(10) }
+        val cleanTitle = item.title.trim().take(160)
+        if (cleanTitle.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Plan item title cannot be empty."))
+        }
+        val safeCategory = runCatching { PlanCategory.valueOf(item.category) }
+            .getOrDefault(PlanCategory.TO_DO).name
+        val safeDateMillis = item.dateMillis.coerceAtLeast(1L)
+        val safeTag = item.creativeTag.trim().ifBlank { "General" }.take(40)
+        val safeTime = item.timeRange.trim().take(60)
+        val safeNotes = item.notes.trim().take(600)
+        val safeLinked = item.linkedDeliverableId.trim().take(128)
+        val path = "companies/$companyId/staff_plans/$id"
+        return try {
+            val ref = sub("staff_plans").document(id)
+            if (isCreate) {
+                val map = mapOf(
+                    "ownerUid" to uid,
+                    "title" to cleanTitle,
+                    "category" to safeCategory,
+                    "creativeTag" to safeTag,
+                    "dateMillis" to safeDateMillis,
+                    "timeRange" to safeTime,
+                    "notes" to safeNotes,
+                    "linkedDeliverableId" to safeLinked,
+                    "completed" to item.completed,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                ref.set(map).await()
+            } else {
+                val updateMap = mapOf(
+                    "title" to cleanTitle,
+                    "category" to safeCategory,
+                    "creativeTag" to safeTag,
+                    "dateMillis" to safeDateMillis,
+                    "timeRange" to safeTime,
+                    "notes" to safeNotes,
+                    "linkedDeliverableId" to safeLinked,
+                    "completed" to item.completed,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                ref.update(updateMap).await()
+            }
+            Result.success(
+                item.copy(
+                    id = id,
+                    ownerUid = uid,
+                    title = cleanTitle,
+                    category = safeCategory,
+                    creativeTag = safeTag,
+                    dateMillis = safeDateMillis,
+                    timeRange = safeTime,
+                    notes = safeNotes,
+                    linkedDeliverableId = safeLinked
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, if (isCreate) OperationType.CREATE else OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun togglePlanItemCompleted(item: StaffPlanItem): Result<Unit> {
+        if (item.id.isBlank()) return Result.failure(IllegalArgumentException("Missing plan item ID."))
+        val path = "companies/$companyId/staff_plans/${item.id}"
+        return try {
+            sub("staff_plans").document(item.id).update(
+                mapOf(
+                    "completed" to !item.completed,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun reschedulePlanItemDate(item: StaffPlanItem, newDateMillis: Long): Result<Unit> {
+        if (item.id.isBlank()) return Result.failure(IllegalArgumentException("Missing plan item ID."))
+        val safeDate = newDateMillis.coerceAtLeast(1L)
+        val path = "companies/$companyId/staff_plans/${item.id}"
+        return try {
+            sub("staff_plans").document(item.id).update(
+                mapOf(
+                    "dateMillis" to safeDate,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun carryOverIncompletePlanItems(items: List<StaffPlanItem>, targetDateMillis: Long): Result<Int> {
+        val pending = items.filter { !it.completed && it.id.isNotBlank() }
+        if (pending.isEmpty()) return Result.success(0)
+        val safeDate = targetDateMillis.coerceAtLeast(1L)
+        val path = "companies/$companyId/staff_plans"
+        return try {
+            pending.chunked(250).forEach { slice ->
+                val batch = db.batch()
+                slice.forEach { item ->
+                    batch.update(
+                        sub("staff_plans").document(item.id),
+                        mapOf(
+                            "dateMillis" to safeDate,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+                batch.commit().await()
+            }
+            Result.success(pending.size)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deletePlanItem(planId: String): Result<Unit> {
+        if (planId.isBlank()) return Result.failure(IllegalArgumentException("Missing plan item ID."))
+        val path = "companies/$companyId/staff_plans/$planId"
+        return try {
+            sub("staff_plans").document(planId).delete().await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+            Result.failure(e)
+        }
     }
 }

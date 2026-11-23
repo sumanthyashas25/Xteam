@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -20,7 +21,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -32,9 +36,11 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CameraAlt
@@ -69,6 +75,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -509,7 +516,7 @@ fun ProfilePhotoDialog(
         containerColor = PureWhite,
         title = {
             Text(
-                text = "PROFILE PHOTO",
+                text = "Profile Photo",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = ObsidianCharcoal
@@ -528,7 +535,7 @@ fun ProfilePhotoDialog(
                     photoBase64 = member.photoBase64
                 )
                 Text(
-                    text = member.fullName.ifBlank { "MEMBER" }.uppercase(),
+                    text = formatTitleCase(member.fullName.ifBlank { "Member" }),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal,
@@ -536,7 +543,7 @@ fun ProfilePhotoDialog(
                 )
                 if (member.jobRoleName.isNotBlank()) {
                     StatusPill(
-                        label = member.jobRoleName.uppercase(),
+                        label = formatTitleCase(member.jobRoleName),
                         containerColor = MutedSurface,
                         contentColor = ObsidianCharcoal
                     )
@@ -565,7 +572,7 @@ fun ProfilePhotoDialog(
                 ) {
                     Icon(Icons.Filled.PhotoLibrary, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("CHOOSE PROFILE PHOTO", fontWeight = FontWeight.Bold)
+                    Text("Choose Profile Photo", fontWeight = FontWeight.Bold)
                 }
                 if (member.photoBase64.isNotBlank()) {
                     OutlinedButton(
@@ -580,14 +587,14 @@ fun ProfilePhotoDialog(
                     ) {
                         Icon(Icons.Filled.DeleteOutline, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("REMOVE PHOTO", fontWeight = FontWeight.Bold)
+                        Text("Remove Photo", fontWeight = FontWeight.Bold)
                     }
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("CLOSE", fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                Text("Close", fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
             }
         }
     )
@@ -595,6 +602,7 @@ fun ProfilePhotoDialog(
 
 private enum class ProfileDialogStep {
     OVERVIEW,
+    LOADING_PHOTO,
     CROP_PREVIEW,
     UPLOADING,
     SUCCESS
@@ -613,16 +621,20 @@ fun ProfileOverviewDialog(
     val scope = rememberCoroutineScope()
 
     var step by remember { mutableStateOf(ProfileDialogStep.OVERVIEW) }
-    var showPhotoControls by remember { mutableStateOf(false) }
+    var loadingSourceLabel by remember { mutableStateOf("image") }
+    var showPhotoControls by rememberSaveable { mutableStateOf(false) }
     var validationError by remember { mutableStateOf<String?>(null) }
     var cropPreview by remember { mutableStateOf<ProfilePhotoPreview?>(null) }
     var cropZoom by remember { mutableFloatStateOf(1f) }
     var cropOffsetXFrac by remember { mutableFloatStateOf(0f) }
     var cropOffsetYFrac by remember { mutableFloatStateOf(0f) }
-    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+    var pendingCameraUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraFilePath by rememberSaveable { mutableStateOf<String?>(null) }
 
-    fun handleSelectedUri(uri: Uri) {
+    fun handleSelectedUri(uri: Uri, sourceLabel: String) {
         validationError = null
+        loadingSourceLabel = sourceLabel
+        step = ProfileDialogStep.LOADING_PHOTO
         scope.launch {
             val res = ChatFileManager.loadProfilePhotoPreview(context, uri)
             res.onSuccess { loaded ->
@@ -630,9 +642,11 @@ fun ProfileOverviewDialog(
                 cropZoom = 1f
                 cropOffsetXFrac = 0f
                 cropOffsetYFrac = 0f
+                AppHapticsAndNotifier.triggerCompletionVibration(context)
                 step = ProfileDialogStep.CROP_PREVIEW
             }.onFailure { err ->
-                validationError = err.message ?: "Selected image could not be validated."
+                validationError = err.message ?: "Selected image could not be loaded."
+                step = ProfileDialogStep.OVERVIEW
             }
         }
     }
@@ -640,25 +654,33 @@ fun ProfileOverviewDialog(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) handleSelectedUri(uri)
+        if (uri != null) {
+            handleSelectedUri(uri, "gallery photo")
+        }
     }
 
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { ok ->
-        val uri = pendingCameraUri
+        val uri = pendingCameraUriString?.let { runCatching { Uri.parse(it) }.getOrNull() }
         if (ok && uri != null) {
-            handleSelectedUri(uri)
+            handleSelectedUri(uri, "camera capture")
+        } else {
+            pendingCameraFilePath?.let { path -> runCatching { File(path).delete() } }
+            pendingCameraUriString = null
+            pendingCameraFilePath = null
         }
     }
 
     fun launchCamera() {
+        AppHapticsAndNotifier.triggerTickHaptic(context)
         validationError = null
         runCatching {
             val dir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
             val file = File(dir, "profile_${UUID.randomUUID().toString().take(8)}.jpg")
             val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            pendingCameraUri = uri
+            pendingCameraFilePath = file.absolutePath
+            pendingCameraUriString = uri.toString()
             cameraLauncher.launch(uri)
         }.onFailure {
             validationError = "Camera is unavailable on this device. Please choose from Gallery."
@@ -667,13 +689,13 @@ fun ProfileOverviewDialog(
 
     LaunchedEffect(step) {
         if (step == ProfileDialogStep.SUCCESS) {
-            delay(1100L)
+            delay(1000L)
             onDismiss()
         }
     }
 
     AlertDialog(
-        onDismissRequest = { if (step != ProfileDialogStep.UPLOADING) onDismiss() },
+        onDismissRequest = { onDismiss() },
         containerColor = PureWhite,
         shape = RoundedCornerShape(28.dp),
         title = {
@@ -685,6 +707,7 @@ fun ProfileOverviewDialog(
                 Text(
                     text = when (step) {
                         ProfileDialogStep.OVERVIEW -> "My Profile"
+                        ProfileDialogStep.LOADING_PHOTO -> "Loading Photo"
                         ProfileDialogStep.CROP_PREVIEW -> "Preview & Crop"
                         ProfileDialogStep.UPLOADING -> "Updating Profile"
                         ProfileDialogStep.SUCCESS -> "Photo Updated"
@@ -712,7 +735,9 @@ fun ProfileOverviewDialog(
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -734,8 +759,21 @@ fun ProfileOverviewDialog(
                     }
                 }
 
-                when (step) {
-                    ProfileDialogStep.OVERVIEW -> {
+                AnimatedContent(
+                    targetState = step,
+                    transitionSpec = {
+                        (fadeIn(tween(220)) + scaleIn(initialScale = 0.96f, animationSpec = tween(220)))
+                            .togetherWith(fadeOut(tween(150)) + scaleOut(targetScale = 0.96f, animationSpec = tween(150)))
+                    },
+                    label = "profile_photo_step_transition"
+                ) { activeStep ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        when (activeStep) {
+                            ProfileDialogStep.OVERVIEW -> {
                         Box(
                             contentAlignment = Alignment.Center,
                             modifier = Modifier.size(104.dp)
@@ -877,6 +915,7 @@ fun ProfileOverviewDialog(
                                     }
                                     Button(
                                         onClick = {
+                                            AppHapticsAndNotifier.triggerTickHaptic(context)
                                             photoPickerLauncher.launch(
                                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                             )
@@ -914,168 +953,243 @@ fun ProfileOverviewDialog(
                                 }
                             }
                         }
-                    }
+                            }
 
-                    ProfileDialogStep.CROP_PREVIEW -> {
-                        val preview = cropPreview
-                        if (preview != null) {
-                            val imgBitmap = remember(preview.bitmap) { preview.bitmap.asImageBitmap() }
-                            Box(
-                                modifier = Modifier
-                                    .size(196.dp)
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .background(ObsidianCharcoal)
-                                    .pointerInput(preview.bitmap) {
-                                        detectDragGestures { change, dragAmount ->
-                                            change.consume()
-                                            cropOffsetXFrac = (cropOffsetXFrac + dragAmount.x / 180f).coerceIn(-1f, 1f)
-                                            cropOffsetYFrac = (cropOffsetYFrac + dragAmount.y / 180f).coerceIn(-1f, 1f)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Image(
-                                    bitmap = imgBitmap,
-                                    contentDescription = "Square crop preview",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .graphicsLayer {
-                                            scaleX = cropZoom
-                                            scaleY = cropZoom
-                                            translationX = cropOffsetXFrac * 42f
-                                            translationY = cropOffsetYFrac * 42f
-                                        }
+                            ProfileDialogStep.LOADING_PHOTO -> {
+                                Spacer(Modifier.height(8.dp))
+                                val pulseTransition = rememberInfiniteTransition(label = "photo_prepare_pulse")
+                                val pulseAlpha by pulseTransition.animateFloat(
+                                    initialValue = 0.45f,
+                                    targetValue = 1f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(700),
+                                        repeatMode = RepeatMode.Reverse
+                                    ),
+                                    label = "pulse_alpha"
                                 )
                                 Box(
+                                    contentAlignment = Alignment.Center,
                                     modifier = Modifier
-                                        .fillMaxSize()
-                                        .border(2.dp, PureWhite.copy(alpha = 0.85f), CircleShape)
-                                )
-                            }
-
-                            StatusPill(
-                                label = "Square Crop • ${preview.width}×${preview.height} px • Validated",
-                                containerColor = SoftMint,
-                                contentColor = DeepMintInk
-                            )
-
-                            Column(modifier = Modifier.fillMaxWidth()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                        .size(72.dp)
+                                        .testTag("profile_photo_loading_indicator")
                                 ) {
-                                    Text("Zoom", style = MaterialTheme.typography.labelMedium, color = StudioTextSecondary)
-                                    Text("${"%.1f".format(cropZoom)}×", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                                    CircularProgressIndicator(
+                                        color = VioletPrimary,
+                                        trackColor = VioletSoftBg,
+                                        strokeWidth = 3.dp,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Filled.CameraAlt,
+                                        contentDescription = null,
+                                        tint = ObsidianCharcoal.copy(alpha = pulseAlpha),
+                                        modifier = Modifier.size(26.dp)
+                                    )
                                 }
-                                Slider(
-                                    value = cropZoom,
-                                    onValueChange = { cropZoom = it },
-                                    valueRange = 1f..2.5f,
-                                    colors = SliderDefaults.colors(thumbColor = ObsidianCharcoal, activeTrackColor = VioletPrimary)
+                                Text(
+                                    text = "Optimizing $loadingSourceLabel…",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
                                 )
+                                Text(
+                                    text = "Correcting orientation and preparing square crop",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(Modifier.height(6.dp))
                             }
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = {
-                                        cropPreview = null
-                                        step = ProfileDialogStep.OVERVIEW
-                                    },
-                                    shape = RoundedCornerShape(999.dp),
-                                    border = BorderStroke(1.dp, SubtleOutline),
-                                    modifier = Modifier.weight(1f).height(46.dp)
-                                ) { Text("Back", fontWeight = FontWeight.SemiBold, color = ObsidianCharcoal) }
-
-                                Button(
-                                    onClick = {
-                                        step = ProfileDialogStep.UPLOADING
-                                        if (onSaveCroppedPhoto != null) {
-                                            onSaveCroppedPhoto(
-                                                preview.bitmap,
-                                                cropZoom,
-                                                cropOffsetXFrac,
-                                                cropOffsetYFrac,
-                                                { step = ProfileDialogStep.SUCCESS },
-                                                { err ->
-                                                    validationError = err
-                                                    step = ProfileDialogStep.CROP_PREVIEW
+                            ProfileDialogStep.CROP_PREVIEW -> {
+                                val preview = cropPreview
+                                if (preview != null) {
+                                    val imgBitmap = remember(preview.bitmap) { preview.bitmap.asImageBitmap() }
+                                    Box(
+                                        modifier = Modifier
+                                            .size(196.dp)
+                                            .clip(RoundedCornerShape(22.dp))
+                                            .background(ObsidianCharcoal)
+                                            .pointerInput(preview.bitmap) {
+                                                detectDragGestures { change, dragAmount ->
+                                                    change.consume()
+                                                    cropOffsetXFrac = (cropOffsetXFrac + dragAmount.x / 180f).coerceIn(-1f, 1f)
+                                                    cropOffsetYFrac = (cropOffsetYFrac + dragAmount.y / 180f).coerceIn(-1f, 1f)
                                                 }
-                                            )
-                                        } else {
-                                            step = ProfileDialogStep.SUCCESS
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Image(
+                                            bitmap = imgBitmap,
+                                            contentDescription = "Square crop preview",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .graphicsLayer {
+                                                    scaleX = cropZoom
+                                                    scaleY = cropZoom
+                                                    translationX = cropOffsetXFrac * 42f
+                                                    translationY = cropOffsetYFrac * 42f
+                                                }
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxSize()
+                                                .border(2.dp, PureWhite.copy(alpha = 0.85f), CircleShape)
+                                        )
+                                    }
+
+                                    StatusPill(
+                                        label = "Square Crop • ${preview.width}×${preview.height} px • Ready",
+                                        containerColor = SoftMint,
+                                        contentColor = DeepMintInk
+                                    )
+
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Zoom", style = MaterialTheme.typography.labelMedium, color = StudioTextSecondary)
+                                            Text("${"%.1f".format(cropZoom)}×", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                                         }
-                                    },
-                                    shape = RoundedCornerShape(999.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(46.dp)
-                                        .testTag("save_cropped_photo_button")
-                                ) {
-                                    Icon(Icons.Filled.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("Save Photo", fontWeight = FontWeight.Bold)
+                                        Slider(
+                                            value = cropZoom,
+                                            onValueChange = { cropZoom = it },
+                                            valueRange = 1f..2.5f,
+                                            colors = SliderDefaults.colors(thumbColor = ObsidianCharcoal, activeTrackColor = VioletPrimary)
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                cropPreview = null
+                                                step = ProfileDialogStep.OVERVIEW
+                                            },
+                                            shape = RoundedCornerShape(999.dp),
+                                            border = BorderStroke(1.dp, SubtleOutline),
+                                            modifier = Modifier.weight(1f).height(46.dp)
+                                        ) { Text("Back", fontWeight = FontWeight.SemiBold, color = ObsidianCharcoal) }
+
+                                        Button(
+                                            onClick = {
+                                                step = ProfileDialogStep.UPLOADING
+                                                if (onSaveCroppedPhoto != null) {
+                                                    onSaveCroppedPhoto(
+                                                        preview.bitmap,
+                                                        cropZoom,
+                                                        cropOffsetXFrac,
+                                                        cropOffsetYFrac,
+                                                        {
+                                                            AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                                            step = ProfileDialogStep.SUCCESS
+                                                        },
+                                                        { err ->
+                                                            validationError = err
+                                                            step = ProfileDialogStep.CROP_PREVIEW
+                                                        }
+                                                    )
+                                                } else {
+                                                    AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                                    step = ProfileDialogStep.SUCCESS
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(999.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(46.dp)
+                                                .testTag("save_cropped_photo_button")
+                                        ) {
+                                            Icon(Icons.Filled.Crop, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("Save Photo", fontWeight = FontWeight.Bold)
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    }
 
-                    ProfileDialogStep.UPLOADING -> {
-                        Spacer(Modifier.height(6.dp))
-                        CircularProgressIndicator(color = ObsidianCharcoal)
-                        Text(
-                            text = "Compressing & updating Firestore profile record…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StudioTextSecondary,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(Modifier.height(6.dp))
-                    }
+                            ProfileDialogStep.UPLOADING -> {
+                                Spacer(Modifier.height(8.dp))
+                                CircularProgressIndicator(
+                                    color = VioletPrimary,
+                                    trackColor = VioletSoftBg,
+                                    modifier = Modifier.testTag("profile_photo_uploading_indicator")
+                                )
+                                Text(
+                                    text = "Saving your profile photo…",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                                Text(
+                                    text = "Compressing & updating workspace profile record…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(Modifier.height(6.dp))
+                            }
 
-                    ProfileDialogStep.SUCCESS -> {
-                        Surface(
-                            shape = CircleShape,
-                            color = SoftMint,
-                            modifier = Modifier.size(58.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = EmeraldApproved, modifier = Modifier.size(34.dp))
+                            ProfileDialogStep.SUCCESS -> {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = SoftMint,
+                                    modifier = Modifier.size(58.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Filled.CheckCircle, contentDescription = null, tint = EmeraldApproved, modifier = Modifier.size(34.dp))
+                                    }
+                                }
+                                Text(
+                                    text = "Photo updated successfully",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = DeepMintInk
+                                )
+                                Text(
+                                    text = "Refreshed across your workspace.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary,
+                                    textAlign = TextAlign.Center
+                                )
                             }
                         }
-                        Text(
-                            text = "Photo updated successfully",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = DeepMintInk
-                        )
-                        Text(
-                            text = "Refreshed across your workspace.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StudioTextSecondary,
-                            textAlign = TextAlign.Center
-                        )
                     }
                 }
             }
         },
         confirmButton = {
-            if (step == ProfileDialogStep.OVERVIEW) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (!showPhotoControls) {
-                        TextButton(onClick = { showPhotoControls = true }) {
-                            Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp), tint = VioletPrimary)
-                            Spacer(Modifier.width(4.dp))
-                            Text("Edit Photo", fontWeight = FontWeight.Bold, color = VioletPrimary)
+            when (step) {
+                ProfileDialogStep.OVERVIEW -> {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!showPhotoControls) {
+                            TextButton(onClick = { showPhotoControls = true }) {
+                                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp), tint = VioletPrimary)
+                                Spacer(Modifier.width(4.dp))
+                                Text("Edit Photo", fontWeight = FontWeight.Bold, color = VioletPrimary)
+                            }
+                        }
+                        TextButton(onClick = onDismiss) {
+                            Text("Close", fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                         }
                     }
-                    TextButton(onClick = onDismiss) {
-                        Text("Close", fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                }
+                ProfileDialogStep.LOADING_PHOTO -> {
+                    TextButton(onClick = { step = ProfileDialogStep.OVERVIEW }) {
+                        Text("Cancel", fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
                     }
                 }
+                ProfileDialogStep.UPLOADING -> {
+                    TextButton(onClick = { step = ProfileDialogStep.CROP_PREVIEW }) {
+                        Text("Cancel", fontWeight = FontWeight.SemiBold, color = StudioTextSecondary)
+                    }
+                }
+                else -> Unit
             }
         }
     )
@@ -1370,10 +1484,9 @@ fun DetailKeyValueCard(
                     modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = title.uppercase(),
+                    text = formatTitleCase(title),
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.5.sp,
+                    fontWeight = FontWeight.Bold,
                     color = ObsidianCharcoal
                 )
             }
@@ -1830,7 +1943,13 @@ fun EmptyStateCard(
                     modifier = Modifier.size(22.dp)
                 )
             }
-            Text(title.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+            Text(
+                formatTitleCase(title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = ObsidianCharcoal,
+                textAlign = TextAlign.Center
+            )
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodyMedium,
@@ -2104,9 +2223,9 @@ fun XMaxToastBanner(
             )
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = title.uppercase(),
+                    text = formatTitleCase(title),
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.ExtraBold,
+                    fontWeight = FontWeight.Bold,
                     color = ink,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -2183,30 +2302,30 @@ data class TicketPalette(
 fun getCatalogueTicketPalette(index: Int): TicketPalette {
     return when (index % 4) {
         0 -> TicketPalette(
-            startGradient = Color(0xFFE0F2FE),
-            endGradient = Color(0xFFF0F9FF),
-            borderColor = Color(0xFFBAE6FD),
-            emblemBg = Color(0xFF0284C7),
+            startGradient = Color(0xFFBFE0FE),
+            endGradient = Color(0xFFE5F3FF),
+            borderColor = Color(0xFFABD2FC),
+            emblemBg = Color(0xFF0067C5),
             emblemTint = PureWhite
         )
         1 -> TicketPalette(
-            startGradient = Color(0xFFFEF9C3),
-            endGradient = Color(0xFFFFFDF0),
-            borderColor = Color(0xFFFDE68A),
-            emblemBg = Color(0xFF0F1015),
-            emblemTint = PureWhite
+            startGradient = Color(0xFFCEE6F4),
+            endGradient = Color(0xFFFDF3C4),
+            borderColor = Color(0xFFE6E6C6),
+            emblemBg = PureWhite,
+            emblemTint = ObsidianCharcoal
         )
         2 -> TicketPalette(
-            startGradient = Color(0xFFFFEDD5),
-            endGradient = Color(0xFFFFF7ED),
-            borderColor = Color(0xFFFED7AA),
-            emblemBg = Color(0xFFEA580C),
+            startGradient = Color(0xFFFBD5C5),
+            endGradient = Color(0xFFFDF2DA),
+            borderColor = Color(0xFFF6C8B5),
+            emblemBg = Color(0xFFF15A1B),
             emblemTint = PureWhite
         )
         else -> TicketPalette(
-            startGradient = Color(0xFFDCFCE7),
-            endGradient = Color(0xFFF0FDF4),
-            borderColor = Color(0xFFBBF7D0),
+            startGradient = Color(0xFFC8F3DC),
+            endGradient = Color(0xFFEDFCF3),
+            borderColor = Color(0xFFB3E8CB),
             emblemBg = Color(0xFF16A34A),
             emblemTint = PureWhite
         )
@@ -2223,7 +2342,7 @@ fun getCatalogueCategoryIcon(category: String, kind: CatalogueKind): ImageVector
         cat.contains("seo") || cat.contains("content") || cat.contains("copy") || cat.contains("article") -> Icons.Filled.AutoGraph
         cat.contains("social") || cat.contains("influencer") || cat.contains("insta") -> Icons.Filled.Share
         kind == CatalogueKind.PACKAGE -> Icons.Filled.Inventory2
-        kind == CatalogueKind.ADD_ON -> Icons.Filled.AddCircleOutline
+        kind == CatalogueKind.ADDON -> Icons.Filled.AddCircleOutline
         else -> Icons.Filled.Sell
     }
 }
@@ -2242,60 +2361,81 @@ fun CatalogueServiceTicketCard(
 ) {
     val palette = remember(index) { getCatalogueTicketPalette(index) }
     val categoryIcon = remember(item.category, item.kindEnum()) { getCatalogueCategoryIcon(item.category, item.kindEnum()) }
-    val shape = remember { TicketCardShape(cornerRadius = 24.dp, notchRadius = 9.dp) }
+    val shape = remember { TicketCardShape(cornerRadius = 22.dp, notchRadius = 8.dp) }
 
     Surface(
         onClick = { onCardClick?.invoke() ?: onButtonClick() },
         shape = shape,
         color = Color.Transparent,
         border = BorderStroke(1.2.dp, if (isSelected) VioletPrimary else palette.borderColor),
-        shadowElevation = if (isSelected) 3.dp else 1.dp,
+        shadowElevation = if (isSelected) 4.dp else 1.5.dp,
         modifier = modifier
             .fillMaxWidth()
             .testTag("catalogue_ticket_${item.id}")
     ) {
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .height(IntrinsicSize.Min)
                 .background(
                     Brush.horizontalGradient(
-                        colors = if (isSelected) listOf(KpiLavenderBg, Color(0xFFF5F3FF))
+                        colors = if (isSelected) listOf(Color(0xFFDDD6FE), Color(0xFFF3E8FF))
                         else listOf(palette.startGradient, palette.endGradient)
                     )
                 )
-                .padding(start = 22.dp, end = 16.dp, top = 16.dp, bottom = 16.dp)
+                .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            // Left pastel stub housing the centered circular emblem next to the left-edge notch
+            Box(
+                modifier = Modifier
+                    .width(56.dp)
+                    .fillMaxHeight(),
+                contentAlignment = Alignment.Center
             ) {
                 Surface(
                     shape = CircleShape,
                     color = if (isSelected) VioletPrimary else palette.emblemBg,
                     shadowElevation = 2.dp,
-                    border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.5f)),
-                    modifier = Modifier.size(46.dp)
+                    border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.65f)),
+                    modifier = Modifier.size(44.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             imageVector = categoryIcon,
                             contentDescription = item.category,
-                            tint = palette.emblemTint,
-                            modifier = Modifier.size(22.dp)
+                            tint = if (isSelected) PureWhite else palette.emblemTint,
+                            modifier = Modifier.size(21.dp)
                         )
                     }
                 }
+            }
 
-                Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(8.dp))
 
+            // Right inset rounded white content panel matching catalogue_services_design_5a91a7c5.jpg
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(17.dp))
+                    .background(
+                        Brush.horizontalGradient(
+                            colors = listOf(
+                                PureWhite.copy(alpha = 0.96f),
+                                PureWhite.copy(alpha = 0.80f)
+                            )
+                        )
+                    )
+                    .padding(horizontal = 15.dp, vertical = 13.dp)
+            ) {
                 Column(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     Text(
                         text = item.name,
-                        style = MaterialTheme.typography.titleSmall.copy(fontSize = 15.sp, lineHeight = 19.sp),
-                        fontWeight = FontWeight.ExtraBold,
+                        style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.5.sp, lineHeight = 19.sp),
+                        fontWeight = FontWeight.Bold,
                         color = ObsidianCharcoal,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
@@ -2344,7 +2484,7 @@ fun CatalogueServiceTicketCard(
                         color = pillBg,
                         shadowElevation = 1.dp,
                         modifier = Modifier
-                            .height(34.dp)
+                            .height(33.dp)
                             .testTag("catalogue_check_button_${item.id}")
                     ) {
                         Row(
@@ -2363,7 +2503,7 @@ fun CatalogueServiceTicketCard(
                             Text(
                                 text = displayLabel,
                                 style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
-                                fontWeight = FontWeight.ExtraBold,
+                                fontWeight = FontWeight.Bold,
                                 color = PureWhite
                             )
                         }

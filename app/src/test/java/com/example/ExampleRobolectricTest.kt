@@ -1,6 +1,8 @@
 package com.example
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
 import androidx.activity.compose.setContent
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertCountEquals
@@ -10,9 +12,13 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import android.util.Base64
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.core.app.ApplicationProvider
 import com.example.chat.ChatFileManager
@@ -34,15 +40,20 @@ import com.example.ui.navigation.XMaxRoute
 import com.example.ui.navigation.resolveAuthRoute
 import com.example.ui.screens.ActivityLogScreen
 import com.example.ui.screens.ClientsScreen
+import com.example.ui.screens.DeliverableDetailDialog
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MyWorkScreen
 import com.example.ui.screens.NotificationsScreen
 import com.example.ui.screens.OnboardingScreen
+import com.example.ui.screens.PaymentsScreen
 import com.example.ui.screens.PendingApprovalScreen
 import com.example.ui.screens.ProjectsScreen
+import com.example.ui.screens.RequestDecisionDialog
 import com.example.ui.screens.TeamChatScreen
 import com.example.ui.theme.XMaxTheme
 import com.google.firebase.FirebaseApp
+import java.io.File
+import java.io.FileOutputStream
 import kotlinx.coroutines.flow.flowOf
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -192,8 +203,8 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("toggle_calendar_view_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("my_work_lazy_list")
-      .performScrollToNode(hasText("BRAND IDENTITY GUIDELINES"))
-    composeTestRule.onNodeWithText("BRAND IDENTITY GUIDELINES").assertExists()
+      .performScrollToNode(hasText("Brand Identity Guidelines"))
+    composeTestRule.onNodeWithText("Brand Identity Guidelines").assertExists()
 
     // 3. Onboarding Screen
     composeTestRule.activityRule.scenario.onActivity { activity ->
@@ -379,7 +390,7 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_hub_screen").assertExists()
-    composeTestRule.onNodeWithText("NEW CHAT").assertExists()
+    composeTestRule.onNodeWithText("New Chat").assertExists()
     composeTestRule.onNodeWithTag("chat_tile_channels").assertExists()
     composeTestRule.onNodeWithTag("chat_tile_audio").assertExists()
     composeTestRule.onNodeWithTag("chat_tile_files").assertExists()
@@ -539,7 +550,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("claim_task_d_queue").performClick()
     assertEquals("d_queue", claimedId)
     composeTestRule.onNodeWithTag("my_work_lazy_list")
-      .performScrollToNode(hasText("SOCIAL LAUNCH REEL"))
+      .performScrollToNode(hasText("Social Launch Reel"))
     composeTestRule.waitForIdle()
     composeTestRule.runOnUiThread {
       composeTestRule.onNodeWithTag("slide_start_d_not_started")
@@ -818,5 +829,311 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("catalogue_added_banner").assertExists()
     composeTestRule.onNodeWithText("Added").assertExists()
+  }
+
+  @Test
+  fun `staff full screen chat, monthly plan calendar with day-to-day helpers, and attachment download work cleanly`() {
+    val staffMember = Member(
+      id = "u_staff_plan",
+      uid = "u_staff_plan",
+      companyNameInput = "X.MAX",
+      fullName = "Meera Creative",
+      accessLevel = AccessLevel.STAFF.name,
+      status = MembershipStatus.APPROVED.name,
+      active = true,
+      departmentId = "dept_creative",
+      departmentName = "Creative",
+      jobRoleName = "Designer"
+    )
+    val staffState = AgencyUiState(
+      authSessionStatus = AuthSessionStatus.SignedOut,
+      company = CatalogueSeedData.defaultCompanyProfile("u_staff_plan"),
+      companyLoaded = true,
+      myMember = staffMember,
+      memberLoaded = true,
+      members = listOf(staffMember),
+      departments = CatalogueSeedData.defaultDepartments(),
+      catalogue = CatalogueSeedData.defaultCatalogue()
+    )
+
+    // 1. Selecting Chat tab renders full-screen chat without Welcome header or overlapping bottom dock
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      val vm = ViewModelProvider(activity)[AgencyViewModel::class.java]
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          ApprovedWorkspace(state = staffState, viewModel = vm)
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_work_plan_switcher").assertExists()
+    composeTestRule.onNodeWithTag("nav_tab_chat").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("chat_hub_screen").assertExists()
+    composeTestRule.onNodeWithTag("nav_tab_chat").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Welcome").assertDoesNotExist()
+
+    // Closing Chat returns Staff cleanly to MY_WORK
+    composeTestRule.onNodeWithTag("chat_hub_close_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_work_plan_switcher").assertExists()
+
+    // 2. Switching MyWorkScreen to Plan renders calendar design + day-to-day focus & editor workflow
+    var savedPlan: StaffPlanItem? = null
+    var focusToggled = false
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          MyWorkScreen(
+            state = staffState,
+            onOpenDeliverable = {},
+            onSavePlanItem = { item, onDone ->
+              savedPlan = item
+              onDone()
+            },
+            onToggleFocusTimer = { focusToggled = true }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("my_work_mode_plan").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("staff_plan_calendar_card").assertExists()
+    composeTestRule.onNodeWithTag("today_task_filter").assertExists()
+    composeTestRule.onNodeWithTag("staff_plan_lazy_list").performTouchInput {
+      swipeUp(startY = bottom * 0.8f, endY = bottom * 0.3f)
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("plan_add_task_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("plan_editor_title_input").performTextInput("Website audit sprint")
+    composeTestRule.onNodeWithTag("plan_editor_save_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("Website audit sprint", savedPlan?.title)
+
+    composeTestRule.onNodeWithTag("staff_plan_lazy_list")
+      .performScrollToNode(hasTestTag("focus_timer_toggle_button"))
+    composeTestRule.onNodeWithTag("focus_timer_toggle_button").performClick()
+    assertTrue(focusToggled)
+
+    // 3. ChatFileManager downloads attachments cleanly to device storage
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val payload = "X.MAX Brand Guidelines v2".toByteArray()
+    val docMessage = ChatMessage(
+      id = "msg_dl_1",
+      senderUid = "u_staff_plan",
+      attachmentType = ChatAttachmentType.FILE.name,
+      attachmentName = "guidelines.txt",
+      attachmentMimeType = "text/plain",
+      attachmentDataBase64 = Base64.encodeToString(payload, Base64.NO_WRAP),
+      attachmentSizeBytes = payload.size.toLong()
+    )
+    val downloadResult = kotlinx.coroutines.runBlocking {
+      ChatFileManager.downloadAttachmentToDevice(context, docMessage)
+    }
+    assertTrue(downloadResult.isSuccess)
+  }
+
+  @Test
+  fun `catalogue toggle prevents duplicates, deliverable detail shows saved banner, payment tracker and request decline render cleanly, and profile photo loader decodes valid file`() {
+    val superAdmin = Member(
+      id = "u_admin_2",
+      uid = "u_admin_2",
+      companyNameInput = "X.MAX",
+      fullName = "X.MAX Director",
+      accessLevel = AccessLevel.SUPER_ADMIN.name,
+      status = MembershipStatus.APPROVED.name,
+      active = true,
+      departmentId = "dept_creative",
+      departmentName = "Creative",
+      jobRoleName = "Director"
+    )
+    val client = Client(id = "c_100", companyName = "Nova Studio", contactPerson = "Kiran")
+    val sampleReq = ProjectRequest(
+      id = "req_100",
+      clientId = "c_100",
+      clientCompanyName = "Nova Studio",
+      projectTitle = "Annual Brand Refresh",
+      brief = "Full identity system & social templates.",
+      decisionStatus = DecisionStatus.PENDING.name,
+      latestQuoteId = "q_100",
+      latestQuoteNumber = "Q-100"
+    )
+    val sampleQuote = Quotation(
+      id = "q_100",
+      quoteNumber = "Q-100",
+      requestId = "req_100",
+      clientId = "c_100",
+      clientSnapshot = ClientSnapshot(clientId = "c_100", companyName = "Nova Studio", contactPerson = "Kiran"),
+      projectTitle = "Annual Brand Refresh",
+      status = QuotationStatus.ISSUED.name,
+      lines = listOf(
+        QuoteLineItem(
+          catalogueItemId = "srv_logo",
+          title = "Logo Design",
+          kind = CatalogueKind.SERVICE.name,
+          quantity = 1,
+          unitPricePaise = 25000_00L,
+          lineTotalPaise = 25000_00L
+        )
+      ),
+      totalPaise = 25000_00L,
+      advancePaise = 12500_00L
+    )
+    val sampleProject = Project(
+      id = "proj_100",
+      title = "Annual Brand Refresh",
+      clientCompanyName = "Nova Studio",
+      status = ProjectStatus.IN_PROGRESS.name,
+      agreedValuePaise = 20000_00L,
+      paidPaise = 10000_00L,
+      advanceDuePaise = 10000_00L
+    )
+    val staffDeliverable = Deliverable(
+      id = "deliv_100",
+      projectId = "proj_100",
+      projectTitle = "Annual Brand Refresh",
+      clientCompanyName = "Nova Studio",
+      title = "Brand Guidelines Deck",
+      departmentId = "dept_creative",
+      departmentName = "Creative",
+      jobRoleName = "Director",
+      assignedToUid = "u_admin_2",
+      assignedToName = "X.MAX Director",
+      status = DeliverableStatus.IN_PROGRESS.name,
+      dueDateMillis = System.currentTimeMillis() + 86_400_000L,
+      checklist = listOf(ChecklistItem("Draft grids", done = true))
+    )
+    val richState = AgencyUiState(
+      authSessionStatus = AuthSessionStatus.SignedOut,
+      company = CatalogueSeedData.defaultCompanyProfile("u_admin_2"),
+      companyLoaded = true,
+      myMember = superAdmin,
+      memberLoaded = true,
+      members = listOf(superAdmin),
+      departments = CatalogueSeedData.defaultDepartments(),
+      catalogue = CatalogueSeedData.defaultCatalogue(),
+      clients = listOf(client),
+      requests = listOf(sampleReq),
+      quotations = listOf(sampleQuote),
+      projects = listOf(sampleProject)
+    )
+
+    // 1. Catalogue toggle adds on first tap and removes cleanly on second tap (never duplicates)
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          com.example.ui.screens.QuoteBuilderScreen(
+            state = richState,
+            initialQuote = null,
+            initialRequest = null,
+            linkedProject = null,
+            onBack = {},
+            onQuickSaveClient = { _, _ -> },
+            onCreateRequest = { _, _, _, _, _, _, _ -> },
+            onSaveOrIssueQuote = { _, _, _ -> },
+            onCreateRevision = { _, _ -> },
+            onGeneratePdf = { _, _, _ -> },
+            onMarkSent = {},
+            onMarkClientApproved = { _, _ -> }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("quote_builder_list")
+      .performScrollToNode(hasTestTag("open_catalogue_picker_button"))
+    composeTestRule.onNodeWithTag("open_catalogue_picker_button").performClick()
+    composeTestRule.waitForIdle()
+    val firstItem = richState.catalogue.first { !it.archived }
+    composeTestRule.onNodeWithTag("catalogue_item_${firstItem.id}").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("Added").assertExists()
+    composeTestRule.onNodeWithTag("catalogue_item_${firstItem.id}").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("Added").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Added (2)").assertDoesNotExist()
+
+    // 2. DeliverableDetailDialog renders instant saved confirmation banner inside the dialog window
+    var savedStatus: DeliverableStatus? = null
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          DeliverableDetailDialog(
+            state = richState,
+            deliverable = staffDeliverable,
+            updatesFlow = flowOf(SyncedData(emptyList(), false)),
+            onSubmitProgress = { _, st, _, _, _, _, _ -> savedStatus = st },
+            onReviewDeliverable = { _, _, _ -> },
+            onDismiss = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("Checklist & Update").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("deliverable_detail_list")
+      .performScrollToNode(hasTestTag("submit_progress_button"))
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("submit_progress_button").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals(DeliverableStatus.IN_PROGRESS, savedStatus)
+    composeTestRule.onNodeWithTag("deliverable_saved_banner").assertExists()
+    composeTestRule.onNodeWithText("Saved ✓").assertExists()
+
+    // 3. PaymentsScreen Payment Tracker overview & percentage render accurately
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          PaymentsScreen(
+            state = richState,
+            onRecordPayment = { _, _, _, _, _, _ -> }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("payment_tracker_overview").assertExists()
+    composeTestRule.onNodeWithText("50% Collected").assertExists()
+    composeTestRule.onNodeWithTag("payments_lazy_list")
+      .performScrollToNode(hasTestTag("record_payment_proj_100"))
+    composeTestRule.onNodeWithTag("record_payment_proj_100").assertExists()
+
+    // 4. RequestDecisionDialog anchors Decline Request in sticky bottom bar without cropping
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          RequestDecisionDialog(
+            state = richState,
+            request = sampleReq,
+            canAccept = true,
+            canDecline = true,
+            onOpenQuoteBuilder = {},
+            onAccept = { _, _ -> },
+            onDecline = {},
+            onDismiss = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("decline_request_button").assertExists()
+    composeTestRule.onNodeWithText("Decline Request").assertExists()
+
+    // 5. ChatFileManager.loadProfilePhotoPreview decodes a valid JPEG image Uri cleanly
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tmpImg = File(context.cacheDir, "test_avatar.jpg")
+    val bmp = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+    FileOutputStream(tmpImg).use { out ->
+      bmp.compress(Bitmap.CompressFormat.JPEG, 90, out)
+    }
+    val previewRes = kotlinx.coroutines.runBlocking {
+      ChatFileManager.loadProfilePhotoPreview(context, Uri.fromFile(tmpImg))
+    }
+    tmpImg.delete()
+    assertTrue(previewRes.isSuccess)
+    assertEquals(128, previewRes.getOrNull()?.width)
   }
 }

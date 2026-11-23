@@ -34,6 +34,7 @@ import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.StatusPill
 import com.example.ui.components.StudioAvatar
 import com.example.ui.components.XMaxWordmarkBadge
+import com.example.ui.components.formatTitleCase
 import com.example.ui.theme.*
 
 @Composable
@@ -594,8 +595,8 @@ fun OrgAndRoutingScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(Modifier.weight(1f).padding(end = 8.dp)) {
-                        Text(rule.name.uppercase(), fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
-                        Text("Priority ${rule.priority} • Target: ${rule.departmentName.uppercase()} / ${rule.jobRoleName.uppercase()}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                        Text(formatTitleCase(rule.name), fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                        Text("Priority ${rule.priority} • Target: ${formatTitleCase(rule.departmentName)} / ${formatTitleCase(rule.jobRoleName)}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                     }
                     Switch(checked = rule.active, onCheckedChange = { onSaveRoutingRule(rule.copy(active = it)) })
                 }
@@ -1044,9 +1045,9 @@ fun NotificationsScreen(
                                     )
                                 }
                                 Text(
-                                    notif.title.uppercase(),
+                                    formatTitleCase(notif.title),
                                     style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.ExtraBold,
+                                    fontWeight = FontWeight.Bold,
                                     color = ObsidianCharcoal,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -1059,7 +1060,7 @@ fun NotificationsScreen(
                                 )
                             }
                             Text(
-                                "${notif.actorName.ifBlank { "WORKSPACE" }.uppercase()} • $timeLabel",
+                                "${formatTitleCase(notif.actorName.ifBlank { "Workspace" })} • $timeLabel",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = StudioTextSecondary

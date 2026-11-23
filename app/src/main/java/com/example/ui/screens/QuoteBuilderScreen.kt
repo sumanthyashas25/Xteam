@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -218,9 +219,9 @@ fun QuoteBuilderScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
@@ -246,8 +247,10 @@ fun QuoteBuilderScreen(
                                 shape = RoundedCornerShape(999.dp),
                                 border = BorderStroke(1.dp, SubtleOutline),
                                 colors = ButtonDefaults.outlinedButtonColors(containerColor = PureWhite, contentColor = ObsidianCharcoal),
-                                modifier = Modifier.weight(1f).height(48.dp).testTag("save_quote_draft_button")
-                            ) { Text("Save Draft", fontWeight = FontWeight.SemiBold) }
+                                modifier = Modifier.weight(1f).height(46.dp).testTag("save_quote_draft_button")
+                            ) {
+                                Text("Save Draft", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
 
                             if (canIssue) {
                                 Button(
@@ -255,8 +258,10 @@ fun QuoteBuilderScreen(
                                     enabled = selectedClient != null && calc.computedLines.isNotEmpty() && calc.validationErrors.isEmpty(),
                                     shape = RoundedCornerShape(999.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                                    modifier = Modifier.weight(1f).height(48.dp).testTag("issue_quote_button")
-                                ) { Text("Issue Quote", fontWeight = FontWeight.SemiBold) }
+                                    modifier = Modifier.weight(1f).height(46.dp).testTag("issue_quote_button")
+                                ) {
+                                    Text("Issue Quote", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         } else {
                             OutlinedButton(
@@ -267,11 +272,11 @@ fun QuoteBuilderScreen(
                                 shape = RoundedCornerShape(999.dp),
                                 border = BorderStroke(1.dp, SubtleOutline),
                                 colors = ButtonDefaults.outlinedButtonColors(containerColor = PureWhite, contentColor = ObsidianCharcoal),
-                                modifier = Modifier.weight(1f).height(48.dp).testTag("preview_pdf_button")
+                                modifier = Modifier.weight(1f).height(46.dp).testTag("preview_pdf_button")
                             ) {
                                 Icon(Icons.Filled.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Preview", fontWeight = FontWeight.SemiBold)
+                                Text("Preview", fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                             Button(
                                 onClick = {
@@ -280,11 +285,16 @@ fun QuoteBuilderScreen(
                                 },
                                 shape = RoundedCornerShape(999.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                                modifier = Modifier.weight(1f).height(48.dp).testTag("share_pdf_button")
+                                modifier = Modifier.weight(1f).height(46.dp).testTag("share_pdf_button")
                             ) {
                                 Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (workingQuote.pdfLocalPath.isBlank()) "Generate & Share" else "Share PDF", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    if (workingQuote.pdfLocalPath.isBlank()) "Generate & Share" else "Share PDF",
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -533,12 +543,20 @@ fun QuoteBuilderScreen(
             items = state.catalogue.filter { !it.archived },
             selectedCounts = selectedCounts,
             urgentSelected = urgentEnabled,
-            onAddItem = { item ->
+            onToggleItem = { item ->
                 if (item.pricingModeEnum() == PricingMode.PERCENTAGE_SURCHARGE) {
-                    urgentEnabled = true
+                    urgentEnabled = !urgentEnabled
+                    urgentEnabled
                 } else {
-                    val newLine = QuoteCalculator.fromCatalogueItem(item, "ln_${UUID.randomUUID().toString().take(8)}")
-                    lines = lines + newLine
+                    val alreadySelected = lines.any { it.catalogueItemId == item.id }
+                    if (alreadySelected) {
+                        lines = lines.filterNot { it.catalogueItemId == item.id }
+                        false
+                    } else {
+                        val newLine = QuoteCalculator.fromCatalogueItem(item, "ln_${UUID.randomUUID().toString().take(8)}")
+                        lines = lines + newLine
+                        true
+                    }
                 }
             },
             onDismiss = { showCataloguePicker = false }
@@ -727,19 +745,20 @@ private fun CataloguePickerDialog(
     items: List<CatalogueItem>,
     selectedCounts: Map<String, Int>,
     urgentSelected: Boolean,
-    onAddItem: (CatalogueItem) -> Unit,
+    onToggleItem: (CatalogueItem) -> Boolean,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<CatalogueKind?>(null) }
-    var lastAddedName by remember { mutableStateOf<String?>(null) }
-    var lastAddedSeq by remember { mutableIntStateOf(0) }
+    var lastActionMessage by remember { mutableStateOf<String?>(null) }
+    var lastActionRemoved by remember { mutableStateOf(false) }
+    var lastActionSeq by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(lastAddedSeq) {
-        if (lastAddedSeq > 0) {
-            delay(2000L)
-            lastAddedName = null
+    LaunchedEffect(lastActionSeq) {
+        if (lastActionSeq > 0) {
+            delay(2200L)
+            lastActionMessage = null
         }
     }
 
@@ -753,11 +772,15 @@ private fun CataloguePickerDialog(
             kindOk && qOk
         }
     }
-    val totalSelected = selectedCounts.values.sum() + if (urgentSelected) 1 else 0
+    val totalSelected = selectedCounts.keys.size + if (urgentSelected) 1 else 0
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                .padding(12.dp),
             shape = RoundedCornerShape(28.dp),
             color = CrispCanvas
         ) {
@@ -807,14 +830,17 @@ private fun CataloguePickerDialog(
                 }
 
                 AnimatedVisibility(
-                    visible = !lastAddedName.isNullOrBlank(),
+                    visible = !lastActionMessage.isNullOrBlank(),
                     enter = fadeIn(tween(180)) + expandVertically(),
                     exit = fadeOut(tween(180)) + shrinkVertically()
                 ) {
                     Surface(
                         shape = RoundedCornerShape(14.dp),
-                        color = SoftMint,
-                        border = BorderStroke(1.dp, EmeraldApproved.copy(alpha = 0.35f)),
+                        color = if (lastActionRemoved) ButterYellow else SoftMint,
+                        border = BorderStroke(
+                            1.dp,
+                            if (lastActionRemoved) WarmAlarmAmber.copy(alpha = 0.4f) else EmeraldApproved.copy(alpha = 0.35f)
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("catalogue_added_banner")
@@ -825,16 +851,18 @@ private fun CataloguePickerDialog(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.CheckCircle,
+                                imageVector = if (lastActionRemoved) Icons.Filled.RemoveCircleOutline else Icons.Filled.CheckCircle,
                                 contentDescription = null,
-                                tint = EmeraldApproved,
+                                tint = if (lastActionRemoved) DeepAmberInk else EmeraldApproved,
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Added \"${lastAddedName.orEmpty()}\" to quotation",
+                                text = lastActionMessage.orEmpty(),
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold,
-                                color = DeepMintInk
+                                color = if (lastActionRemoved) DeepAmberInk else DeepMintInk,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -843,14 +871,21 @@ private fun CataloguePickerDialog(
                 LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     itemsIndexed(filtered, key = { _, it -> it.id }) { index, item ->
                         val isSurcharge = item.pricingModeEnum() == PricingMode.PERCENTAGE_SURCHARGE
-                        val count = if (isSurcharge) (if (urgentSelected) 1 else 0) else (selectedCounts[item.id] ?: 0)
+                        val count = if (isSurcharge) (if (urgentSelected) 1 else 0) else (selectedCounts[item.id] ?: 0).coerceAtMost(1)
                         val isSelected = count > 0
 
-                        val handleAdd = {
-                            AppHapticsAndNotifier.triggerSuccessHaptic(context)
-                            lastAddedName = item.name
-                            lastAddedSeq += 1
-                            onAddItem(item)
+                        val handleToggle = {
+                            val wasAdded = onToggleItem(item)
+                            if (wasAdded) {
+                                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                lastActionRemoved = false
+                                lastActionMessage = "Added \"${item.name}\" to quotation"
+                            } else {
+                                AppHapticsAndNotifier.triggerTickHaptic(context)
+                                lastActionRemoved = true
+                                lastActionMessage = "Removed \"${item.name}\" from quotation"
+                            }
+                            lastActionSeq += 1
                         }
 
                         CatalogueServiceTicketCard(
@@ -858,9 +893,9 @@ private fun CataloguePickerDialog(
                             index = index,
                             isSelected = isSelected,
                             selectedCount = count,
-                            buttonLabel = "Check",
-                            onButtonClick = handleAdd,
-                            onCardClick = handleAdd,
+                            buttonLabel = "Select",
+                            onButtonClick = handleToggle,
+                            onCardClick = handleToggle,
                             modifier = Modifier
                                 .animateItem()
                                 .testTag("catalogue_item_${item.id}")

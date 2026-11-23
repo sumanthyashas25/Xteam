@@ -444,6 +444,25 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["category", "title", "body", "targetUid", "targetDepartmentId", "actorUid", "actorName", "entityId", "channelId", "readByUids", "createdAt"]
+    },
+    "StaffPlanItem": {
+      "title": "StaffPlanItem",
+      "description": "Personal daily/monthly creative & task planner entry scoped to a workspace member",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string", "enum": ["TO_DO", "EVENT", "REMINDER", "MILESTONE"] },
+        "creativeTag": { "type": "string" },
+        "dateMillis": { "type": "integer" },
+        "timeRange": { "type": "string" },
+        "notes": { "type": "string" },
+        "linkedDeliverableId": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["ownerUid", "title", "category", "creativeTag", "dateMillis", "timeRange", "notes", "linkedDeliverableId", "completed", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -522,6 +541,10 @@
     "/companies/{companyId}/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/WorkspaceNotification" },
       "description": "Real-time workspace notifications with sound support"
+    },
+    "/companies/{companyId}/staff_plans/{planId}": {
+      "schema": { "$ref": "#/entities/StaffPlanItem" },
+      "description": "Private member-owned monthly creative and daily task plan items"
     }
   }
 }

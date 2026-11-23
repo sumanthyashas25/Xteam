@@ -6,6 +6,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -29,6 +35,7 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material3.*
@@ -65,9 +72,11 @@ import com.example.chat.StagedChatAttachment
 import com.example.data.ChatRepository
 import com.example.data.SyncedData
 import com.example.model.*
+import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
 import com.example.ui.components.StatusPill
 import com.example.ui.components.StudioAvatar
+import com.example.ui.components.formatTitleCase
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -76,6 +85,9 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 private enum class ChatScreenMode {
     HUB,
@@ -116,10 +128,11 @@ fun TeamChatScreen(
     var composerText by remember { mutableStateOf("") }
     var stagedAttachment by remember { mutableStateOf<StagedChatAttachment?>(null) }
     var isProcessingFile by remember { mutableStateOf(false) }
+    var openingThreadLabel by remember { mutableStateOf<String?>(null) }
     var replyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var showChannelPicker by remember { mutableStateOf(false) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
-    var previewImageBitmap by remember { mutableStateOf<Pair<String, ImageBitmap>?>(null) }
+    var previewImageMessage by remember { mutableStateOf<Pair<ChatMessage, ImageBitmap>?>(null) }
 
     val activeChannel = remember(state.chatChannels, activeChannelId) {
         state.chatChannels.firstOrNull { it.id == activeChannelId }
@@ -197,6 +210,7 @@ fun TeamChatScreen(
         if (clean.isEmpty() && attachment == null) return
         val targetId = activeChannel.id
         onSendMessage(targetId, clean, replyTarget, attachment) {
+            AppHapticsAndNotifier.triggerCompletionVibration(context)
             composerText = ""
             stagedAttachment = null
             replyTarget = null
@@ -229,23 +243,34 @@ fun TeamChatScreen(
             onComposerTextChange = { composerText = it },
             stagedAttachment = stagedAttachment,
             isProcessingFile = isProcessingFile,
+            openingThreadLabel = openingThreadLabel,
             onClearAttachment = { stagedAttachment = null },
-            onOpenChannelsSheet = { showChannelPicker = true },
+            onOpenChannelsSheet = {
+                AppHapticsAndNotifier.triggerTickHaptic(context)
+                showChannelPicker = true
+            },
             onPickAudio = ::launchAudioPicker,
             onPickFiles = ::launchDocumentPicker,
             onPickImages = ::launchImagePicker,
             onSelectChannel = { ch ->
+                AppHapticsAndNotifier.triggerTickHaptic(context)
                 activeChannelId = ch.id
                 mode = ChatScreenMode.THREAD
             },
             onOpenDirectChat = { colleague ->
+                AppHapticsAndNotifier.triggerTickHaptic(context)
+                openingThreadLabel = "Opening chat with ${formatTitleCase(colleague.fullName)}…"
                 onOpenDirectChat(colleague) { ch ->
+                    openingThreadLabel = null
                     activeChannelId = ch.id
                     mode = ChatScreenMode.THREAD
                 }
             },
             onOpenDepartmentChat = { dept ->
+                AppHapticsAndNotifier.triggerTickHaptic(context)
+                openingThreadLabel = "Opening ${formatTitleCase(dept.name)} chat…"
                 onOpenDepartmentChat(dept) { ch ->
+                    openingThreadLabel = null
                     activeChannelId = ch.id
                     mode = ChatScreenMode.THREAD
                 }
@@ -289,7 +314,7 @@ fun TeamChatScreen(
                             ChatFileManager.decodeMessageBitmap(msg, maxEdgePx = 1400)
                         }
                         if (bmp != null) {
-                            previewImageBitmap = msg.attachmentName.ifBlank { "Image" } to bmp.asImageBitmap()
+                            previewImageMessage = msg to bmp.asImageBitmap()
                         } else {
                             val file = ChatFileManager.resolveLocalFile(context, msg)
                             if (file != null) {
@@ -312,6 +337,16 @@ fun TeamChatScreen(
                         } else {
                             onReportMessage("Attachment file is unavailable offline.", true)
                         }
+                    }
+                }
+            },
+            onDownloadAttachment = { msg ->
+                scope.launch {
+                    val res = ChatFileManager.downloadAttachmentToDevice(context, msg)
+                    res.onSuccess { savedPath ->
+                        onReportMessage("Saved ${msg.attachmentName.ifBlank { "file" }} to $savedPath", false)
+                    }.onFailure { err ->
+                        onReportMessage(err.message ?: "Failed to save attachment.", true)
                     }
                 }
             },
@@ -367,8 +402,9 @@ fun TeamChatScreen(
         )
     }
 
-    previewImageBitmap?.let { (title, img) ->
-        Dialog(onDismissRequest = { previewImageBitmap = null }) {
+    previewImageMessage?.let { (msg, img) ->
+        val title = msg.attachmentName.ifBlank { "Image" }
+        Dialog(onDismissRequest = { previewImageMessage = null }) {
             Surface(
                 shape = RoundedCornerShape(24.dp),
                 color = ObsidianCharcoal,
@@ -389,7 +425,40 @@ fun TeamChatScreen(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        IconButton(onClick = { previewImageBitmap = null }, modifier = Modifier.size(40.dp)) {
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    ChatFileManager.downloadAttachmentToDevice(context, msg)
+                                        .onSuccess { savedPath ->
+                                            onReportMessage("Saved $title to $savedPath", false)
+                                        }
+                                        .onFailure { err ->
+                                            onReportMessage(err.message ?: "Failed to save image.", true)
+                                        }
+                                }
+                            },
+                            modifier = Modifier
+                                .size(40.dp)
+                                .testTag("preview_download_image_button")
+                        ) {
+                            Icon(Icons.Outlined.Download, contentDescription = "Save image to device", tint = PureWhite)
+                        }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    val file = ChatFileManager.resolveLocalFile(context, msg)
+                                    if (file != null) {
+                                        ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, title)
+                                    } else {
+                                        onReportMessage("File unavailable to share.", true)
+                                    }
+                                }
+                            },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(Icons.Filled.Share, contentDescription = "Share image", tint = PureWhite)
+                        }
+                        IconButton(onClick = { previewImageMessage = null }, modifier = Modifier.size(40.dp)) {
                             Icon(Icons.Filled.Close, contentDescription = "Close preview", tint = PureWhite)
                         }
                     }
@@ -409,6 +478,128 @@ fun TeamChatScreen(
 }
 
 @Composable
+private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
+    val transition = rememberInfiniteTransition(label = "chat_ambient_glow_motion")
+    val primaryOrbit by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 9500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "glow_primary_orbit"
+    )
+    val secondaryOrbit by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 14000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "glow_secondary_orbit"
+    )
+    val driftOrbit by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2.0 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 18500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "glow_drift_orbit"
+    )
+
+    return this.drawBehind {
+        // Rotating directional ambient wash across full screen
+        val sweepStart = Offset(
+            x = size.width * (0.5f + 0.5f * cos(primaryOrbit)),
+            y = size.height * (0.5f + 0.5f * sin(primaryOrbit))
+        )
+        val sweepEnd = Offset(
+            x = size.width - sweepStart.x,
+            y = size.height - sweepStart.y
+        )
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = if (isThread) {
+                    listOf(
+                        Color(0xFFFFE4DA),
+                        Color(0xFFF3E8FF),
+                        Color(0xFFE0F4FF)
+                    )
+                } else {
+                    listOf(
+                        Color(0xFFD6FFF0),
+                        Color(0xFFECE4FF),
+                        Color(0xFFFFE5D9)
+                    )
+                },
+                start = sweepStart,
+                end = sweepEnd
+            )
+        )
+
+        val c1 = Offset(
+            x = size.width * (0.50f + 0.30f * cos(primaryOrbit)),
+            y = size.height * (0.42f + 0.24f * sin(primaryOrbit))
+        )
+        val c2 = Offset(
+            x = size.width * (0.24f + 0.30f * sin(secondaryOrbit)),
+            y = size.height * (0.28f + 0.24f * cos(secondaryOrbit))
+        )
+        val c3 = Offset(
+            x = size.width * (0.76f - 0.28f * cos(driftOrbit)),
+            y = size.height * (0.64f + 0.24f * sin(driftOrbit))
+        )
+        val c4 = Offset(
+            x = size.width * (0.54f - 0.26f * sin(primaryOrbit)),
+            y = size.height * (0.78f - 0.20f * cos(secondaryOrbit))
+        )
+
+        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.38f) else Color(0xFF10B981).copy(alpha = 0.42f)
+        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.40f) else Color(0xFF8B5CF6).copy(alpha = 0.38f)
+        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.36f) else Color(0xFFFB923C).copy(alpha = 0.40f)
+        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.36f) else Color(0xFF38BDF8).copy(alpha = 0.34f)
+
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(primaryColor, primaryColor.copy(alpha = 0.14f), Color.Transparent),
+                center = c1,
+                radius = size.width * 0.90f
+            ),
+            radius = size.width * 0.90f,
+            center = c1
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(secondColor, secondColor.copy(alpha = 0.12f), Color.Transparent),
+                center = c2,
+                radius = size.width * 0.78f
+            ),
+            radius = size.width * 0.78f,
+            center = c2
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(thirdColor, thirdColor.copy(alpha = 0.12f), Color.Transparent),
+                center = c3,
+                radius = size.width * 0.74f
+            ),
+            radius = size.width * 0.74f,
+            center = c3
+        )
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(fourthColor, Color.Transparent),
+                center = c4,
+                radius = size.width * 0.68f
+            ),
+            radius = size.width * 0.68f,
+            center = c4
+        )
+    }
+}
+
+@Composable
 private fun ChatHubView(
     member: Member,
     isSuperAdmin: Boolean,
@@ -420,6 +611,7 @@ private fun ChatHubView(
     onComposerTextChange: (String) -> Unit,
     stagedAttachment: StagedChatAttachment?,
     isProcessingFile: Boolean,
+    openingThreadLabel: String?,
     onClearAttachment: () -> Unit,
     onOpenChannelsSheet: () -> Unit,
     onPickAudio: () -> Unit,
@@ -441,44 +633,14 @@ private fun ChatHubView(
         modifier = Modifier
             .fillMaxSize()
             .background(PureWhite)
-            .drawBehind {
-                // Soft pastel mint + lavender + warm blush ambient glow matching left screen of chat_page_ui_6bb989de.jpg
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFD5EDE0).copy(alpha = 0.72f), Color.Transparent),
-                        center = Offset(size.width * 0.50f, size.height * 0.44f),
-                        radius = size.width * 0.78f
-                    ),
-                    radius = size.width * 0.78f,
-                    center = Offset(size.width * 0.50f, size.height * 0.44f)
-                )
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFE7E2FC).copy(alpha = 0.42f), Color.Transparent),
-                        center = Offset(size.width * 0.16f, size.height * 0.30f),
-                        radius = size.width * 0.55f
-                    ),
-                    radius = size.width * 0.55f,
-                    center = Offset(size.width * 0.16f, size.height * 0.30f)
-                )
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFFFEAE0).copy(alpha = 0.48f), Color.Transparent),
-                        center = Offset(size.width * 0.88f, size.height * 0.56f),
-                        radius = size.width * 0.52f
-                    ),
-                    radius = size.width * 0.52f,
-                    center = Offset(size.width * 0.88f, size.height * 0.56f)
-                )
-            }
+            .animatedChatGlowBackdrop(isThread = false)
             .testTag("chat_hub_screen")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .widthIn(max = 620.dp)
                 .align(Alignment.Center)
         ) {
@@ -503,7 +665,7 @@ private fun ChatHubView(
                     )
                 }
                 Text(
-                    text = "NEW CHAT",
+                    text = "New Chat",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal
@@ -519,6 +681,35 @@ private fun ChatHubView(
                         contentDescription = "Close Chat",
                         tint = ObsidianCharcoal
                     )
+                }
+            }
+
+            if (!openingThreadLabel.isNullOrBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(999.dp),
+                    color = ObsidianCharcoal,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(bottom = 6.dp)
+                        .testTag("chat_opening_indicator")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = PureWhite
+                        )
+                        Text(
+                            text = openingThreadLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = PureWhite,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
 
@@ -545,13 +736,13 @@ private fun ChatHubView(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "HI, ${firstName.uppercase()}!",
+                            text = "Hi, ${formatTitleCase(firstName)}!",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = StudioTextSecondary
                         )
                         Text(
-                            text = "SHARE UPDATES & FILES",
+                            text = "Share updates & files",
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.ExtraBold,
                             color = ObsidianCharcoal
@@ -628,9 +819,9 @@ private fun ChatHubView(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "DIRECT MESSAGES (1:1)",
+                            text = "Direct Messages (1:1)",
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = StudioTextSecondary
                         )
                         Row(
@@ -643,10 +834,10 @@ private fun ChatHubView(
                                 Surface(
                                     onClick = { onOpenDirectChat(person) },
                                     shape = RoundedCornerShape(18.dp),
-                                    color = PureWhite.copy(alpha = 0.85f),
+                                    color = PureWhite.copy(alpha = 0.88f),
                                     border = BorderStroke(1.dp, SubtleOutline),
                                     modifier = Modifier
-                                        .widthIn(min = 128.dp, max = 180.dp)
+                                        .widthIn(min = 132.dp, max = 186.dp)
                                         .testTag("dm_person_${person.uid}")
                                 ) {
                                     Row(
@@ -662,15 +853,15 @@ private fun ChatHubView(
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = person.fullName.ifBlank { "MEMBER" }.uppercase(),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.ExtraBold,
+                                                text = formatTitleCase(person.fullName.ifBlank { "Member" }),
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
                                                 color = ObsidianCharcoal,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Text(
-                                                text = person.jobRoleName.ifBlank { person.departmentName }.uppercase(),
+                                                text = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName }),
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = StudioTextSecondary,
                                                 maxLines = 1,
@@ -691,9 +882,9 @@ private fun ChatHubView(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "DEPARTMENT CHATS",
+                            text = "Department Chats",
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = StudioTextSecondary
                         )
                         Row(
@@ -706,8 +897,8 @@ private fun ChatHubView(
                                 Surface(
                                     onClick = { onOpenDepartmentChat(dept) },
                                     shape = RoundedCornerShape(999.dp),
-                                    color = KpiLavenderBg,
-                                    border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.25f)),
+                                    color = KpiLavenderBg.copy(alpha = 0.92f),
+                                    border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.28f)),
                                     modifier = Modifier
                                         .height(40.dp)
                                         .testTag("dept_chat_${dept.id}")
@@ -719,9 +910,9 @@ private fun ChatHubView(
                                     ) {
                                         Icon(Icons.Filled.Groups, contentDescription = null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
                                         Text(
-                                            text = dept.name.uppercase(),
+                                            text = formatTitleCase(dept.name),
                                             style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.ExtraBold,
+                                            fontWeight = FontWeight.Bold,
                                             color = ObsidianCharcoal
                                         )
                                     }
@@ -742,9 +933,9 @@ private fun ChatHubView(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "TEAM THREADS",
+                            text = "Team Threads",
                             style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.ExtraBold,
+                            fontWeight = FontWeight.Bold,
                             color = StudioTextSecondary
                         )
                         TextButton(
@@ -754,7 +945,7 @@ private fun ChatHubView(
                         ) {
                             Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = ObsidianCharcoal)
                             Spacer(Modifier.width(4.dp))
-                            Text("NEW CHANNEL", color = ObsidianCharcoal, fontWeight = FontWeight.Bold)
+                            Text("New Channel", color = ObsidianCharcoal, fontWeight = FontWeight.Bold)
                         }
                     }
 
@@ -769,13 +960,13 @@ private fun ChatHubView(
                             val isSelected = ch.id == activeChannel.id
                             val prefix = when (ch.channelTypeEnum()) {
                                 ChatChannelType.DIRECT -> "@"
-                                ChatChannelType.DEPARTMENT -> "DEPT:"
+                                ChatChannelType.DEPARTMENT -> "Dept:"
                                 else -> "#"
                             }
                             Surface(
                                 onClick = { onSelectChannel(ch) },
                                 shape = RoundedCornerShape(18.dp),
-                                color = if (isSelected) PureWhite.copy(alpha = 0.94f) else PureWhite.copy(alpha = 0.65f),
+                                color = if (isSelected) PureWhite.copy(alpha = 0.96f) else PureWhite.copy(alpha = 0.78f),
                                 border = BorderStroke(
                                     width = if (isSelected) 1.5.dp else 1.dp,
                                     color = if (isSelected) ObsidianCharcoal else SubtleOutline
@@ -793,9 +984,9 @@ private fun ChatHubView(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = "$prefix ${ch.title.uppercase()}",
+                                            text = "$prefix ${formatTitleCase(ch.title)}",
                                             style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.ExtraBold,
+                                            fontWeight = FontWeight.Bold,
                                             color = ObsidianCharcoal,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
@@ -951,8 +1142,8 @@ private fun ChatHubView(
         AlertDialog(
             onDismissRequest = { deleteChannelTarget = null },
             containerColor = PureWhite,
-            title = { Text("DELETE CHAT THREAD?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
-            text = { Text("Permanently delete ${target.title.uppercase()} and all its messages?") },
+            title = { Text("Delete chat thread?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            text = { Text("Permanently delete ${formatTitleCase(target.title)} and all its messages?") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -960,10 +1151,10 @@ private fun ChatHubView(
                         deleteChannelTarget = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("DELETE", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { deleteChannelTarget = null }) { Text("CANCEL") }
+                TextButton(onClick = { deleteChannelTarget = null }) { Text("Cancel") }
             }
         )
     }
@@ -980,8 +1171,8 @@ private fun FrostedChatBentoTile(
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(22.dp),
-        color = PureWhite.copy(alpha = 0.56f),
-        border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.85f)),
+        color = PureWhite.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.92f)),
         modifier = modifier.height(134.dp)
     ) {
         Column(
@@ -1264,6 +1455,7 @@ private fun ChatThreadView(
     onPickAudio: () -> Unit,
     onOpenChannelsSheet: () -> Unit,
     onOpenMessageAttachment: (ChatMessage) -> Unit,
+    onDownloadAttachment: (ChatMessage) -> Unit,
     onDeleteChannel: () -> Unit,
     onDeleteMessage: (ChatMessage) -> Unit,
     onSend: () -> Unit,
@@ -1282,35 +1474,14 @@ private fun ChatThreadView(
         modifier = Modifier
             .fillMaxSize()
             .background(PureWhite)
-            .drawBehind {
-                // Signature centered soft peach & blush-lavender glow matching right screen of chat_page_ui_6bb989de.jpg
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFFFD8CC).copy(alpha = 0.50f), Color.Transparent),
-                        center = Offset(size.width * 0.52f, size.height * 0.48f),
-                        radius = size.width * 0.68f
-                    ),
-                    radius = size.width * 0.68f,
-                    center = Offset(size.width * 0.52f, size.height * 0.48f)
-                )
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color(0xFFF3D5EC).copy(alpha = 0.40f), Color.Transparent),
-                        center = Offset(size.width * 0.44f, size.height * 0.58f),
-                        radius = size.width * 0.58f
-                    ),
-                    radius = size.width * 0.58f,
-                    center = Offset(size.width * 0.44f, size.height * 0.58f)
-                )
-            }
+            .animatedChatGlowBackdrop(isThread = true)
             .testTag("chat_thread_screen")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .widthIn(max = 620.dp)
                 .align(Alignment.Center)
         ) {
@@ -1345,9 +1516,9 @@ private fun ChatThreadView(
                     ) {
                         Text(
                             text = when (channel.channelTypeEnum()) {
-                                ChatChannelType.DIRECT -> "@ ${channel.title.uppercase()}"
-                                ChatChannelType.DEPARTMENT -> "DEPT: ${channel.title.uppercase()}"
-                                else -> "# ${channel.title.uppercase()}"
+                                ChatChannelType.DIRECT -> "@ ${formatTitleCase(channel.title)}"
+                                ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
+                                else -> "# ${formatTitleCase(channel.title)}"
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
@@ -1450,7 +1621,8 @@ private fun ChatThreadView(
                                 isReplyBranch = isReplyBranch,
                                 onReply = { onSetReply(msg) },
                                 onDelete = { onDeleteMessage(msg) },
-                                onOpenAttachment = { onOpenMessageAttachment(msg) }
+                                onOpenAttachment = { onOpenMessageAttachment(msg) },
+                                onDownloadAttachment = { onDownloadAttachment(msg) }
                             )
                         }
                     }
@@ -1602,8 +1774,8 @@ private fun ChatThreadView(
         AlertDialog(
             onDismissRequest = { showDeleteThreadConfirm = false },
             containerColor = PureWhite,
-            title = { Text("DELETE CHAT THREAD?", fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) },
-            text = { Text("Permanently delete ${channel.title.uppercase()} and every message in it?") },
+            title = { Text("Delete chat thread?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            text = { Text("Permanently delete ${formatTitleCase(channel.title)} and every message in it?") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -1611,10 +1783,10 @@ private fun ChatThreadView(
                         onDeleteChannel()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("DELETE THREAD", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete Thread", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteThreadConfirm = false }) { Text("CANCEL") }
+                TextButton(onClick = { showDeleteThreadConfirm = false }) { Text("Cancel") }
             }
         )
     }
@@ -1669,7 +1841,8 @@ private fun ThreadedMessageRow(
     isReplyBranch: Boolean,
     onReply: () -> Unit,
     onDelete: () -> Unit,
-    onOpenAttachment: () -> Unit
+    onOpenAttachment: () -> Unit,
+    onDownloadAttachment: () -> Unit
 ) {
     val timeLabel = remember(message.createdAt) {
         val millis = message.createdAt?.toDate()?.time ?: System.currentTimeMillis()
@@ -1693,14 +1866,14 @@ private fun ThreadedMessageRow(
                     photoBase64 = senderPhotoBase64
                 )
                 Text(
-                    text = if (isMe) "${message.senderName.uppercase()} (YOU)" else message.senderName.uppercase(),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.ExtraBold,
+                    text = if (isMe) "${formatTitleCase(message.senderName)} (You)" else formatTitleCase(message.senderName),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
                     color = ObsidianCharcoal
                 )
                 if (message.senderRole.isNotBlank()) {
                     Text(
-                        text = "• ${message.senderRole.uppercase()}",
+                        text = "• ${formatTitleCase(message.senderRole)}",
                         style = MaterialTheme.typography.labelSmall,
                         color = StudioTextSecondary
                     )
@@ -1804,7 +1977,8 @@ private fun ThreadedMessageRow(
                     if (message.hasAttachment) {
                         MessageAttachmentCard(
                             message = message,
-                            onClick = onOpenAttachment
+                            onClick = onOpenAttachment,
+                            onDownload = onDownloadAttachment
                         )
                     }
                 }
@@ -1845,7 +2019,8 @@ private fun ThreadedMessageRow(
 @Composable
 private fun MessageAttachmentCard(
     message: ChatMessage,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDownload: () -> Unit
 ) {
     val type = message.attachmentTypeEnum()
     if (type == ChatAttachmentType.IMAGE) {
@@ -1860,7 +2035,7 @@ private fun MessageAttachmentCard(
             shape = RoundedCornerShape(14.dp),
             color = PureWhite,
             border = BorderStroke(1.dp, SubtleOutline),
-            modifier = Modifier.widthIn(min = 180.dp, max = 260.dp)
+            modifier = Modifier.widthIn(min = 190.dp, max = 264.dp)
         ) {
             Column {
                 val bmp = decoded
@@ -1887,25 +2062,38 @@ private fun MessageAttachmentCard(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = message.attachmentName.ifBlank { "Image attachment" },
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = ObsidianCharcoal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = ChatFileManager.formatFileSize(message.attachmentSizeBytes),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = message.attachmentName.ifBlank { "Image attachment" },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = ObsidianCharcoal,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = ChatFileManager.formatFileSize(message.attachmentSizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioTextSecondary
+                        )
+                    }
+                    IconButton(
+                        onClick = onDownload,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("download_attachment_${message.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = "Download image",
+                            tint = VioletPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
@@ -1934,12 +2122,12 @@ private fun MessageAttachmentCard(
             shape = RoundedCornerShape(14.dp),
             color = PureWhite,
             border = BorderStroke(1.dp, SubtleOutline),
-            modifier = Modifier.widthIn(min = 210.dp, max = 300.dp)
+            modifier = Modifier.widthIn(min = 216.dp, max = 304.dp)
         ) {
             Row(
-                modifier = Modifier.padding(10.dp),
+                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Box(
                     modifier = Modifier
@@ -1965,12 +2153,30 @@ private fun MessageAttachmentCard(
                         color = StudioTextSecondary
                     )
                 }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                    contentDescription = "Open file",
-                    tint = StudioTextSecondary,
-                    modifier = Modifier.size(16.dp)
-                )
+                IconButton(
+                    onClick = onDownload,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("download_attachment_${message.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Download,
+                        contentDescription = "Download file",
+                        tint = VioletPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onClick,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                        contentDescription = "Open file",
+                        tint = StudioTextSecondary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
             }
         }
     }
@@ -1981,6 +2187,22 @@ private fun StagedAttachmentBanner(
     attachment: StagedChatAttachment,
     onRemove: () -> Unit
 ) {
+    val thumb by produceState<Bitmap?>(initialValue = null, attachment.id, attachment.localCachePath) {
+        if (attachment.type == ChatAttachmentType.IMAGE) {
+            value = withContext(Dispatchers.IO) {
+                ChatFileManager.decodeMessageBitmap(
+                    ChatMessage(
+                        id = attachment.id,
+                        attachmentType = ChatAttachmentType.IMAGE.name,
+                        attachmentLocalPath = attachment.localCachePath,
+                        attachmentDataBase64 = attachment.base64Payload
+                    ),
+                    maxEdgePx = 180
+                )
+            }
+        }
+    }
+
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = PureWhite,
@@ -2000,14 +2222,26 @@ private fun StagedAttachmentBanner(
                 ChatAttachmentType.AUDIO -> Triple(KpiLavenderBg, VioletPrimary, Icons.Filled.AudioFile)
                 else -> Triple(SoftBlush, CrimsonBlocked, Icons.Filled.Description)
             }
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(bg),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
+            val bmp = thumb
+            if (bmp != null) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = attachment.fileName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(bg),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -2061,7 +2295,7 @@ private fun ChannelPickerBottomSheet(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
-                    Text("WORKSPACE CHANNELS", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
+                    Text("Workspace Channels", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
                     Text("General, project, department & 1:1 DM chats", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                 }
                 FilledTonalButton(
@@ -2071,7 +2305,7 @@ private fun ChannelPickerBottomSheet(
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("NEW", fontWeight = FontWeight.Bold)
+                    Text("New", fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -2110,9 +2344,9 @@ private fun ChannelPickerBottomSheet(
                         }
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                text = ch.title.uppercase(),
+                                text = formatTitleCase(ch.title),
                                 style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.ExtraBold,
+                                fontWeight = FontWeight.Bold,
                                 color = ObsidianCharcoal
                             )
                             Text(

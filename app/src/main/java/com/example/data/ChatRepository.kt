@@ -388,7 +388,7 @@ class ChatRepository(private val core: AgencyRepository) {
         val chTitle = channelObj?.title ?: "Chat"
         core.createNotification(
             category = NotificationCategory.CHAT,
-            title = "NEW MESSAGE • ${chTitle.uppercase()}",
+            title = "New Message • $chTitle",
             body = "$senderName: $preview",
             actor = actor,
             targetUid = targetUid,

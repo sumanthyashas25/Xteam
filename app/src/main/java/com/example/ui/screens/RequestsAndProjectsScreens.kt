@@ -11,6 +11,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -151,9 +152,9 @@ fun RequestsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
                             Column(modifier = Modifier.weight(1f).padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(req.projectTitle.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                                Text(formatTitleCase(req.projectTitle), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                                 Text(
-                                    "${req.clientCompanyName.uppercase()} • LEAD: ${req.responsibleManagerName.ifBlank { "UNASSIGNED" }.uppercase()}",
+                                    "${formatTitleCase(req.clientCompanyName)} • Lead: ${formatTitleCase(req.responsibleManagerName.ifBlank { "Unassigned" })}",
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Medium,
                                     color = StudioTextSecondary
@@ -219,7 +220,7 @@ fun RequestsScreen(
 }
 
 @Composable
-private fun RequestDecisionDialog(
+fun RequestDecisionDialog(
     state: AgencyUiState,
     request: ProjectRequest,
     canAccept: Boolean,
@@ -264,67 +265,81 @@ private fun RequestDecisionDialog(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .systemBarsPadding()
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                // Reference Screen 2 Top Bar: Back arrow + centered "Details"
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Top Bar anchored safely below status bar
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .windowInsetsPadding(WindowInsets.statusBars)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
                     }
-                    Text("DETAILS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                    Text("Request Details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                     Spacer(Modifier.size(48.dp))
                 }
 
-                // Header Summary Strip
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                // Scrollable body (summary strip, 3-step timeline, quotation CTA, key/value details, routing drafts)
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Box(
-                        modifier = Modifier.size(44.dp).clip(CircleShape).background(MutedSurface),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Outlined.Description, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.size(44.dp).clip(CircleShape).background(MutedSurface),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Outlined.Description, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Request Title", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+                                Text(
+                                    text = formatTitleCase(request.projectTitle),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = ObsidianCharcoal,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            StatusPill(st.label, stBg, stFg)
+                        }
                     }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("REQUEST TITLE:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
-                        Text(request.projectTitle.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal, maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+                    item {
+                        StepProgressTimeline(
+                            steps = listOf(
+                                TimelineStep("Received", "Captured", completed = true),
+                                TimelineStep("Quoted", targetQuote?.quoteNumber ?: "Pending", completed = targetQuote != null),
+                                TimelineStep("Approved", st.label, completed = st == DecisionStatus.ACCEPTED)
+                            )
+                        )
                     }
-                    StatusPill(st.label.uppercase(), stBg, stFg)
-                }
 
-                // 3-Step Request Progress Timeline
-                StepProgressTimeline(
-                    steps = listOf(
-                        TimelineStep("Received", "Captured", completed = true),
-                        TimelineStep("Quoted", targetQuote?.quoteNumber ?: "Pending", completed = targetQuote != null),
-                        TimelineStep("Approved", st.label, completed = st == DecisionStatus.ACCEPTED)
-                    )
-                )
+                    item {
+                        Button(
+                            onClick = { onOpenQuoteBuilder(targetQuote) },
+                            shape = RoundedCornerShape(999.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                            modifier = Modifier.fillMaxWidth().height(50.dp)
+                        ) {
+                            Icon(Icons.AutoMirrored.Outlined.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (targetQuote == null) "Build Quotation" else "Open Quotation (${targetQuote.quoteNumber})", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
 
-                // Full-width Jet-Black CTA to Build / Open Quotation
-                Button(
-                    onClick = { onOpenQuoteBuilder(targetQuote) },
-                    shape = RoundedCornerShape(999.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
-                    modifier = Modifier.fillMaxWidth().height(52.dp)
-                ) {
-                    Icon(Icons.Outlined.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(if (targetQuote == null) "Build Quotation" else "Open Quotation (${targetQuote.quoteNumber})", fontWeight = FontWeight.SemiBold)
-                }
-
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item {
                         val rows = buildList {
                             add(DetailKeyValueRow("Client", request.clientCompanyName))
@@ -388,28 +403,44 @@ private fun RequestDecisionDialog(
                     }
                 }
 
-                if (request.decisionStatusEnum() == DecisionStatus.PENDING) {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                // Anchored Safe-Inset Bottom Decision Bar (never clipped behind gesture nav or tall headers)
+                if (request.decisionStatusEnum() == DecisionStatus.PENDING && (canAccept || canDecline)) {
+                    Surface(
+                        color = PureWhite,
+                        border = BorderStroke(1.dp, SubtleOutline),
+                        shadowElevation = 8.dp,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        if (canAccept) {
-                            SlideToActionButton(
-                                label = "SLIDE TO ACCEPT",
-                                enabled = targetQuote != null && drafts.isNotEmpty(),
-                                onSlideComplete = { if (targetQuote != null) onAccept(targetQuote, drafts) },
-                                modifier = Modifier.fillMaxWidth(),
-                                testTag = "accept_project_button"
-                            )
-                        }
-                        if (canDecline) {
-                            OutlinedButton(
-                                onClick = { showDeclineConfirm = true },
-                                shape = RoundedCornerShape(999.dp),
-                                border = BorderStroke(1.dp, SubtleOutline),
-                                modifier = Modifier.fillMaxWidth().height(48.dp).testTag("decline_request_button"),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = CrimsonBlocked)
-                            ) { Text("DECLINE REQUEST", fontWeight = FontWeight.Bold) }
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                                .padding(horizontal = 18.dp, vertical = 12.dp)
+                        ) {
+                            if (canAccept) {
+                                SlideToActionButton(
+                                    label = "SLIDE TO ACCEPT",
+                                    enabled = targetQuote != null && drafts.isNotEmpty(),
+                                    onSlideComplete = { if (targetQuote != null) onAccept(targetQuote, drafts) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    testTag = "accept_project_button"
+                                )
+                            }
+                            if (canDecline) {
+                                OutlinedButton(
+                                    onClick = { showDeclineConfirm = true },
+                                    shape = RoundedCornerShape(999.dp),
+                                    border = BorderStroke(1.dp, CrimsonBlocked.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                        .testTag("decline_request_button"),
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CrimsonBlocked)
+                                ) {
+                                    Text("Decline Request", fontWeight = FontWeight.Bold)
+                                }
+                            }
                         }
                     }
                 }
@@ -593,11 +624,11 @@ fun ProjectsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
                             Column(Modifier.weight(1f).padding(end = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(proj.title.uppercase(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
-                                Text("${proj.clientCompanyName.uppercase()} • ${proj.approvedQuoteNumber} v${proj.approvedQuoteRevision}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = StudioTextSecondary)
+                                Text(formatTitleCase(proj.title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                                Text("${formatTitleCase(proj.clientCompanyName)} • ${proj.approvedQuoteNumber} v${proj.approvedQuoteRevision}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium, color = StudioTextSecondary)
                             }
                             StatusPill(
-                                proj.statusEnum().label.uppercase(),
+                                proj.statusEnum().label,
                                 if (allDone) SoftMint else KpiSkyBg,
                                 if (allDone) DeepMintInk else InfoPillInk
                             )
@@ -727,7 +758,7 @@ private fun ProjectDetailDialog(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
                     }
-                    Text("PROJECT DETAILS", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                    Text("Project Details", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                     Spacer(Modifier.size(48.dp))
                 }
 
@@ -743,9 +774,9 @@ private fun ProjectDetailDialog(
                         Icon(Icons.Outlined.Inventory2, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("PROJECT ID:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+                        Text("Project", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
                         Text(
-                            text = "${project.approvedQuoteNumber.ifBlank { project.id.take(10) }} • ${project.title.uppercase()}",
+                            text = "${project.approvedQuoteNumber.ifBlank { project.id.take(10) }} • ${formatTitleCase(project.title)}",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
                             color = ObsidianCharcoal,
@@ -884,9 +915,9 @@ private fun ProjectDetailDialog(
                                     )
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = project.responsibleManagerName.ifBlank { "STUDIO LEAD" }.uppercase(),
+                                            text = formatTitleCase(project.responsibleManagerName.ifBlank { "Studio Lead" }),
                                             style = MaterialTheme.typography.titleSmall,
-                                            fontWeight = FontWeight.ExtraBold,
+                                            fontWeight = FontWeight.Bold,
                                             color = ObsidianCharcoal
                                         )
                                         Text(

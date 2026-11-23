@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -191,6 +192,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
     var activeDeliverable by remember { mutableStateOf<Deliverable?>(null) }
     var showQuickCreateSheet by remember { mutableStateOf(false) }
     var showProfilePhotoDialog by remember { mutableStateOf(false) }
+    var planModeRequestKey by remember { mutableIntStateOf(0) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
@@ -238,6 +240,11 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         BackHandler { scope.launch { drawerState.close() } }
     } else if (secondaryDest != null) {
         BackHandler { secondaryDest = null }
+    } else if (activeTab == PrimaryTab.CHAT) {
+        BackHandler {
+            chatInitialChannelId = null
+            activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
+        }
     }
 
     fun openQuote(q: Quotation? = null, req: ProjectRequest? = null, proj: Project? = null) {
@@ -306,17 +313,24 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize().pastelAmbientBackdrop()) {
             val isWide = maxWidth >= 600.dp
+            val isChatFullScreen = secondaryDest == SecondaryDestination.CHAT ||
+                (secondaryDest == null && activeTab == PrimaryTab.CHAT)
 
             Box(modifier = Modifier.fillMaxSize()) {
                 Scaffold(
                     containerColor = Color.Transparent,
+                    contentWindowInsets = if (isChatFullScreen) {
+                        WindowInsets(0, 0, 0, 0)
+                    } else {
+                        ScaffoldDefaults.contentWindowInsets
+                    },
                     snackbarHost = {
                         SnackbarHost(
                             hostState = snackbarHostState,
                             modifier = Modifier.padding(
                                 start = 16.dp,
                                 end = 16.dp,
-                                bottom = if (!isWide && secondaryDest == null) 96.dp else 16.dp
+                                bottom = if (!isWide && secondaryDest == null && !isChatFullScreen) 96.dp else 16.dp
                             )
                         ) { data ->
                             val toastTitle = when (activeToastTone) {
@@ -335,8 +349,8 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                     },
                     topBar = {
                         val activeSecondary = secondaryDest
-                        if (activeSecondary == SecondaryDestination.CHAT) {
-                            // TeamChatScreen provides its own full-bleed New Chat / Thread header
+                        if (isChatFullScreen) {
+                            // TeamChatScreen renders its own full-screen header and edge-to-edge backdrop
                         } else if (activeSecondary != null) {
                             TopAppBar(
                                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
@@ -451,8 +465,14 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                         }
                     }
                 ) { innerPadding ->
-                    Row(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
-                        if (isWide && secondaryDest == null) {
+                    Row(
+                        modifier = if (isChatFullScreen) {
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier.fillMaxSize().padding(innerPadding)
+                        }
+                    ) {
+                        if (isWide && secondaryDest == null && !isChatFullScreen) {
                             NavigationRail(containerColor = PureWhite) {
                                 visibleTabs.forEach { tab ->
                                     NavigationRailItem(
@@ -631,7 +651,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             },
                                             onCloseChat = {
                                                 chatInitialChannelId = null
-                                                activeTab = PrimaryTab.HOME
+                                                activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
                                             }
                                         )
                                         PrimaryTab.MY_WORK -> MyWorkScreen(
@@ -651,7 +671,16 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                                     blockedReason = "",
                                                     helpNeeded = ""
                                                 )
-                                            }
+                                            },
+                                            planModeRequestKey = planModeRequestKey,
+                                            onSavePlanItem = { item, cb -> viewModel.savePlanItem(item, cb) },
+                                            onTogglePlanCompleted = { viewModel.togglePlanItemCompleted(it) },
+                                            onReschedulePlanTomorrow = { viewModel.reschedulePlanItemTomorrow(it) },
+                                            onCarryOverIncompletePlans = { items, day -> viewModel.carryOverIncompletePlans(items, day) },
+                                            onDeletePlanItem = { viewModel.deletePlanItem(it) },
+                                            onToggleFocusTimer = { viewModel.toggleFocusTimer() },
+                                            onResetFocusTimer = { viewModel.resetFocusTimer() },
+                                            onSetFocusPreset = { viewModel.setFocusPresetMinutes(it) }
                                         )
                                     }
                                 }
@@ -662,7 +691,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
 
                 // 5-Slot Floating White Pill Bottom Dock with Centered Jet-Black + FAB
                 AnimatedVisibility(
-                    visible = !isWide && secondaryDest == null,
+                    visible = !isWide && secondaryDest == null && !isChatFullScreen,
                     enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 2 },
                     exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 2 },
                     modifier = Modifier.align(Alignment.BottomCenter)
@@ -704,6 +733,12 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                 showQuickCreateSheet = false
                 secondaryDest = null
                 activeTab = PrimaryTab.MY_WORK
+            },
+            onOpenDailyPlan = {
+                showQuickCreateSheet = false
+                secondaryDest = null
+                activeTab = PrimaryTab.MY_WORK
+                planModeRequestKey += 1
             },
             onOpenSecondary = { dest ->
                 showQuickCreateSheet = false
@@ -925,6 +960,7 @@ private fun QuickWorkspaceSheet(
     onOpenRequests: () -> Unit,
     onOpenProjects: () -> Unit,
     onOpenMyWork: () -> Unit,
+    onOpenDailyPlan: () -> Unit,
     onOpenSecondary: (SecondaryDestination) -> Unit
 ) {
     val firstName = member.fullName.trim().substringBefore(" ").ifBlank { "Member" }
@@ -983,6 +1019,16 @@ private fun QuickWorkspaceSheet(
                 bg = KpiMintBg,
                 tint = KpiMintStroke,
                 onClick = onOpenMyWork
+            )
+        )
+        add(
+            QuickActionTile(
+                title = "Daily Plan",
+                subtitle = "Calendar & focus",
+                icon = Icons.Filled.CalendarMonth,
+                bg = KpiLavenderBg,
+                tint = KpiLavenderStroke,
+                onClick = onOpenDailyPlan
             )
         )
         if (canSeeCommercial) {

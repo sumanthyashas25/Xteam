@@ -691,4 +691,31 @@ data class WorkspaceNotification(
     }
 }
 
+enum class PlanCategory(val label: String) {
+    TO_DO("To Do"),
+    EVENT("Event"),
+    REMINDER("Reminder"),
+    MILESTONE("Milestone")
+}
+
+@Keep
+@IgnoreExtraProperties
+data class StaffPlanItem(
+    @DocumentId val id: String = "",
+    val ownerUid: String = "",
+    val title: String = "",
+    val category: String = PlanCategory.TO_DO.name,
+    val creativeTag: String = "General",
+    val dateMillis: Long = 0L,
+    val timeRange: String = "",
+    val notes: String = "",
+    val linkedDeliverableId: String = "",
+    val completed: Boolean = false,
+    val createdAt: Timestamp? = null,
+    val updatedAt: Timestamp? = null
+) {
+    fun categoryEnum(): PlanCategory = safeEnum(category, PlanCategory.TO_DO)
+}
+
+
 
