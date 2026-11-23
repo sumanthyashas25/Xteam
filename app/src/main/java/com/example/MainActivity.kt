@@ -13,7 +13,19 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,12 +44,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.FirebaseStartup
@@ -54,12 +68,13 @@ import kotlinx.coroutines.launch
 
 enum class PrimaryTab(val label: String, val icon: ImageVector, val inactiveIcon: ImageVector) {
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home),
-    REQUESTS("Requests", Icons.Filled.DateRange, Icons.Outlined.DateRange),
-    PROJECTS("Projects", Icons.Filled.Inventory2, Icons.Outlined.Inventory2),
-    MY_WORK("My Work", Icons.Filled.Person, Icons.Outlined.Person)
+    REQUESTS("Requests", Icons.Filled.Inbox, Icons.Outlined.Inbox),
+    CHAT("Chat", Icons.AutoMirrored.Filled.Chat, Icons.AutoMirrored.Outlined.Chat),
+    MY_WORK("My Work", Icons.Filled.TaskAlt, Icons.Outlined.TaskAlt)
 }
 
 enum class SecondaryDestination(val label: String, val icon: ImageVector) {
+    PROJECTS("Projects", Icons.Filled.Work),
     CHAT("Team Chat", Icons.AutoMirrored.Filled.Chat),
     NOTIFICATIONS("Notifications", Icons.Filled.Notifications),
     CLIENTS("Clients", Icons.Filled.Contacts),
@@ -113,11 +128,12 @@ private fun XMaxAppRoot(
 internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel) {
     val context = LocalContext.current
     val member = state.myMember ?: run {
-        Surface(modifier = Modifier.fillMaxSize(), color = CrispCanvas) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = ObsidianCharcoal)
-            }
-        }
+        com.example.ui.navigation.LoadingDestinationScreen(
+            label = "Syncing workspace session…",
+            userName = state.firebaseUser?.displayName ?: "Alex",
+            canSignOut = true,
+            onSignOut = { viewModel.signOut(context) }
+        )
         return
     }
     val isStaffOnly = member.accessLevelEnum() == AccessLevel.STAFF
@@ -137,16 +153,16 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
 
     val canCreateQuote = state.hasPerm(AppPermission.CREATE_QUOTATIONS) || state.hasPerm(AppPermission.ISSUE_QUOTATIONS)
 
-    val visibleTabs = remember(isStaffOnly, canSeeCommercial, canSeeProjects) {
+    val visibleTabs = remember(isStaffOnly, canSeeCommercial) {
         buildList {
             if (isStaffOnly) {
                 add(PrimaryTab.MY_WORK)
                 if (canSeeCommercial) add(PrimaryTab.REQUESTS)
-                if (canSeeProjects) add(PrimaryTab.PROJECTS)
+                add(PrimaryTab.CHAT)
             } else {
                 add(PrimaryTab.HOME)
                 add(PrimaryTab.REQUESTS)
-                add(PrimaryTab.PROJECTS)
+                add(PrimaryTab.CHAT)
                 add(PrimaryTab.MY_WORK)
             }
         }
@@ -233,6 +249,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
 
     val permittedSecondary = remember(state.effectivePermissions, member.accessLevel) {
         buildList {
+            if (canSeeProjects) add(SecondaryDestination.PROJECTS)
             add(SecondaryDestination.CHAT)
             add(SecondaryDestination.NOTIFICATIONS)
             if (canSeeCommercial) add(SecondaryDestination.CLIENTS)
@@ -325,9 +342,11 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                                 title = {
                                     Text(
-                                        activeSecondary.label.uppercase(),
+                                        formatTitleCase(activeSecondary.label),
                                         fontWeight = FontWeight.ExtraBold,
-                                        color = ObsidianCharcoal
+                                        color = ObsidianCharcoal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 },
                                 navigationIcon = {
@@ -337,89 +356,69 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                 },
                                 actions = {
                                     SyncFeedbackChip(state.syncFeedback, state.deliverablesPendingSync)
-                                    Spacer(Modifier.width(6.dp))
-                                    CircleHeaderIconButton(
-                                        icon = Icons.Filled.Menu,
-                                        contentDescription = "Open Menu Panel",
-                                        modifier = Modifier.testTag("more_menu_button"),
-                                        onClick = { scope.launch { drawerState.open() } }
-                                    )
                                     Spacer(Modifier.width(12.dp))
                                 }
                             )
                         } else {
-                            // Reference Welcome Header (matching dashboard_UI_referance_a887d8be.jpg)
+                            // Top Welcome Header with uncompressed ExtraBold Title Case name and notifications button
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .statusBarsPadding()
-                                    .padding(horizontal = 18.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                    .padding(start = 16.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { scope.launch { drawerState.open() } }
+                                        .padding(vertical = 2.dp, horizontal = 2.dp)
                                 ) {
                                     StudioAvatar(
                                         name = member.fullName,
                                         photoBase64 = member.photoBase64,
-                                        size = 46.dp,
+                                        size = 44.dp,
                                         borderColor = PureWhite,
-                                        showEditBadge = true,
+                                        showEditBadge = false,
                                         modifier = Modifier.testTag("header_profile_avatar"),
-                                        onClick = { showProfilePhotoDialog = true }
+                                        onClick = { scope.launch { drawerState.open() } }
                                     )
                                     Column(
                                         verticalArrangement = Arrangement.spacedBy(1.dp),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .clickable { scope.launch { drawerState.open() } }
-                                            .padding(vertical = 2.dp, horizontal = 2.dp)
+                                        modifier = Modifier.weight(1f)
                                     ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Text(
-                                                text = "WELCOME",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = StudioTextSecondary
-                                            )
-                                            val companyName = state.company?.name?.trim().orEmpty()
-                                            if (companyName.isBlank() || companyName.equals("X.MAX", ignoreCase = true)) {
-                                                XMaxLogoImage(tint = StudioTextSecondary.copy(alpha = 0.72f), height = 8.dp)
-                                            }
-                                        }
                                         Text(
-                                            text = member.fullName.ifBlank { "MEMBER" }.uppercase(),
-                                            style = MaterialTheme.typography.titleLarge,
+                                            text = "Welcome",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                                            fontWeight = FontWeight.Medium,
+                                            color = StudioTextSecondary,
+                                            maxLines = 1
+                                        )
+                                        Text(
+                                            text = formatTitleCase(member.fullName.ifBlank { "Member" }),
+                                            style = MaterialTheme.typography.titleMedium.copy(
+                                                fontSize = 16.sp,
+                                                lineHeight = 20.sp
+                                            ),
                                             fontWeight = FontWeight.ExtraBold,
                                             color = ObsidianCharcoal,
-                                            maxLines = 1,
+                                            maxLines = 2,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
+                                Spacer(Modifier.width(8.dp))
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     if (state.syncFeedback != com.example.ui.SyncFeedback.IDLE || state.deliverablesPendingSync) {
                                         SyncFeedbackChip(state.syncFeedback, state.deliverablesPendingSync)
+                                        Spacer(Modifier.width(4.dp))
                                     }
-                                    CircleHeaderIconButton(
-                                        icon = Icons.Outlined.ChatBubbleOutline,
-                                        contentDescription = "Team Chat & Files",
-                                        modifier = Modifier.testTag("open_chat_button"),
-                                        onClick = {
-                                            chatInitialChannelId = null
-                                            secondaryDest = SecondaryDestination.CHAT
-                                        }
-                                    )
                                     Box {
                                         CircleHeaderIconButton(
                                             icon = Icons.Outlined.Notifications,
@@ -431,7 +430,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             Box(
                                                 modifier = Modifier
                                                     .align(Alignment.TopEnd)
-                                                    .padding(top = 4.dp, end = 4.dp)
+                                                    .padding(top = 3.dp, end = 3.dp)
                                                     .defaultMinSize(minWidth = 17.dp, minHeight = 17.dp)
                                                     .clip(CircleShape)
                                                     .background(WarmAlarmAmber)
@@ -447,12 +446,6 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             }
                                         }
                                     }
-                                    CircleHeaderIconButton(
-                                        icon = Icons.Filled.Menu,
-                                        contentDescription = "Open Menu Panel",
-                                        modifier = Modifier.testTag("more_menu_button"),
-                                        onClick = { scope.launch { drawerState.open() } }
-                                    )
                                 }
                             }
                         }
@@ -473,156 +466,194 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                         }
 
                         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                            val dest = secondaryDest
-                            if (dest != null) {
-                                when (dest) {
-                                    SecondaryDestination.CHAT -> TeamChatScreen(
-                                        state = state,
-                                        initialChannelId = chatInitialChannelId,
-                                        observeMessages = { channelId -> viewModel.observeChatMessages(channelId) },
-                                        onEnsureGeneralChannel = { viewModel.ensureDefaultGeneralChannel() },
-                                        onCreateChannel = { title, topic, type, proj, cb ->
-                                            viewModel.createOrOpenChatChannel(title, topic, type, proj, cb)
-                                        },
-                                        onSendMessage = { chId, body, parent, attachment, cb ->
-                                            viewModel.sendChatMessage(chId, body, parent, attachment, cb)
-                                        },
-                                        onReportMessage = { msg, err -> viewModel.reportChatMessage(msg, err) },
-                                        onOpenDirectChat = { targetMember, cb ->
-                                            viewModel.openDirectChat(targetMember, cb)
-                                        },
-                                        onOpenDepartmentChat = { dept, cb ->
-                                            viewModel.openDepartmentChat(dept, cb)
-                                        },
-                                        onDeleteChannel = { channelId, onDone ->
-                                            viewModel.deleteChatChannel(channelId, onDone)
-                                        },
-                                        onDeleteMessage = { channelId, messageId ->
-                                            viewModel.deleteChatMessage(channelId, messageId)
-                                        },
-                                        onCloseChat = {
-                                            chatInitialChannelId = null
-                                            secondaryDest = null
-                                        }
-                                    )
-                                    SecondaryDestination.NOTIFICATIONS -> NotificationsScreen(
-                                        state = state,
-                                        onMarkRead = { viewModel.markNotificationRead(it) },
-                                        onMarkAllRead = { viewModel.markAllNotificationsRead() },
-                                        onToggleSound = { viewModel.toggleNotificationSound(it) },
-                                        onTestSound = { viewModel.testNotificationSound() },
-                                        onDeleteNotification = { viewModel.deleteNotification(it) },
-                                        onOpenChatChannel = { chId ->
-                                            chatInitialChannelId = chId
-                                            secondaryDest = SecondaryDestination.CHAT
-                                        },
-                                        onOpenDeliverableById = { delivId ->
-                                            val target = state.deliverables.firstOrNull { it.id == delivId }
-                                            if (target != null) {
+                            AnimatedContent(
+                                targetState = Pair(secondaryDest, activeTab),
+                                transitionSpec = {
+                                    (fadeIn(tween(210)) + slideInVertically(tween(220)) { it / 32 })
+                                        .togetherWith(fadeOut(tween(140)))
+                                },
+                                label = "workspace_content_transition"
+                            ) { (dest, tab) ->
+                                if (dest != null) {
+                                    when (dest) {
+                                        SecondaryDestination.PROJECTS -> ProjectsScreen(
+                                            state = state,
+                                            onOpenDeliverable = { activeDeliverable = it },
+                                            onAssignDeliverable = { d, m, due -> viewModel.assignDeliverable(d, m, due) },
+                                            onOpenAddOnQuote = { proj -> openQuote(proj = proj) },
+                                            onToggleDeleteProject = { proj, del -> viewModel.toggleDeleteProject(proj, del) },
+                                            onPermanentlyDeleteProject = { proj -> viewModel.permanentlyDeleteProject(proj) },
+                                            onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() }
+                                        )
+                                        SecondaryDestination.CHAT -> TeamChatScreen(
+                                            state = state,
+                                            initialChannelId = chatInitialChannelId,
+                                            observeMessages = { channelId -> viewModel.observeChatMessages(channelId) },
+                                            onEnsureGeneralChannel = { viewModel.ensureDefaultGeneralChannel() },
+                                            onCreateChannel = { title, topic, type, proj, cb ->
+                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, cb)
+                                            },
+                                            onSendMessage = { chId, body, parent, attachment, cb ->
+                                                viewModel.sendChatMessage(chId, body, parent, attachment, cb)
+                                            },
+                                            onReportMessage = { msg, err -> viewModel.reportChatMessage(msg, err) },
+                                            onOpenDirectChat = { targetMember, cb ->
+                                                viewModel.openDirectChat(targetMember, cb)
+                                            },
+                                            onOpenDepartmentChat = { dept, cb ->
+                                                viewModel.openDepartmentChat(dept, cb)
+                                            },
+                                            onDeleteChannel = { channelId, onDone ->
+                                                viewModel.deleteChatChannel(channelId, onDone)
+                                            },
+                                            onDeleteMessage = { channelId, messageId ->
+                                                viewModel.deleteChatMessage(channelId, messageId)
+                                            },
+                                            onCloseChat = {
+                                                chatInitialChannelId = null
                                                 secondaryDest = null
-                                                activeTab = PrimaryTab.MY_WORK
-                                                activeDeliverable = target
                                             }
-                                        }
-                                    )
-                                    SecondaryDestination.CLIENTS -> ClientsScreen(
-                                        state = state,
-                                        onSaveClient = { viewModel.saveClient(it) },
-                                        onDeleteClient = { viewModel.deleteClient(it) }
-                                    )
-                                    SecondaryDestination.QUOTATIONS -> QuotationsScreen(state, onOpenQuote = { openQuote(q = it) }, onDeleteQuotation = { viewModel.deleteQuotation(it) })
-                                    SecondaryDestination.CATALOGUE -> CatalogueScreen(
-                                        state = state,
-                                        onSaveItem = { viewModel.saveCatalogueItem(it) },
-                                        onToggleArchive = { item, arch -> viewModel.setCatalogueArchived(item, arch) }
-                                    )
-                                    SecondaryDestination.PAYMENTS -> PaymentsScreen(
-                                        state = state,
-                                        onRecordPayment = { proj, amt, date, method, ref, note ->
-                                            viewModel.recordPayment(proj, amt, date, method, ref, note)
-                                        }
-                                    )
-                                    SecondaryDestination.TEAM -> TeamGovernanceScreen(
-                                        state = state,
-                                        onInviteMember = { email, lvl, dept, role, sc, scIds, perms ->
-                                            viewModel.inviteMember(email, lvl, dept, role, sc, scIds, perms)
-                                        },
-                                        onConfigureMember = { m, st, lvl, dept, role, sc, scIds, perms ->
-                                            viewModel.configureMember(m, st, lvl, dept, role, sc, scIds, perms)
-                                        },
-                                        onUpdateStaffDelegation = { staff, grants -> viewModel.updateStaffDelegation(staff, grants) }
-                                    )
-                                    SecondaryDestination.ORG_ROUTING -> OrgAndRoutingScreen(
-                                        state = state,
-                                        onSaveDepartment = { id, name, d -> viewModel.saveDepartment(id, name, d) },
-                                        onSaveJobRole = { id, name, dId -> viewModel.saveJobRole(id, name, dId) },
-                                        onRetireDepartment = { ret, repD, repR -> viewModel.retireDepartment(ret, repD, repR) },
-                                        onRetireJobRole = { ret, repD, repR -> viewModel.retireJobRole(ret, repD, repR) },
-                                        onSaveRoutingRule = { rule -> viewModel.saveRoutingRule(rule) }
-                                    )
-                                    SecondaryDestination.COMPANY_SETTINGS -> CompanySettingsScreen(
-                                        state = state,
-                                        onSaveCompany = { viewModel.updateCompanyProfile(it) }
-                                    )
-                                    SecondaryDestination.ACTIVITY -> ActivityLogScreen(
-                                        state = state,
-                                        onDeleteLog = { viewModel.deleteActivityLog(it) },
-                                        onClearAllLogs = { viewModel.clearAllActivityLogs() }
-                                    )
-                                }
-                            } else {
-                                when (activeTab) {
-                                    PrimaryTab.HOME -> HomeScreen(
-                                        state = state,
-                                        onOpenNewQuote = { openQuote() },
-                                        onNavigateRequests = { activeTab = PrimaryTab.REQUESTS },
-                                        onNavigateProjects = { activeTab = PrimaryTab.PROJECTS },
-                                        onNavigateMyWork = { activeTab = PrimaryTab.MY_WORK },
-                                        onNavigateTeam = { secondaryDest = SecondaryDestination.TEAM },
-                                        onNavigatePayments = { secondaryDest = SecondaryDestination.PAYMENTS },
-                                        onNavigateCompanySettings = { secondaryDest = SecondaryDestination.COMPANY_SETTINGS },
-                                        onNavigateOrgRouting = { secondaryDest = SecondaryDestination.ORG_ROUTING },
-                                        onOpenMenuPanel = { scope.launch { drawerState.open() } },
-                                        onOpenDeliverable = { activeDeliverable = it },
-                                        onOpenProjectQuote = { proj -> openQuote(proj = proj) },
-                                        onToggleDeleteProject = { proj, del -> viewModel.toggleDeleteProject(proj, del) },
-                                        onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() }
-                                    )
-                                    PrimaryTab.REQUESTS -> RequestsScreen(
-                                        state = state,
-                                        onOpenQuoteBuilder = { req, q -> openQuote(q = q, req = req) },
-                                        onCreateRequest = { cli, t, b, s, d, mgr -> viewModel.createRequest(cli, t, b, s, d, mgr) },
-                                        onAcceptRequest = { req, q, drafts -> viewModel.acceptRequest(req, q, drafts) },
-                                        onDeclineRequest = { req, note -> viewModel.declineRequest(req, note) }
-                                    )
-                                    PrimaryTab.PROJECTS -> ProjectsScreen(
-                                        state = state,
-                                        onOpenDeliverable = { activeDeliverable = it },
-                                        onAssignDeliverable = { d, m, due -> viewModel.assignDeliverable(d, m, due) },
-                                        onOpenAddOnQuote = { proj -> openQuote(proj = proj) },
-                                        onToggleDeleteProject = { proj, del -> viewModel.toggleDeleteProject(proj, del) },
-                                        onPermanentlyDeleteProject = { proj -> viewModel.permanentlyDeleteProject(proj) },
-                                        onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() }
-                                    )
-                                    PrimaryTab.MY_WORK -> MyWorkScreen(
-                                        state = state,
-                                        onOpenDeliverable = { activeDeliverable = it },
-                                        onStartDeliverable = { viewModel.startDeliverableWork(it) },
-                                        onClaimDepartmentTask = { viewModel.claimDepartmentDeliverable(it) },
-                                        onToggleTimer = { viewModel.toggleDeliverableTimer(it) },
-                                        onQuickSubmitReview = { deliv ->
-                                            val completedChecklist = deliv.checklist.map { it.copy(done = true) }
-                                            viewModel.submitStaffProgress(
-                                                deliverable = deliv,
-                                                status = DeliverableStatus.READY_FOR_REVIEW,
-                                                checklist = completedChecklist,
-                                                note = "Submitted directly for review",
-                                                previewUrl = deliv.previewUrl,
-                                                blockedReason = "",
-                                                helpNeeded = ""
-                                            )
-                                        }
-                                    )
+                                        )
+                                        SecondaryDestination.NOTIFICATIONS -> NotificationsScreen(
+                                            state = state,
+                                            onMarkRead = { viewModel.markNotificationRead(it) },
+                                            onMarkAllRead = { viewModel.markAllNotificationsRead() },
+                                            onToggleSound = { viewModel.toggleNotificationSound(it) },
+                                            onTestSound = { viewModel.testNotificationSound() },
+                                            onDeleteNotification = { viewModel.deleteNotification(it) },
+                                            onOpenChatChannel = { chId ->
+                                                chatInitialChannelId = chId
+                                                secondaryDest = SecondaryDestination.CHAT
+                                            },
+                                            onOpenDeliverableById = { delivId ->
+                                                val target = state.deliverables.firstOrNull { it.id == delivId }
+                                                if (target != null) {
+                                                    secondaryDest = null
+                                                    activeTab = PrimaryTab.MY_WORK
+                                                    activeDeliverable = target
+                                                }
+                                            }
+                                        )
+                                        SecondaryDestination.CLIENTS -> ClientsScreen(
+                                            state = state,
+                                            onSaveClient = { viewModel.saveClient(it) },
+                                            onDeleteClient = { viewModel.deleteClient(it) }
+                                        )
+                                        SecondaryDestination.QUOTATIONS -> QuotationsScreen(state, onOpenQuote = { openQuote(q = it) }, onDeleteQuotation = { viewModel.deleteQuotation(it) })
+                                        SecondaryDestination.CATALOGUE -> CatalogueScreen(
+                                            state = state,
+                                            onSaveItem = { viewModel.saveCatalogueItem(it) },
+                                            onToggleArchive = { item, arch -> viewModel.setCatalogueArchived(item, arch) }
+                                        )
+                                        SecondaryDestination.PAYMENTS -> PaymentsScreen(
+                                            state = state,
+                                            onRecordPayment = { proj, amt, date, method, ref, note ->
+                                                viewModel.recordPayment(proj, amt, date, method, ref, note)
+                                            }
+                                        )
+                                        SecondaryDestination.TEAM -> TeamGovernanceScreen(
+                                            state = state,
+                                            onInviteMember = { email, lvl, dept, role, sc, scIds, perms ->
+                                                viewModel.inviteMember(email, lvl, dept, role, sc, scIds, perms)
+                                            },
+                                            onConfigureMember = { m, st, lvl, dept, role, sc, scIds, perms ->
+                                                viewModel.configureMember(m, st, lvl, dept, role, sc, scIds, perms)
+                                            },
+                                            onUpdateStaffDelegation = { staff, grants -> viewModel.updateStaffDelegation(staff, grants) }
+                                        )
+                                        SecondaryDestination.ORG_ROUTING -> OrgAndRoutingScreen(
+                                            state = state,
+                                            onSaveDepartment = { id, name, d -> viewModel.saveDepartment(id, name, d) },
+                                            onSaveJobRole = { id, name, dId -> viewModel.saveJobRole(id, name, dId) },
+                                            onRetireDepartment = { ret, repD, repR -> viewModel.retireDepartment(ret, repD, repR) },
+                                            onRetireJobRole = { ret, repD, repR -> viewModel.retireJobRole(ret, repD, repR) },
+                                            onSaveRoutingRule = { rule -> viewModel.saveRoutingRule(rule) }
+                                        )
+                                        SecondaryDestination.COMPANY_SETTINGS -> CompanySettingsScreen(
+                                            state = state,
+                                            onSaveCompany = { viewModel.updateCompanyProfile(it) }
+                                        )
+                                        SecondaryDestination.ACTIVITY -> ActivityLogScreen(
+                                            state = state,
+                                            onDeleteLog = { viewModel.deleteActivityLog(it) },
+                                            onClearAllLogs = { viewModel.clearAllActivityLogs() }
+                                        )
+                                    }
+                                } else {
+                                    when (tab) {
+                                        PrimaryTab.HOME -> HomeScreen(
+                                            state = state,
+                                            onOpenNewQuote = { openQuote() },
+                                            onNavigateRequests = { activeTab = PrimaryTab.REQUESTS },
+                                            onNavigateProjects = { secondaryDest = SecondaryDestination.PROJECTS },
+                                            onNavigateMyWork = { activeTab = PrimaryTab.MY_WORK },
+                                            onNavigateTeam = { secondaryDest = SecondaryDestination.TEAM },
+                                            onNavigatePayments = { secondaryDest = SecondaryDestination.PAYMENTS },
+                                            onNavigateQuotations = { secondaryDest = SecondaryDestination.QUOTATIONS },
+                                            onNavigateCompanySettings = { secondaryDest = SecondaryDestination.COMPANY_SETTINGS },
+                                            onNavigateOrgRouting = { secondaryDest = SecondaryDestination.ORG_ROUTING },
+                                            onOpenMenuPanel = { scope.launch { drawerState.open() } },
+                                            onOpenDeliverable = { activeDeliverable = it },
+                                            onOpenProjectQuote = { proj -> openQuote(proj = proj) },
+                                            onToggleDeleteProject = { proj, del -> viewModel.toggleDeleteProject(proj, del) },
+                                            onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() }
+                                        )
+                                        PrimaryTab.REQUESTS -> RequestsScreen(
+                                            state = state,
+                                            onOpenQuoteBuilder = { req, q -> openQuote(q = q, req = req) },
+                                            onCreateRequest = { cli, t, b, s, d, mgr -> viewModel.createRequest(cli, t, b, s, d, mgr) },
+                                            onAcceptRequest = { req, q, drafts -> viewModel.acceptRequest(req, q, drafts) },
+                                            onDeclineRequest = { req, note -> viewModel.declineRequest(req, note) }
+                                        )
+                                        PrimaryTab.CHAT -> TeamChatScreen(
+                                            state = state,
+                                            initialChannelId = chatInitialChannelId,
+                                            observeMessages = { channelId -> viewModel.observeChatMessages(channelId) },
+                                            onEnsureGeneralChannel = { viewModel.ensureDefaultGeneralChannel() },
+                                            onCreateChannel = { title, topic, type, proj, cb ->
+                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, cb)
+                                            },
+                                            onSendMessage = { chId, body, parent, attachment, cb ->
+                                                viewModel.sendChatMessage(chId, body, parent, attachment, cb)
+                                            },
+                                            onReportMessage = { msg, err -> viewModel.reportChatMessage(msg, err) },
+                                            onOpenDirectChat = { targetMember, cb ->
+                                                viewModel.openDirectChat(targetMember, cb)
+                                            },
+                                            onOpenDepartmentChat = { dept, cb ->
+                                                viewModel.openDepartmentChat(dept, cb)
+                                            },
+                                            onDeleteChannel = { channelId, onDone ->
+                                                viewModel.deleteChatChannel(channelId, onDone)
+                                            },
+                                            onDeleteMessage = { channelId, messageId ->
+                                                viewModel.deleteChatMessage(channelId, messageId)
+                                            },
+                                            onCloseChat = {
+                                                chatInitialChannelId = null
+                                                activeTab = PrimaryTab.HOME
+                                            }
+                                        )
+                                        PrimaryTab.MY_WORK -> MyWorkScreen(
+                                            state = state,
+                                            onOpenDeliverable = { activeDeliverable = it },
+                                            onStartDeliverable = { viewModel.startDeliverableWork(it) },
+                                            onClaimDepartmentTask = { viewModel.claimDepartmentDeliverable(it) },
+                                            onToggleTimer = { viewModel.toggleDeliverableTimer(it) },
+                                            onQuickSubmitReview = { deliv ->
+                                                val completedChecklist = deliv.checklist.map { it.copy(done = true) }
+                                                viewModel.submitStaffProgress(
+                                                    deliverable = deliv,
+                                                    status = DeliverableStatus.READY_FOR_REVIEW,
+                                                    checklist = completedChecklist,
+                                                    note = "Submitted directly for review",
+                                                    previewUrl = deliv.previewUrl,
+                                                    blockedReason = "",
+                                                    helpNeeded = ""
+                                                )
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -630,13 +661,17 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                 }
 
                 // 5-Slot Floating White Pill Bottom Dock with Centered Jet-Black + FAB
-                if (!isWide && secondaryDest == null) {
+                AnimatedVisibility(
+                    visible = !isWide && secondaryDest == null,
+                    enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 2 },
+                    exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 2 },
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                ) {
                     FloatingStudioDock(
                         visibleTabs = visibleTabs,
                         activeTab = activeTab,
                         onSelectTab = { activeTab = it },
-                        onQuickCreate = { showQuickCreateSheet = true },
-                        modifier = Modifier.align(Alignment.BottomCenter)
+                        onQuickCreate = { showQuickCreateSheet = true }
                     )
                 }
             }
@@ -663,8 +698,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
             },
             onOpenProjects = {
                 showQuickCreateSheet = false
-                secondaryDest = null
-                activeTab = PrimaryTab.PROJECTS
+                secondaryDest = SecondaryDestination.PROJECTS
             },
             onOpenMyWork = {
                 showQuickCreateSheet = false
@@ -675,22 +709,29 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                 showQuickCreateSheet = false
                 if (dest != SecondaryDestination.CHAT) chatInitialChannelId = null
                 secondaryDest = dest
-            },
-            onOpenProfilePhoto = {
-                showQuickCreateSheet = false
-                showProfilePhotoDialog = true
             }
         )
     }
 
     if (showProfilePhotoDialog) {
-        ProfilePhotoDialog(
+        ProfileOverviewDialog(
             member = member,
+            emailOrPhone = state.firebaseUser?.email ?: state.firebaseUser?.phoneNumber ?: "",
             onPickPhoto = { uri ->
                 viewModel.updateMyProfilePhoto(context, uri) { showProfilePhotoDialog = false }
             },
+            onSaveCroppedPhoto = { bitmap, zoom, offX, offY, onDone, onError ->
+                viewModel.updateMyCroppedProfilePhoto(
+                    bitmap = bitmap,
+                    zoom = zoom,
+                    offsetXFrac = offX,
+                    offsetYFrac = offY,
+                    onDone = onDone,
+                    onError = onError
+                )
+            },
             onRemovePhoto = {
-                viewModel.removeMyProfilePhoto { showProfilePhotoDialog = false }
+                viewModel.removeMyProfilePhoto(onDone = { showProfilePhotoDialog = false })
             },
             onDismiss = { showProfilePhotoDialog = false }
         )
@@ -723,20 +764,28 @@ private fun CircleHeaderIconButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Surface(
-        onClick = onClick,
-        modifier = modifier.size(48.dp),
-        shape = CircleShape,
-        color = PureWhite,
-        border = BorderStroke(1.dp, SubtleOutline)
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = icon,
-                contentDescription = contentDescription,
-                tint = ObsidianCharcoal,
-                modifier = Modifier.size(20.dp)
-            )
+        Surface(
+            modifier = Modifier.size(36.dp),
+            shape = CircleShape,
+            color = PureWhite,
+            border = BorderStroke(1.dp, SubtleOutline),
+            shadowElevation = 1.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = contentDescription,
+                    tint = ObsidianCharcoal,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -814,10 +863,25 @@ private fun DockTabIconButton(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val bgColor by animateColorAsState(
+        targetValue = if (selected) VioletSoftBg else Color.Transparent,
+        animationSpec = tween(200),
+        label = "dock_bg_${tab.name}"
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (selected) VioletPrimary else DockIconInactive,
+        animationSpec = tween(200),
+        label = "dock_tint_${tab.name}"
+    )
+    val iconScale by animateFloatAsState(
+        targetValue = if (selected) 1.08f else 1f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = Spring.StiffnessMedium),
+        label = "dock_scale_${tab.name}"
+    )
     Surface(
         onClick = onClick,
         shape = CircleShape,
-        color = if (selected) VioletSoftBg else Color.Transparent,
+        color = bgColor,
         modifier = Modifier
             .size(48.dp)
             .testTag("nav_tab_${tab.name.lowercase()}")
@@ -826,8 +890,13 @@ private fun DockTabIconButton(
             Icon(
                 imageVector = if (selected) tab.icon else tab.inactiveIcon,
                 contentDescription = tab.label,
-                tint = if (selected) VioletPrimary else DockIconInactive,
-                modifier = Modifier.size(22.dp)
+                tint = iconTint,
+                modifier = Modifier
+                    .size(22.dp)
+                    .graphicsLayer {
+                        scaleX = iconScale
+                        scaleY = iconScale
+                    }
             )
         }
     }
@@ -856,8 +925,7 @@ private fun QuickWorkspaceSheet(
     onOpenRequests: () -> Unit,
     onOpenProjects: () -> Unit,
     onOpenMyWork: () -> Unit,
-    onOpenSecondary: (SecondaryDestination) -> Unit,
-    onOpenProfilePhoto: () -> Unit = {}
+    onOpenSecondary: (SecondaryDestination) -> Unit
 ) {
     val firstName = member.fullName.trim().substringBefore(" ").ifBlank { "Member" }
     val tiles = buildList {
@@ -888,7 +956,7 @@ private fun QuickWorkspaceSheet(
                 QuickActionTile(
                     title = "Requests",
                     subtitle = "Client pipeline",
-                    icon = Icons.Filled.DateRange,
+                    icon = Icons.Filled.Inbox,
                     bg = KpiLavenderBg,
                     tint = KpiLavenderStroke,
                     onClick = onOpenRequests
@@ -900,7 +968,7 @@ private fun QuickWorkspaceSheet(
                 QuickActionTile(
                     title = "Projects",
                     subtitle = "Live board",
-                    icon = Icons.Filled.Inventory2,
+                    icon = Icons.Filled.Work,
                     bg = KpiSkyBg,
                     tint = KpiSkyStroke,
                     onClick = onOpenProjects
@@ -976,18 +1044,17 @@ private fun QuickWorkspaceSheet(
                     photoBase64 = member.photoBase64,
                     size = 48.dp,
                     borderColor = SubtleOutline,
-                    showEditBadge = true,
-                    onClick = onOpenProfilePhoto
+                    showEditBadge = false
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "HI, ${firstName.uppercase()}!",
+                        text = "Hi, ${formatTitleCase(firstName)}!",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = StudioTextSecondary
                     )
                     Text(
-                        text = "QUICK WORKSPACE ACTIONS",
+                        text = "Quick Workspace Actions",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.ExtraBold,
                         color = ObsidianCharcoal

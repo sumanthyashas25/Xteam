@@ -942,6 +942,6 @@ class CommercialWorkflowRepository(private val core: AgencyRepository) {
 
     suspend fun deleteQuotation(quoteId: String, quoteNum: String, actor: Member) {
         sub("quotations").document(quoteId).delete().await()
-        core.logActivity(ActivityCategory.QUOTATION, "Quotation Deleted", quoteNum, actor.uid, actor.fullName, quoteId)
+        core.logActivity(ActivityCategory.QUOTATION, "Quotation Deleted", quoteNum.ifBlank { quoteId }, actor.uid, actor.fullName, quoteId)
     }
 }

@@ -24,6 +24,7 @@ import com.example.model.*
 import com.example.ui.AgencyUiState
 import com.example.ui.AgencyViewModel
 import com.example.ui.components.AgencyMenuDrawerContent
+import com.example.ui.components.ProfileOverviewDialog
 import com.example.ui.components.ProfilePhotoDialog
 import com.example.ui.components.SlideToActionButton
 import com.example.ui.components.ToastTone
@@ -167,8 +168,7 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithText("OVERVIEW").assertExists()
-    composeTestRule.onNodeWithText("PROJECTS").assertExists()
+    composeTestRule.onNodeWithText("Overview").assertExists()
     composeTestRule.onAllNodesWithText("Projects", ignoreCase = true).assertCountEquals(2)
     composeTestRule.onNodeWithTag("kpi_overview_card_1").assertExists()
     composeTestRule.onNodeWithTag("new_quote_button").assertExists()
@@ -187,7 +187,7 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithText("PRODUCTIVITY").assertExists()
+    composeTestRule.onNodeWithText("Productivity").assertExists()
     composeTestRule.onNodeWithTag("staff_priority_strip").assertExists()
     composeTestRule.onNodeWithTag("toggle_calendar_view_button").performClick()
     composeTestRule.waitForIdle()
@@ -225,6 +225,7 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("pending_sign_out_button").assertExists()
+    composeTestRule.onNodeWithText("Membership pending...").assertExists()
 
     // 5. Approved Workspace with Welcome Header & 5-Slot Floating Dock + '+' FAB
     composeTestRule.activityRule.scenario.onActivity { activity ->
@@ -236,17 +237,16 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithText("WELCOME").assertExists()
-    composeTestRule.onAllNodesWithText("X.MAX DIRECTOR")[0].assertExists()
+    composeTestRule.onNodeWithText("Welcome").assertExists()
+    composeTestRule.onAllNodesWithText("X.max Director")[0].assertExists()
     composeTestRule.onNodeWithTag("header_profile_avatar").assertExists()
-    composeTestRule.onNodeWithTag("open_chat_button").assertExists()
     composeTestRule.onNodeWithTag("notifications_button").assertExists()
-    composeTestRule.onNodeWithTag("more_menu_button").assertExists()
     composeTestRule.onNodeWithTag("dock_quick_create_button").assertExists()
     composeTestRule.onNodeWithTag("nav_tab_home").assertExists()
+    composeTestRule.onNodeWithTag("nav_tab_chat").assertExists()
     composeTestRule.onNodeWithTag("dock_quick_create_button").performClick()
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithText("QUICK WORKSPACE ACTIONS").assertExists()
+    composeTestRule.onNodeWithText("Quick Workspace Actions").assertExists()
 
     // 6. Clean Minimal White Sidebar Menu
     composeTestRule.activityRule.scenario.onActivity { activity ->
@@ -270,6 +270,7 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("menu_dest_projects").assertExists()
     composeTestRule.onNodeWithTag("menu_dest_chat").assertExists()
     composeTestRule.onNodeWithTag("menu_dest_notifications").assertExists()
     composeTestRule.onNodeWithTag("menu_sign_out_button").assertExists()
@@ -304,6 +305,9 @@ class ExampleRobolectricTest {
       }
     }
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("Welcome,").assertExists()
+    composeTestRule.onNodeWithText("Alex").assertExists()
+    composeTestRule.onNodeWithTag("loading_spinner").assertExists()
     composeTestRule.onNodeWithTag("loading_retry_button").assertExists()
     composeTestRule.onNodeWithTag("loading_sign_out_button").assertExists()
 
@@ -666,5 +670,153 @@ class ExampleRobolectricTest {
     assertEquals(false, toggledSoundTo)
     composeTestRule.onNodeWithTag("notification_card_n_1").assertExists()
     composeTestRule.onNodeWithTag("delete_notif_n_1").assertExists()
+  }
+
+  @Test
+  fun `home quotations card opens quotations list, admin strip removed, profile opens overview before photo edit, and catalogue shows added feedback`() {
+    val superAdmin = Member(
+      id = "u_admin",
+      uid = "u_admin",
+      companyNameInput = "X.MAX",
+      fullName = "X.MAX Director",
+      accessLevel = AccessLevel.SUPER_ADMIN.name,
+      status = MembershipStatus.APPROVED.name,
+      active = true,
+      departmentId = "dept_creative",
+      departmentName = "Creative",
+      jobRoleName = "Director"
+    )
+    val state = AgencyUiState(
+      authSessionStatus = AuthSessionStatus.SignedOut,
+      company = CatalogueSeedData.defaultCompanyProfile("u_admin"),
+      companyLoaded = true,
+      myMember = superAdmin,
+      memberLoaded = true,
+      members = listOf(superAdmin),
+      departments = CatalogueSeedData.defaultDepartments(),
+      catalogue = CatalogueSeedData.defaultCatalogue()
+    )
+
+    var openedExistingQuotations = false
+    var openedNewQuote = false
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          HomeScreen(
+            state = state,
+            onOpenNewQuote = { openedNewQuote = true },
+            onNavigateRequests = {},
+            onNavigateProjects = {},
+            onNavigateMyWork = {},
+            onNavigateTeam = {},
+            onNavigatePayments = {},
+            onNavigateQuotations = { openedExistingQuotations = true },
+            onOpenDeliverable = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("quick_control_team").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("new_quote_button").performClick()
+    assertTrue(openedExistingQuotations)
+    assertTrue(!openedNewQuote)
+
+    // Home header avatar opens side drawer (NOT My Profile photo dialog directly)
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      val vm = ViewModelProvider(activity)[AgencyViewModel::class.java]
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          ApprovedWorkspace(state = state, viewModel = vm)
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("header_profile_avatar").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("My Profile").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("drawer_profile_avatar").assertExists()
+
+    // Side panel drawer triggers profile photo flow
+    var openedFromDrawer = false
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          AgencyMenuDrawerContent(
+            state = state,
+            visibleTabs = PrimaryTab.entries,
+            activeTab = PrimaryTab.HOME,
+            secondaryDest = null,
+            permittedSecondary = SecondaryDestination.entries,
+            canCreateQuote = true,
+            onSelectTab = {},
+            onSelectSecondary = {},
+            onOpenNewQuote = {},
+            onOpenProfilePhoto = { openedFromDrawer = true },
+            onSignOut = {},
+            onCloseDrawer = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("drawer_profile_avatar").performClick()
+    assertTrue(openedFromDrawer)
+
+    // ProfileOverviewDialog shows overview + edit pen/camera first, then reveals Camera & Gallery options
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          ProfileOverviewDialog(
+            member = superAdmin,
+            emailOrPhone = "director@xmax.studio",
+            onPickPhoto = {},
+            onRemovePhoto = {},
+            onDismiss = {}
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithText("My Profile").assertExists()
+    composeTestRule.onNodeWithTag("profile_edit_pen_button").assertExists()
+    composeTestRule.onNodeWithTag("camera_profile_photo_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("pick_profile_photo_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("profile_edit_pen_button").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("camera_profile_photo_button").assertExists()
+    composeTestRule.onNodeWithTag("pick_profile_photo_button").assertExists()
+
+    // QuoteBuilderScreen catalogue picker displays instant selection feedback
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          com.example.ui.screens.QuoteBuilderScreen(
+            state = state,
+            initialQuote = null,
+            initialRequest = null,
+            linkedProject = null,
+            onBack = {},
+            onQuickSaveClient = { _, _ -> },
+            onCreateRequest = { _, _, _, _, _, _, _ -> },
+            onSaveOrIssueQuote = { _, _, _ -> },
+            onCreateRevision = { _, _ -> },
+            onGeneratePdf = { _, _, _ -> },
+            onMarkSent = {},
+            onMarkClientApproved = { _, _ -> }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("quote_builder_list")
+      .performScrollToNode(hasTestTag("open_catalogue_picker_button"))
+    composeTestRule.onNodeWithTag("open_catalogue_picker_button").performClick()
+    composeTestRule.waitForIdle()
+    val firstCatItem = state.catalogue.first { !it.archived }
+    composeTestRule.onNodeWithTag("catalogue_item_${firstCatItem.id}").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("catalogue_added_banner").assertExists()
+    composeTestRule.onNodeWithText("Added").assertExists()
   }
 }

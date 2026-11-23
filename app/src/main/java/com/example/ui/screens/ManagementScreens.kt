@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import com.example.domain.MoneyFormatter
 import com.example.model.*
 import com.example.ui.AgencyUiState
+import com.example.ui.components.CatalogueServiceTicketCard
 import com.example.ui.components.EmptyStateCard
 import com.example.ui.components.MetricStatCard
 import com.example.ui.components.MonochromeSearchBar
@@ -58,7 +60,7 @@ fun ClientsScreen(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("CLIENTS (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Clients (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 if (canEdit) {
                     Button(
                         onClick = { editingClient = Client() },
@@ -214,7 +216,7 @@ fun QuotationsScreen(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("QUOTATIONS (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Quotations (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 if (state.hasPerm(AppPermission.CREATE_QUOTATIONS) || state.hasPerm(AppPermission.ISSUE_QUOTATIONS)) {
                     Button(
                         onClick = { onOpenQuote(null) },
@@ -365,7 +367,7 @@ fun CatalogueScreen(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("CATALOGUE (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Catalogue (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 if (canEdit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilterChip(
@@ -398,50 +400,18 @@ fun CatalogueScreen(
                 placeholder = "Filter services, packages, or add-ons…"
             )
         }
-        items(filtered, key = { it.id }) { item ->
-            Surface(
-                onClick = { if (canEdit) editing = item },
-                shape = RoundedCornerShape(22.dp),
-                color = PureWhite,
-                border = BorderStroke(1.dp, SubtleOutline),
-                shadowElevation = 1.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(item.name.uppercase(), fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal, modifier = Modifier.weight(1f, fill = false))
-                            if (item.archived) StatusPill("ARCHIVED", SoftBlush, CrimsonBlocked)
-                        }
-                        Text("${item.kindEnum().label} • ${item.category}", style = MaterialTheme.typography.labelMedium, color = StudioTextSecondary)
-                        if (item.description.isNotBlank()) {
-                            Text(item.description, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary, maxLines = 2)
-                        }
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            when (item.pricingModeEnum()) {
-                                PricingMode.PERCENTAGE_SURCHARGE -> "+${item.surchargePercent}%"
-                                PricingMode.CUSTOM_QUOTE -> "Custom"
-                                PricingMode.ACTUAL_COST -> "Actuals"
-                                else -> MoneyFormatter.formatInr(item.pricePaise)
-                            },
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = ObsidianCharcoal
-                        )
-                        if (canEdit) {
-                            TextButton(onClick = { onToggleArchive(item, !item.archived) }, contentPadding = PaddingValues(0.dp)) {
-                                Text(if (item.archived) "Restore" else "Archive", color = InfoPillInk, style = MaterialTheme.typography.labelMedium)
-                            }
-                        }
-                    }
+        itemsIndexed(filtered, key = { _, it -> it.id }) { index, item ->
+            CatalogueServiceTicketCard(
+                item = item,
+                index = index,
+                buttonLabel = if (canEdit) "Check" else "Details",
+                onButtonClick = {
+                    if (canEdit) editing = item
+                },
+                onCardClick = {
+                    if (canEdit) editing = item
                 }
-            }
+            )
         }
     }
 
@@ -505,14 +475,14 @@ fun PaymentsScreen(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 108.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        item { Text("PAYMENTS & RECEIVABLES", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
+        item { Text("Payments & Receivables", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricStatCard("Collected", MoneyFormatter.formatInr(totalPaid), "of ${MoneyFormatter.formatInr(totalAgreed)}", Icons.Filled.AccountBalanceWallet, containerColor = SoftMint, accentColor = DeepMintInk, modifier = Modifier.weight(1f))
                 MetricStatCard("Outstanding", MoneyFormatter.formatInr(totalBalance), "${activeProjects.count { it.outstandingPaise > 0L }} open projects", Icons.Filled.Schedule, containerColor = MutedSurface, accentColor = ObsidianCharcoal, modifier = Modifier.weight(1f))
             }
         }
-        item { Text("PROJECT BALANCES", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
+        item { Text("Project Balances", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
         items(activeProjects, key = { it.id }) { proj ->
             Card(
                 shape = RoundedCornerShape(22.dp),
@@ -542,7 +512,7 @@ fun PaymentsScreen(
                 }
             }
         }
-        item { Text("PAYMENT LEDGER (${state.payments.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
+        item { Text("Payment Ledger (${state.payments.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
         items(state.payments, key = { it.id }) { p ->
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -646,7 +616,7 @@ fun ActivityLogScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "INTERNAL ACTIVITY LOG",
+                    "Internal Activity Log",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal,

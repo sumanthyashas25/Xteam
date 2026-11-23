@@ -66,7 +66,7 @@ fun TeamGovernanceScreen(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("TEAM & PERMISSIONS (${state.members.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Team & Permissions (${state.members.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 if (isSuper) {
                     Button(
                         onClick = { showInviteDialog = true },
@@ -516,7 +516,7 @@ fun OrgAndRoutingScreen(
     ) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("DEPARTMENTS (${activeDepts.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Departments (${activeDepts.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 Button(
                     onClick = { showAddDept = true },
                     shape = RoundedCornerShape(999.dp),
@@ -549,7 +549,7 @@ fun OrgAndRoutingScreen(
 
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("JOB ROLES (${activeRoles.size})", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                Text("Job Roles (${activeRoles.size})", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 Button(
                     onClick = { showAddRole = true },
                     shape = RoundedCornerShape(999.dp),
@@ -581,7 +581,7 @@ fun OrgAndRoutingScreen(
             }
         }
 
-        item { Text("SERVICE-TO-ROLE ROUTING RULES (${state.routingRules.size})", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
+        item { Text("Service-to-Role Routing Rules (${state.routingRules.size})", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal) }
         items(state.routingRules, key = { it.id }) { rule ->
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -887,7 +887,7 @@ fun NotificationsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "NOTIFICATIONS (${relevant.size})",
+                    "Notifications (${relevant.size})",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal,

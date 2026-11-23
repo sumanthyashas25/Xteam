@@ -608,6 +608,7 @@ service cloud.firestore {
                          incoming().createdAt == existing().createdAt &&
                          meExists(companyId) &&
                          canUpdateQuotation(companyId);
+        allow delete: if isValidId(companyId) && isValidId(quoteId) && meExists(companyId) && isSuper(fetchMe(companyId));
       }
 
       match /projects/{projectId} {

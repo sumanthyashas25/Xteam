@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -10,7 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -19,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +47,7 @@ private enum class DashboardProjectSegment(val label: String) {
     COMPLETED("Completed")
 }
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun HomeScreen(
     state: AgencyUiState,
@@ -55,6 +57,7 @@ fun HomeScreen(
     onNavigateMyWork: () -> Unit,
     onNavigateTeam: () -> Unit,
     onNavigatePayments: () -> Unit,
+    onNavigateQuotations: () -> Unit = onOpenNewQuote,
     onNavigateCompanySettings: () -> Unit = {},
     onNavigateOrgRouting: () -> Unit = {},
     onOpenMenuPanel: () -> Unit = {},
@@ -79,9 +82,7 @@ fun HomeScreen(
     val memberPhotoByUid = remember(state.members) { state.members.associate { it.uid to it.photoBase64 } }
 
     val activeProjects = remember(state.projects) { state.projects.filter { !it.deleted } }
-    val pendingMembers = remember(state.members) { state.members.filter { it.statusEnum() == MembershipStatus.PENDING } }
     val pendingRequests = remember(state.requests) { state.requests.filter { it.decisionStatusEnum() == DecisionStatus.PENDING } }
-    val blockedDeliverables = remember(state.deliverables) { state.deliverables.filter { it.statusEnum() == DeliverableStatus.BLOCKED } }
     val reviewQueue = remember(state.deliverables) { state.deliverables.filter { it.statusEnum() == DeliverableStatus.READY_FOR_REVIEW } }
     val myAssigned = remember(state.deliverables, member.uid) {
         state.deliverables
@@ -114,14 +115,60 @@ fun HomeScreen(
         }
     }
 
-    val scopedRequestsCount = if (cutoffMillis == 0L) pendingRequests.size else {
-        pendingRequests.count { (it.createdAt?.seconds?.times(1000L) ?: nowMillis) >= cutoffMillis }
+    val requestTimestamps = remember(pendingRequests, myAssigned, access, nowMillis) {
+        if (access == AccessLevel.STAFF) {
+            myAssigned.map { it.updatedAt?.toDate()?.time ?: it.createdAt?.toDate()?.time ?: nowMillis }
+        } else {
+            pendingRequests.map { it.createdAt?.toDate()?.time ?: it.updatedAt?.toDate()?.time ?: nowMillis }
+        }
     }
-    val scopedQuotesCount = if (cutoffMillis == 0L) state.quotations.size else {
-        state.quotations.count { it.issuedDateMillis == 0L || it.issuedDateMillis >= cutoffMillis }
+    val quoteTimestamps = remember(state.quotations, reviewQueue, access, nowMillis) {
+        if (access == AccessLevel.STAFF) {
+            reviewQueue.map { it.updatedAt?.toDate()?.time ?: it.createdAt?.toDate()?.time ?: nowMillis }
+        } else {
+            state.quotations.map {
+                when {
+                    it.issuedDateMillis > 0L -> it.issuedDateMillis
+                    it.createdAt != null -> it.createdAt.toDate().time
+                    it.updatedAt != null -> it.updatedAt.toDate().time
+                    else -> nowMillis
+                }
+            }
+        }
     }
-    val scopedProjectsCount = activeProjects.size
-    val scopedTasksCount = if (access == AccessLevel.STAFF) myAssigned.size else state.deliverables.size
+    val projectTimestamps = remember(activeProjects, nowMillis) {
+        activeProjects.map { it.createdAt?.toDate()?.time ?: it.updatedAt?.toDate()?.time ?: nowMillis }
+    }
+    val taskListForMetric = if (access == AccessLevel.STAFF) myAssigned else state.deliverables
+    val taskTimestamps = remember(taskListForMetric, nowMillis) {
+        taskListForMetric.map { it.updatedAt?.toDate()?.time ?: it.createdAt?.toDate()?.time ?: nowMillis }
+    }
+
+    val scopedRequestsCount = remember(requestTimestamps, cutoffMillis) {
+        if (cutoffMillis == 0L) requestTimestamps.size else requestTimestamps.count { it >= cutoffMillis }
+    }
+    val scopedQuotesCount = remember(quoteTimestamps, cutoffMillis) {
+        if (cutoffMillis == 0L) quoteTimestamps.size else quoteTimestamps.count { it >= cutoffMillis }
+    }
+    val scopedProjectsCount = remember(projectTimestamps, cutoffMillis, selectedWindow, activeProjects) {
+        if (cutoffMillis == 0L) activeProjects.size else projectTimestamps.count { it >= cutoffMillis }
+    }
+    val scopedTasksCount = remember(taskTimestamps, cutoffMillis, taskListForMetric) {
+        if (cutoffMillis == 0L) taskListForMetric.size else taskTimestamps.count { it >= cutoffMillis }
+    }
+
+    val requestsSeries = remember(requestTimestamps, selectedWindow, nowMillis) {
+        buildSeriesBuckets(requestTimestamps, selectedWindow, nowMillis)
+    }
+    val quotesSeries = remember(quoteTimestamps, selectedWindow, nowMillis) {
+        buildSeriesBuckets(quoteTimestamps, selectedWindow, nowMillis)
+    }
+    val projectsSeries = remember(projectTimestamps, selectedWindow, nowMillis) {
+        buildSeriesBuckets(projectTimestamps, selectedWindow, nowMillis)
+    }
+    val tasksSeries = remember(taskTimestamps, selectedWindow, nowMillis) {
+        buildSeriesBuckets(taskTimestamps, selectedWindow, nowMillis)
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -138,7 +185,7 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "OVERVIEW",
+                    text = "Overview",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal
@@ -179,7 +226,7 @@ fun HomeScreen(
                         label = if (access == AccessLevel.STAFF) "Today" else "Requests",
                         containerColor = KpiLavenderBg,
                         strokeColor = KpiLavenderStroke,
-                        sparklinePoints = listOf(0.28f, 0.72f, 0.35f, 0.88f, 0.48f, 0.92f),
+                        sparklinePoints = requestsSeries,
                         onClick = { if (access == AccessLevel.STAFF) onNavigateMyWork() else onNavigateRequests() },
                         modifier = Modifier
                             .weight(1f)
@@ -190,8 +237,8 @@ fun HomeScreen(
                         label = if (access == AccessLevel.STAFF) "In Review" else "Quotations",
                         containerColor = KpiPeachBg,
                         strokeColor = KpiPeachStroke,
-                        sparklinePoints = listOf(0.35f, 0.58f, 0.42f, 0.76f, 0.65f, 0.90f),
-                        onClick = { if (canCreateQuote) onOpenNewQuote() else onNavigateMyWork() },
+                        sparklinePoints = quotesSeries,
+                        onClick = { if (access == AccessLevel.STAFF) onNavigateMyWork() else onNavigateQuotations() },
                         modifier = Modifier
                             .weight(1f)
                             .testTag("new_quote_button")
@@ -206,7 +253,7 @@ fun HomeScreen(
                         label = "Projects",
                         containerColor = KpiSkyBg,
                         strokeColor = KpiSkyStroke,
-                        sparklinePoints = listOf(0.45f, 0.30f, 0.68f, 0.52f, 0.84f, 0.78f),
+                        sparklinePoints = projectsSeries,
                         onClick = onNavigateProjects,
                         modifier = Modifier
                             .weight(1f)
@@ -217,7 +264,7 @@ fun HomeScreen(
                         label = "All Task",
                         containerColor = KpiMintBg,
                         strokeColor = KpiMintStroke,
-                        sparklinePoints = listOf(0.38f, 0.70f, 0.50f, 0.86f, 0.62f, 0.88f),
+                        sparklinePoints = tasksSeries,
                         onClick = onNavigateMyWork,
                         modifier = Modifier
                             .weight(1f)
@@ -239,7 +286,7 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "PROJECTS",
+                        text = "Projects",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.ExtraBold,
                         color = ObsidianCharcoal
@@ -280,10 +327,20 @@ fun HomeScreen(
                             DashboardProjectSegment.COMPLETED -> completedProjects.size
                         }
                         val selected = selectedSegment == seg
+                        val pillContainer by animateColorAsState(
+                            targetValue = if (selected) ObsidianCharcoal else PureWhite,
+                            animationSpec = tween(180),
+                            label = "seg_bg_${seg.name}"
+                        )
+                        val pillContent by animateColorAsState(
+                            targetValue = if (selected) PureWhite else ObsidianCharcoal,
+                            animationSpec = tween(180),
+                            label = "seg_fg_${seg.name}"
+                        )
                         Surface(
                             onClick = { selectedSegment = seg },
                             shape = RoundedCornerShape(12.dp),
-                            color = if (selected) ObsidianCharcoal else PureWhite,
+                            color = pillContainer,
                             border = if (selected) null else BorderStroke(1.dp, SubtleOutline),
                             modifier = Modifier.defaultMinSize(minHeight = 40.dp)
                         ) {
@@ -295,7 +352,7 @@ fun HomeScreen(
                                     text = "${seg.label} ($count)",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = if (selected) PureWhite else ObsidianCharcoal
+                                    color = pillContent
                                 )
                             }
                         }
@@ -358,7 +415,8 @@ fun HomeScreen(
                             canDelete = canDeleteProject,
                             onClick = onNavigateProjects,
                             onEditQuote = { onOpenProjectQuote(proj) },
-                            onDelete = { onToggleDeleteProject(proj, true) }
+                            onDelete = { onToggleDeleteProject(proj, true) },
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -391,33 +449,15 @@ fun HomeScreen(
                             canDelete = false,
                             onClick = onNavigateRequests,
                             onEditQuote = onNavigateRequests,
-                            onDelete = {}
+                            onDelete = {},
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
             }
         }
 
-        // 5. Compact Super Admin & Admin Controls Strip (1-tap governance without cluttering dashboard)
-        if (access == AccessLevel.SUPER_ADMIN || access == AccessLevel.ADMIN) {
-            item {
-                AdminQuickMenuStrip(
-                    isSuperAdmin = access == AccessLevel.SUPER_ADMIN,
-                    pendingMembersCount = pendingMembers.size,
-                    pendingRequestsCount = pendingRequests.size,
-                    blockedCount = blockedDeliverables.size,
-                    reviewCount = reviewQueue.size,
-                    onOpenPermissionsAndTeam = onNavigateTeam,
-                    onOpenRequests = onNavigateRequests,
-                    onOpenPayments = onNavigatePayments,
-                    onOpenCompanySettings = onNavigateCompanySettings,
-                    onOpenOrgRouting = onNavigateOrgRouting,
-                    onOpenMenuPanel = onOpenMenuPanel
-                )
-            }
-        }
-
-        // 6. Current Tracking / Recent Deliverable Activities
+        // 5. Current Tracking / Recent Deliverable Activities
         item {
             SectionHeader(
                 title = "Current Tracking",
@@ -445,7 +485,8 @@ fun HomeScreen(
                     cardColor = PureWhite,
                     showUpdateButton = access == AccessLevel.STAFF,
                     assigneePhotoBase64 = memberPhotoByUid[d.assignedToUid].orEmpty(),
-                    onClick = { onOpenDeliverable(d) }
+                    onClick = { onOpenDeliverable(d) },
+                    modifier = Modifier.animateItem()
                 )
             }
         }
@@ -524,7 +565,8 @@ private fun DashboardReferenceProjectCard(
     canDelete: Boolean,
     onClick: () -> Unit,
     onEditQuote: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
@@ -534,7 +576,9 @@ private fun DashboardReferenceProjectCard(
         color = PureWhite,
         border = BorderStroke(1.dp, SubtleOutline),
         shadowElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier
+            .fillMaxWidth()
+            .animateContentSize()
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -703,122 +747,44 @@ private fun DotStatItem(dotColor: Color, label: String) {
     }
 }
 
-@Composable
-private fun AdminQuickMenuStrip(
-    isSuperAdmin: Boolean,
-    pendingMembersCount: Int,
-    pendingRequestsCount: Int,
-    blockedCount: Int,
-    reviewCount: Int,
-    onOpenPermissionsAndTeam: () -> Unit,
-    onOpenRequests: () -> Unit,
-    onOpenPayments: () -> Unit,
-    onOpenCompanySettings: () -> Unit,
-    onOpenOrgRouting: () -> Unit,
-    onOpenMenuPanel: () -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(20.dp),
-        color = PureWhite,
-        border = BorderStroke(1.dp, SubtleOutline),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = if (isSuperAdmin) "SUPER ADMIN CONTROLS" else "ADMIN CONTROLS",
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = StudioTextSecondary
-            )
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                QuickControlChip(
-                    label = if (pendingMembersCount > 0) "Team ($pendingMembersCount)" else "Team & Perms",
-                    icon = Icons.Outlined.AdminPanelSettings,
-                    highlighted = pendingMembersCount > 0,
-                    modifier = Modifier.testTag("quick_control_team"),
-                    onClick = onOpenPermissionsAndTeam
-                )
-                QuickControlChip(
-                    label = "Requests ($pendingRequestsCount)",
-                    icon = Icons.Outlined.Inbox,
-                    modifier = Modifier.testTag("quick_control_requests"),
-                    onClick = onOpenRequests
-                )
-                QuickControlChip(
-                    label = "Payments",
-                    icon = Icons.Outlined.Payments,
-                    modifier = Modifier.testTag("quick_control_payments"),
-                    onClick = onOpenPayments
-                )
-                if (reviewCount + blockedCount > 0) {
-                    QuickControlChip(
-                        label = "Review ($reviewCount) • Blocked ($blockedCount)",
-                        icon = Icons.AutoMirrored.Filled.FactCheck,
-                        highlighted = blockedCount > 0,
-                        onClick = onOpenRequests
-                    )
-                }
-                if (isSuperAdmin) {
-                    QuickControlChip(
-                        label = "Depts & Routing",
-                        icon = Icons.Outlined.AccountTree,
-                        modifier = Modifier.testTag("quick_control_org"),
-                        onClick = onOpenOrgRouting
-                    )
-                    QuickControlChip(
-                        label = "Settings",
-                        icon = Icons.Outlined.Business,
-                        modifier = Modifier.testTag("quick_control_settings"),
-                        onClick = onOpenCompanySettings
-                    )
-                }
-            }
+private fun buildSeriesBuckets(
+    timestamps: List<Long>,
+    window: OverviewWindow,
+    nowMillis: Long
+): List<Float> {
+    val bucketCount = when (window) {
+        OverviewWindow.TODAY -> 6
+        OverviewWindow.THIS_WEEK -> 7
+        OverviewWindow.THIS_MONTH -> 6
+        OverviewWindow.ALL_TIME -> 6
+    }
+    if (timestamps.isEmpty()) {
+        return List(bucketCount) { 0.12f }
+    }
+    val spanStart = when (window) {
+        OverviewWindow.TODAY -> nowMillis - 24L * 3600_000L
+        OverviewWindow.THIS_WEEK -> nowMillis - 7L * 24L * 3600_000L
+        OverviewWindow.THIS_MONTH -> nowMillis - 30L * 24L * 3600_000L
+        OverviewWindow.ALL_TIME -> {
+            val minTs = timestamps.minOrNull() ?: (nowMillis - 30L * 24L * 3600_000L)
+            minOf(minTs, nowMillis - 6L * 3600_000L)
         }
     }
-}
-
-@Composable
-private fun QuickControlChip(
-    label: String,
-    icon: ImageVector,
-    highlighted: Boolean = false,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(999.dp),
-        color = if (highlighted) ObsidianCharcoal else PureWhite,
-        border = if (!highlighted) BorderStroke(1.dp, SubtleOutline) else null,
-        modifier = modifier.defaultMinSize(minHeight = 44.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = if (highlighted) PureWhite else ObsidianCharcoal,
-                modifier = Modifier.size(16.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = if (highlighted) PureWhite else ObsidianCharcoal,
-                maxLines = 1
-            )
+    val spanDuration = (nowMillis - spanStart).coerceAtLeast(bucketCount.toLong())
+    val counts = IntArray(bucketCount)
+    timestamps.forEach { ts ->
+        if (ts >= spanStart) {
+            val ratio = ((ts - spanStart).toDouble() / spanDuration.toDouble()).coerceIn(0.0, 0.9999)
+            val idx = (ratio * bucketCount).toInt().coerceIn(0, bucketCount - 1)
+            counts[idx]++
         }
+    }
+    val maxCount = counts.maxOrNull() ?: 0
+    if (maxCount == 0) {
+        return List(bucketCount) { 0.12f }
+    }
+    return counts.map { c ->
+        0.12f + (c.toFloat() / maxCount.toFloat()) * 0.84f
     }
 }
 
@@ -841,7 +807,8 @@ fun DeliverableCompactCard(
     cardColor: Color = PureWhite,
     showUpdateButton: Boolean = false,
     assigneePhotoBase64: String = "",
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val st = d.statusEnum()
     val (pillBg, pillFg) = statusColorsForDeliverable(st)
@@ -853,7 +820,9 @@ fun DeliverableCompactCard(
         shape = RoundedCornerShape(20.dp),
         color = cardColor,
         border = BorderStroke(1.dp, SubtleOutline),
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier
+            .fillMaxWidth()
+            .animateContentSize()
     ) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {

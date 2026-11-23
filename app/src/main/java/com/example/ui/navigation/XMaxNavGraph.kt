@@ -1,39 +1,37 @@
 package com.example.ui.navigation
 
 import android.app.Activity
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -45,18 +43,21 @@ import com.example.data.AuthSessionStatus
 import com.example.ui.AgencyUiState
 import com.example.ui.AgencyViewModel
 import com.example.ui.UserProfileState
-import com.example.ui.components.XMaxLogoImage
+import com.example.ui.components.formatTitleCase
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.PendingApprovalScreen
 import com.example.ui.screens.SignInScreen
-import com.example.ui.theme.CrispCanvas
-import com.example.ui.theme.DeepBlushInk
-import com.example.ui.theme.ObsidianCharcoal
-import com.example.ui.theme.PureWhite
-import com.example.ui.theme.SoftBlush
-import com.example.ui.theme.StudioTextSecondary
-import com.example.ui.theme.SubtleOutline
+import com.example.ui.theme.*
 import kotlinx.coroutines.delay
+
+private fun resolveLoadingUserName(state: AgencyUiState): String {
+    val raw = state.myMember?.fullName
+        ?: state.firebaseUser?.displayName
+        ?: (state.authSessionStatus as? AuthSessionStatus.SignedIn)?.user?.displayName
+        ?: ""
+    val first = raw.trim().split(Regex("\\s+")).firstOrNull { it.isNotBlank() }
+    return if (!first.isNullOrBlank()) formatTitleCase(first) else "Alex"
+}
 
 sealed class XMaxRoute(val route: String) {
     data object Loading : XMaxRoute("loading")
@@ -70,22 +71,40 @@ fun resolveAuthRoute(
     state: AgencyUiState,
     userProfileState: UserProfileState? = null
 ): XMaxRoute {
-    return when (state.authSessionStatus) {
-        AuthSessionStatus.Initializing -> XMaxRoute.Loading
-        AuthSessionStatus.SignedOut -> XMaxRoute.Login
-        is AuthSessionStatus.SignedIn -> {
-            if (!state.memberLoaded || state.autoBootstrapInProgress) {
-                XMaxRoute.Loading
-            } else {
-                val loadedUser = (userProfileState as? UserProfileState.Loaded)?.user
-                when {
-                    state.myMember == null && loadedUser == null -> XMaxRoute.Onboarding
-                    !state.isApprovedMember -> XMaxRoute.PendingApproval
-                    else -> XMaxRoute.Dashboard
-                }
-            }
-        }
+    val authStatus = state.authSessionStatus
+
+    if (authStatus is AuthSessionStatus.Initializing) {
+        return XMaxRoute.Loading
     }
+
+    if (authStatus is AuthSessionStatus.SignedOut) {
+        return XMaxRoute.Login
+    }
+
+    if (authStatus is AuthSessionStatus.SignedIn) {
+        if (state.errorMessage != null && !state.memberLoaded && !state.isApprovedMember) {
+            return XMaxRoute.Loading
+        }
+
+        if (userProfileState is UserProfileState.Loading ||
+            (!state.memberLoaded && state.myMember == null)
+        ) {
+            return XMaxRoute.Loading
+        }
+
+        val member = state.myMember
+        if (member == null) {
+            return XMaxRoute.Onboarding
+        }
+
+        if (!state.isApprovedMember) {
+            return XMaxRoute.PendingApproval
+        }
+
+        return XMaxRoute.Dashboard
+    }
+
+    return XMaxRoute.Login
 }
 
 @Composable
@@ -132,7 +151,9 @@ fun XMaxNavGraph(
 
     NavHost(
         navController = navController,
-        startDestination = XMaxRoute.Loading.route
+        startDestination = XMaxRoute.Loading.route,
+        enterTransition = { fadeIn(animationSpec = tween(220)) },
+        exitTransition = { fadeOut(animationSpec = tween(160)) }
     ) {
         composable(XMaxRoute.Loading.route) {
             val label = when {
@@ -142,6 +163,7 @@ fun XMaxNavGraph(
             }
             LoadingDestinationScreen(
                 label = label,
+                userName = resolveLoadingUserName(state),
                 errorMessage = profileError,
                 canSignOut = state.authSessionStatus is AuthSessionStatus.SignedIn,
                 onRetry = { viewModel.retryProfileSync() },
@@ -196,6 +218,7 @@ fun XMaxNavGraph(
             } else {
                 LoadingDestinationScreen(
                     label = "Syncing workspace session…",
+                    userName = resolveLoadingUserName(state),
                     errorMessage = profileError,
                     canSignOut = state.authSessionStatus is AuthSessionStatus.SignedIn,
                     onRetry = { viewModel.retryProfileSync() },
@@ -206,9 +229,18 @@ fun XMaxNavGraph(
     }
 }
 
+/**
+ * Signature Apple-inspired loading screen matching design reference:
+ * - Pure white top canvas
+ * - Bold SF Pro Rounded "Welcome, \n Alex" typography
+ * - Vibrant vertical neon lime-yellow gradient animation at the bottom
+ * - Minimalist 270° rotating black arc spinner centered near bottom
+ * - Resilient network error and retry sync affordances
+ */
 @Composable
-internal fun LoadingDestinationScreen(
+fun LoadingDestinationScreen(
     label: String,
+    userName: String? = null,
     errorMessage: String? = null,
     canSignOut: Boolean = false,
     timeoutMillis: Long = 7_000L,
@@ -224,32 +256,136 @@ internal fun LoadingDestinationScreen(
 
     val showRecovery = timedOut || !errorMessage.isNullOrBlank()
 
-    Surface(modifier = Modifier.fillMaxSize(), color = CrispCanvas) {
+    val displayFirst = remember(userName) {
+        val clean = userName?.trim().orEmpty()
+        val first = clean.split(Regex("\\s+")).firstOrNull { it.isNotBlank() }
+        if (!first.isNullOrBlank()) formatTitleCase(first) else "Alex"
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "loading_screen_anim")
+    val gradientShift by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 3400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "gradient_shift"
+    )
+
+    val spinnerRotation by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 950, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "spinner_rotation"
+    )
+
+    val topTransitionY = 0.40f + 0.08f * gradientShift
+    val midStop1 = topTransitionY + 0.12f
+    val midStop2 = midStop1 + 0.18f
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("loading_screen")
+            .semantics { contentDescription = "$label Welcome, $displayFirst" }
+    ) {
+        // 1. Animated Canvas with smooth vertical gradient and radiant bottom glow
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+
+            // Smooth animated vertical gradient matching screenshot
+            drawRect(
+                brush = Brush.verticalGradient(
+                    colorStops = arrayOf(
+                        0.0f to Color.White,
+                        topTransitionY to Color.White,
+                        midStop1.coerceAtMost(0.78f) to Color(0xFFF7FFC8).copy(alpha = 0.95f),
+                        midStop2.coerceAtMost(0.92f) to Color(0xFFE2FF4A),
+                        0.90f to Color(0xFFCEFF00),
+                        1.0f to Color(0xFFB8F800)
+                    ),
+                    startY = 0f,
+                    endY = h
+                )
+            )
+
+            // Radiant ambient pulse at bottom center
+            val glowY = h * (0.86f + 0.04f * gradientShift)
+            val glowRadius = w * (0.72f + 0.12f * gradientShift)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color(0xFFEDFF6B).copy(alpha = 0.45f + 0.15f * gradientShift),
+                        Color.Transparent
+                    ),
+                    center = Offset(w * 0.5f, glowY),
+                    radius = glowRadius
+                ),
+                radius = glowRadius,
+                center = Offset(w * 0.5f, glowY)
+            )
+        }
+
+        // 2. Foreground content: Typography on top, rotating black arc spinner at bottom
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
+                .statusBarsPadding()
+                .navigationBarsPadding()
         ) {
-            XMaxLogoImage(tint = ObsidianCharcoal, height = 22.dp)
-            Spacer(Modifier.height(18.dp))
-            CircularProgressIndicator(color = ObsidianCharcoal)
-            Spacer(Modifier.height(14.dp))
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = StudioTextSecondary,
-                textAlign = TextAlign.Center
-            )
+            Spacer(Modifier.height(88.dp))
 
+            // Welcome, [Name] matching reference typography & layout
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 34.dp)
+            ) {
+                Text(
+                    text = "Welcome,",
+                    style = MaterialTheme.typography.displayMedium.copy(
+                        fontFamily = SfProRoundedFontFamily,
+                        fontSize = 38.sp,
+                        lineHeight = 44.sp,
+                        letterSpacing = (-0.6).sp
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F1015)
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = displayFirst,
+                    style = MaterialTheme.typography.displayMedium.copy(
+                        fontFamily = SfProRoundedFontFamily,
+                        fontSize = 38.sp,
+                        lineHeight = 44.sp,
+                        letterSpacing = (-0.6).sp
+                    ),
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F1015)
+                )
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            // Recovery card if timed out or error occurs
             if (showRecovery) {
-                Spacer(Modifier.height(20.dp))
                 Surface(
-                    modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier
+                        .widthIn(max = 360.dp)
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .align(Alignment.CenterHorizontally)
+                        .testTag("loading_recovery_card"),
+                    shape = RoundedCornerShape(22.dp),
                     color = if (!errorMessage.isNullOrBlank()) SoftBlush else PureWhite,
-                    border = BorderStroke(1.dp, SubtleOutline)
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    shadowElevation = 8.dp
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
@@ -297,6 +433,33 @@ internal fun LoadingDestinationScreen(
                             }
                         }
                     }
+                }
+                Spacer(Modifier.height(18.dp))
+            }
+
+            // Minimalist rotating black arc spinner matching screenshot
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 72.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .graphicsLayer { rotationZ = spinnerRotation }
+                        .testTag("loading_spinner")
+                ) {
+                    drawArc(
+                        color = Color(0xFF0F1015),
+                        startAngle = 0f,
+                        sweepAngle = 270f,
+                        useCenter = false,
+                        style = Stroke(
+                            width = 3.2.dp.toPx(),
+                            cap = StrokeCap.Round
+                        )
+                    )
                 }
             }
         }

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
@@ -12,10 +14,20 @@ import com.example.model.ChatAttachmentType
 import com.example.model.ChatMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+data class ProfilePhotoPreview(
+    val bitmap: Bitmap,
+    val width: Int,
+    val height: Int,
+    val byteSize: Long
+)
 
 data class StagedChatAttachment(
     val id: String = UUID.randomUUID().toString().take(8),
@@ -131,56 +143,117 @@ object ChatFileManager {
 
     private val base64BitmapCache = android.util.LruCache<Int, Bitmap>(48)
 
-    suspend fun prepareProfilePhotoBase64(context: Context, uri: Uri): Result<String> =
+    suspend fun loadProfilePhotoPreview(context: Context, uri: Uri): Result<ProfilePhotoPreview> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val rawBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("Could not read selected profile image.")
+                    ?: error("Could not read selected image.")
                 if (rawBytes.isEmpty()) error("Selected image is empty.")
+                if (rawBytes.size > 15_000_000) error("Image is too large (max 15 MB).")
 
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                     error("Selected file is not a valid image.")
                 }
+                if (bounds.outWidth < 64 || bounds.outHeight < 64) {
+                    error("Image is too small (minimum 64×64 px).")
+                }
 
                 var sample = 1
-                val minSide = kotlin.math.min(bounds.outWidth, bounds.outHeight)
-                while (minSide / sample > 512) {
+                val largest = max(bounds.outWidth, bounds.outHeight)
+                while (largest / sample > 1024) {
                     sample *= 2
                 }
-                val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
-                val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts)
-                    ?: error("Unable to decode image.")
+                val opts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
+                val decoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, opts)
+                    ?: error("Unable to decode selected image.")
 
-                val cropSize = kotlin.math.min(decoded.width, decoded.height).coerceAtLeast(1)
-                val cropX = ((decoded.width - cropSize) / 2).coerceAtLeast(0)
-                val cropY = ((decoded.height - cropSize) / 2).coerceAtLeast(0)
-                val square = Bitmap.createBitmap(decoded, cropX, cropY, cropSize, cropSize)
-                val scaled = if (cropSize > 256) {
-                    Bitmap.createScaledBitmap(square, 256, 256, true)
-                } else {
-                    square
-                }
+                val oriented = applyExifOrientation(decoded, rawBytes)
+                ProfilePhotoPreview(
+                    bitmap = oriented,
+                    width = oriented.width,
+                    height = oriented.height,
+                    byteSize = rawBytes.size.toLong()
+                )
+            }
+        }
 
-                var quality = 86
-                var encodedBytes: ByteArray
-                do {
-                    val baos = ByteArrayOutputStream()
-                    scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
-                    encodedBytes = baos.toByteArray()
-                    quality -= 10
-                } while (encodedBytes.size > 160_000 && quality >= 40)
+    suspend fun compressCroppedProfilePhotoBase64(
+        bitmap: Bitmap,
+        zoom: Float = 1f,
+        offsetXFrac: Float = 0f,
+        offsetYFrac: Float = 0f
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val safeZoom = zoom.coerceIn(1f, 3f)
+            val baseSquare = min(bitmap.width, bitmap.height).coerceAtLeast(1)
+            val cropSide = (baseSquare / safeZoom).roundToInt().coerceIn(1, baseSquare)
+            val maxShiftX = ((bitmap.width - cropSide) / 2f).coerceAtLeast(0f)
+            val maxShiftY = ((bitmap.height - cropSide) / 2f).coerceAtLeast(0f)
 
-                if (scaled !== square) scaled.recycle()
-                if (square !== decoded) square.recycle()
-                decoded.recycle()
+            val centerX = bitmap.width / 2f - offsetXFrac.coerceIn(-1f, 1f) * maxShiftX
+            val centerY = bitmap.height / 2f - offsetYFrac.coerceIn(-1f, 1f) * maxShiftY
 
-                val b64 = Base64.encodeToString(encodedBytes, Base64.NO_WRAP)
-                if (b64.length > 420_000) {
-                    error("Profile photo is too large after compression.")
-                }
-                b64
+            val cropX = (centerX - cropSide / 2f).roundToInt().coerceIn(0, (bitmap.width - cropSide).coerceAtLeast(0))
+            val cropY = (centerY - cropSide / 2f).roundToInt().coerceIn(0, (bitmap.height - cropSide).coerceAtLeast(0))
+
+            val square = Bitmap.createBitmap(bitmap, cropX, cropY, cropSide, cropSide)
+            val scaled = if (cropSide != 256) {
+                Bitmap.createScaledBitmap(square, 256, 256, true)
+            } else {
+                square
+            }
+
+            var quality = 88
+            var encodedBytes: ByteArray
+            do {
+                val baos = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
+                encodedBytes = baos.toByteArray()
+                quality -= 10
+            } while (encodedBytes.size > 150_000 && quality >= 40)
+
+            if (scaled !== square) scaled.recycle()
+            if (square !== bitmap) square.recycle()
+
+            val b64 = Base64.encodeToString(encodedBytes, Base64.NO_WRAP)
+            if (b64.length > 420_000) {
+                error("Profile photo is too large after compression.")
+            }
+            b64
+        }
+    }
+
+    private fun applyExifOrientation(bitmap: Bitmap, rawBytes: ByteArray): Bitmap {
+        val orientation = runCatching {
+            ExifInterface(ByteArrayInputStream(rawBytes))
+                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+
+        val matrix = Matrix()
+        when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+            ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+            else -> return bitmap
+        }
+        return runCatching {
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated !== bitmap) bitmap.recycle()
+            rotated
+        }.getOrDefault(bitmap)
+    }
+
+    suspend fun prepareProfilePhotoBase64(context: Context, uri: Uri): Result<String> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val preview = loadProfilePhotoPreview(context, uri).getOrThrow()
+                val encoded = compressCroppedProfilePhotoBase64(preview.bitmap).getOrThrow()
+                preview.bitmap.recycle()
+                encoded
             }
         }
 

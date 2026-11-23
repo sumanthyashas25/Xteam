@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -840,15 +841,43 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         val uid = uiState.value.firebaseUser?.uid ?: uiState.value.myMember?.uid ?: error("Not signed in")
         val encoded = ChatFileManager.prepareProfilePhotoBase64(context, uri).getOrThrow()
         coreRepo.updateMyProfilePhoto(uid, encoded)
-        _statusMessage.value = "PROFILE PHOTO UPDATED."
+        _statusMessage.value = "Profile photo updated."
         onDone()
     }
 
-    fun removeMyProfilePhoto(onDone: () -> Unit = {}) = runWrite("members/photo") {
+    fun updateMyCroppedProfilePhoto(
+        bitmap: Bitmap,
+        zoom: Float,
+        offsetXFrac: Float,
+        offsetYFrac: Float,
+        onDone: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) = runWrite("members/photo") {
         val uid = uiState.value.firebaseUser?.uid ?: uiState.value.myMember?.uid ?: error("Not signed in")
-        coreRepo.updateMyProfilePhoto(uid, "")
-        _statusMessage.value = "PROFILE PHOTO REMOVED."
-        onDone()
+        try {
+            val encoded = ChatFileManager.compressCroppedProfilePhotoBase64(bitmap, zoom, offsetXFrac, offsetYFrac).getOrThrow()
+            coreRepo.updateMyProfilePhoto(uid, encoded)
+            _statusMessage.value = "Profile photo updated."
+            onDone()
+        } catch (e: Exception) {
+            onError(e.localizedMessage ?: "Failed to update profile photo.")
+            throw e
+        }
+    }
+
+    fun removeMyProfilePhoto(
+        onDone: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) = runWrite("members/photo") {
+        val uid = uiState.value.firebaseUser?.uid ?: uiState.value.myMember?.uid ?: error("Not signed in")
+        try {
+            coreRepo.updateMyProfilePhoto(uid, "")
+            _statusMessage.value = "Profile photo removed."
+            onDone()
+        } catch (e: Exception) {
+            onError(e.localizedMessage ?: "Failed to remove profile photo.")
+            throw e
+        }
     }
 
     fun startDeliverableWork(deliverable: Deliverable) = runWrite("deliverables/${deliverable.id}") {

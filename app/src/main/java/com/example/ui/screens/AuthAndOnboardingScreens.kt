@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -930,75 +932,110 @@ fun PendingApprovalScreen(
             .cleanLightBackdrop(),
         contentAlignment = Alignment.Center
     ) {
+        // Soft ambient purple halo glow matching pending_approval_with_sign_out_89583af1.jpg
+        Box(
+            modifier = Modifier
+                .size(340.dp)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(Color(0xFFEDE9FE).copy(alpha = 0.65f), Color.Transparent)
+                    )
+                )
+        )
+
         Column(
             modifier = Modifier
-                .widthIn(max = 480.dp)
-                .fillMaxSize()
+                .widthIn(max = 440.dp)
+                .fillMaxWidth()
                 .systemBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Card(
+            // Floating Pure-White Card matching reference
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(26.dp),
-                colors = CardDefaults.cardColors(containerColor = MutedSurface),
-                border = BorderStroke(1.dp, SubtleOutline),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+                shape = RoundedCornerShape(28.dp),
+                color = PureWhite,
+                border = BorderStroke(1.dp, Color(0xFFF1F3F7)),
+                shadowElevation = 10.dp
             ) {
                 Column(
-                    modifier = Modifier.padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.padding(horizontal = 26.dp, vertical = 30.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    XMaxLogoImage(tint = ObsidianCharcoal, height = 18.dp)
-                    Box(
-                        modifier = Modifier
-                            .size(64.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (state.isBootstrappedEmail || status == MembershipStatus.PENDING) {
-                                    InfoPillBg
-                                } else {
-                                    SoftBlush
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
+                    // Floating circular white badge with purple clock icon
+                    Surface(
+                        modifier = Modifier.size(56.dp),
+                        shape = CircleShape,
+                        color = PureWhite,
+                        border = BorderStroke(1.dp, Color(0xFFF1F3F7)),
+                        shadowElevation = 3.dp
                     ) {
-                        Icon(
-                            imageVector = if (state.isBootstrappedEmail) Icons.Filled.Shield else if (status == MembershipStatus.PENDING) Icons.Filled.HourglassEmpty else Icons.Filled.Block,
-                            contentDescription = null,
-                            tint = if (state.isBootstrappedEmail || status == MembershipStatus.PENDING) InfoPillInk else CrimsonBlocked,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (state.isBootstrappedEmail) Icons.Filled.Shield else Icons.Outlined.Schedule,
+                                contentDescription = null,
+                                tint = if (state.isBootstrappedEmail) ObsidianCharcoal else Color(0xFF6B46C1),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
                     }
+
+                    Spacer(Modifier.height(2.dp))
+
+                    // Title: "Membership pending..."
                     Text(
                         text = when {
-                            state.isBootstrappedEmail -> "Default Super Admin Ready"
-                            status == MembershipStatus.PENDING -> "Pending Approval"
-                            status == MembershipStatus.DECLINED -> "Request Declined"
-                            status == MembershipStatus.SUSPENDED -> "Account Inactive"
-                            else -> "Awaiting Workspace"
+                            state.isBootstrappedEmail -> "Super Admin ready..."
+                            status == MembershipStatus.PENDING -> "Membership pending..."
+                            status == MembershipStatus.DECLINED -> "Request declined..."
+                            status == MembershipStatus.SUSPENDED -> "Account inactive..."
+                            else -> "Workspace pending..."
                         },
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
+                        fontWeight = FontWeight.ExtraBold,
                         color = ObsidianCharcoal,
                         textAlign = TextAlign.Center
                     )
+
+                    // Subtitle: "Your account is awaiting Super Admin approval.\nPlease wait."
                     Text(
                         text = when {
                             state.isBootstrappedEmail ->
-                                "Signed in as default Super Admin (${state.firebaseUser?.email}). Tap below to activate Super Admin access."
+                                "Signed in as default Super Admin (${state.firebaseUser?.email}). Tap below to activate workspace access."
                             status == MembershipStatus.PENDING ->
-                                "Your request to join X.MAX as ${member?.requestedJobRole?.ifBlank { "Team Member" }} (${member?.requestedDepartment?.ifBlank { "Department" }}) is waiting for a Super Admin to approve your account and assign permissions."
+                                "Your account is awaiting Super Admin approval.\nPlease wait."
+                            status == MembershipStatus.DECLINED ->
+                                "Your access request was declined by an administrator."
+                            status == MembershipStatus.SUSPENDED ->
+                                "Your membership is currently inactive. Contact your Super Admin."
                             else ->
-                                "Your account currently does not have active workspace access. Please contact an X.MAX Super Admin."
+                                "Your account is awaiting workspace authorization.\nPlease wait."
                         },
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 20.sp),
                         color = StudioTextSecondary,
                         textAlign = TextAlign.Center
                     )
+
+                    val identity = state.firebaseUser?.email ?: state.firebaseUser?.phoneNumber ?: member?.fullName
+                    if (!identity.isNullOrBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = MutedSurface,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            Text(
+                                text = identity,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextSecondary,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
                     if (!state.errorMessage.isNullOrBlank()) {
                         Card(
                             shape = RoundedCornerShape(16.dp),
@@ -1012,15 +1049,9 @@ fun PendingApprovalScreen(
                             )
                         }
                     }
-                    if (member != null) {
-                        HorizontalDivider(color = SubtleOutline)
-                        Text(
-                            "Signed in: ${state.firebaseUser?.email ?: member.fullName}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = StudioTextSecondary
-                        )
-                    }
+
                     Spacer(Modifier.height(4.dp))
+
                     if (state.isBootstrappedEmail) {
                         Button(
                             onClick = {
@@ -1040,27 +1071,33 @@ fun PendingApprovalScreen(
                                 .height(52.dp)
                                 .testTag("pending_bootstrap_super_admin_button")
                         ) {
-                            Icon(Icons.Filled.Shield, contentDescription = null)
+                            Icon(Icons.Filled.Shield, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text("Activate Super Admin Access", fontWeight = FontWeight.Bold)
                         }
                     }
-                    OutlinedButton(
+
+                    // Soft-pill Sign Out Button matching pending_approval_with_sign_out_89583af1.jpg
+                    Surface(
                         onClick = onSignOut,
                         shape = RoundedCornerShape(999.dp),
-                        border = BorderStroke(1.dp, SubtleOutline),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            containerColor = PureWhite,
-                            contentColor = ObsidianCharcoal
-                        ),
+                        color = Color(0xFFF1F3F7),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(50.dp)
+                            .height(52.dp)
                             .testTag("pending_sign_out_button")
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Sign Out", fontWeight = FontWeight.SemiBold)
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Text(
+                                text = "Sign Out",
+                                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                                fontWeight = FontWeight.Bold,
+                                color = ObsidianCharcoal
+                            )
+                        }
                     }
                 }
             }

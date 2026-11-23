@@ -229,7 +229,7 @@ fun MyWorkScreen(
             ) {
                 Column {
                     Text(
-                        text = if (selectedDayMillis != null) "DAY SCHEDULE (${myDeliverables.size})" else "MY WORK (${myDeliverables.size})",
+                        text = if (selectedDayMillis != null) "Day Schedule (${myDeliverables.size})" else "My Work (${myDeliverables.size})",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.ExtraBold,
                         color = ObsidianCharcoal
@@ -291,9 +291,9 @@ fun MyWorkScreen(
                             }
                             Column {
                                 Text(
-                                    text = "PRODUCTIVITY",
+                                    text = "Productivity",
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
+                                    fontWeight = FontWeight.ExtraBold,
                                     color = StudioTextSecondary
                                 )
                                 Text(

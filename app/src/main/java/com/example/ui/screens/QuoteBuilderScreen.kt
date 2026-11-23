@@ -3,6 +3,14 @@ package com.example.ui.screens
 import android.graphics.Bitmap
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -10,6 +18,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -32,11 +41,14 @@ import com.example.domain.MoneyFormatter
 import com.example.domain.QuoteCalculator
 import com.example.model.*
 import com.example.pdf.QuotationPdfGenerator
+import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
+import com.example.ui.components.CatalogueServiceTicketCard
 import com.example.ui.components.MonochromeSearchBar
 import com.example.ui.components.XMaxLogoImage
 import com.example.ui.components.XMaxWordmarkBadge
 import com.example.ui.theme.*
+import kotlinx.coroutines.delay
 import java.io.File
 import java.util.UUID
 
@@ -307,7 +319,8 @@ fun QuoteBuilderScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(CrispCanvas)
-                .padding(padding),
+                .padding(padding)
+                .testTag("quote_builder_list"),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -430,7 +443,8 @@ fun QuoteBuilderScreen(
                     editable = isEditable,
                     canOverridePrice = canOverridePrice,
                     onUpdate = { updated -> lines = lines.map { if (it.lineId == line.lineId) updated else it } },
-                    onRemove = { lines = lines.filterNot { it.lineId == line.lineId } }
+                    onRemove = { lines = lines.filterNot { it.lineId == line.lineId } },
+                    modifier = Modifier.animateItem()
                 )
             }
 
@@ -512,8 +526,13 @@ fun QuoteBuilderScreen(
     }
 
     if (showCataloguePicker) {
+        val selectedCounts = remember(lines) {
+            lines.filter { it.catalogueItemId.isNotBlank() }.groupingBy { it.catalogueItemId }.eachCount()
+        }
         CataloguePickerDialog(
             items = state.catalogue.filter { !it.archived },
+            selectedCounts = selectedCounts,
+            urgentSelected = urgentEnabled,
             onAddItem = { item ->
                 if (item.pricingModeEnum() == PricingMode.PERCENTAGE_SURCHARGE) {
                     urgentEnabled = true
@@ -595,7 +614,8 @@ private fun QuoteLineCard(
     editable: Boolean,
     canOverridePrice: Boolean,
     onUpdate: (QuoteLineItem) -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var priceInput by remember(line.lineId, line.overridePricePaise, line.unitPricePaise) {
         mutableStateOf(MoneyFormatter.paiseToEditableRupees(line.overridePricePaise ?: line.unitPricePaise))
@@ -604,7 +624,8 @@ private fun QuoteLineCard(
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MutedSurface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = modifier.animateContentSize()
     ) {
         Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -704,11 +725,23 @@ private fun QuoteLineCard(
 @Composable
 private fun CataloguePickerDialog(
     items: List<CatalogueItem>,
+    selectedCounts: Map<String, Int>,
+    urgentSelected: Boolean,
     onAddItem: (CatalogueItem) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var query by remember { mutableStateOf("") }
     var kindFilter by remember { mutableStateOf<CatalogueKind?>(null) }
+    var lastAddedName by remember { mutableStateOf<String?>(null) }
+    var lastAddedSeq by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(lastAddedSeq) {
+        if (lastAddedSeq > 0) {
+            delay(2000L)
+            lastAddedName = null
+        }
+    }
 
     val filtered = remember(items, query, kindFilter) {
         items.filter { item ->
@@ -720,6 +753,7 @@ private fun CataloguePickerDialog(
             kindOk && qOk
         }
     }
+    val totalSelected = selectedCounts.values.sum() + if (urgentSelected) 1 else 0
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
@@ -733,10 +767,11 @@ private fun CataloguePickerDialog(
                     Surface(
                         onClick = onDismiss,
                         shape = RoundedCornerShape(999.dp),
-                        color = ObsidianCharcoal
+                        color = ObsidianCharcoal,
+                        modifier = Modifier.testTag("catalogue_done_button")
                     ) {
                         Text(
-                            "Done",
+                            text = if (totalSelected > 0) "Done ($totalSelected)" else "Done",
                             color = PureWhite,
                             fontWeight = FontWeight.SemiBold,
                             style = MaterialTheme.typography.labelLarge,
@@ -770,42 +805,66 @@ private fun CataloguePickerDialog(
                         )
                     }
                 }
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    items(filtered, key = { it.id }) { item ->
-                        Card(
-                            onClick = { onAddItem(item) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = CardDefaults.cardColors(containerColor = MutedSurface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+
+                AnimatedVisibility(
+                    visible = !lastAddedName.isNullOrBlank(),
+                    enter = fadeIn(tween(180)) + expandVertically(),
+                    exit = fadeOut(tween(180)) + shrinkVertically()
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = SoftMint,
+                        border = BorderStroke(1.dp, EmeraldApproved.copy(alpha = 0.35f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("catalogue_added_banner")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Column(Modifier.weight(1f).padding(end = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Text(item.name, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
-                                    val incText = if (item.inclusions.isNotEmpty()) "\nIncludes: " + item.inclusions.joinToString { it.title } else ""
-                                    Text("${item.category} • ${item.description}$incText", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary, maxLines = 3)
-                                }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(
-                                        when (item.pricingModeEnum()) {
-                                            PricingMode.PERCENTAGE_SURCHARGE -> "+${item.surchargePercent}%"
-                                            PricingMode.CUSTOM_QUOTE -> "Custom"
-                                            PricingMode.ACTUAL_COST -> "Actuals"
-                                            else -> MoneyFormatter.formatInr(item.pricePaise)
-                                        },
-                                        fontWeight = FontWeight.Bold,
-                                        color = ObsidianCharcoal
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Surface(shape = RoundedCornerShape(999.dp), color = ObsidianCharcoal) {
-                                        Text("+ Add", style = MaterialTheme.typography.labelSmall, color = PureWhite, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp))
-                                    }
-                                }
-                            }
+                            Icon(
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = null,
+                                tint = EmeraldApproved,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Added \"${lastAddedName.orEmpty()}\" to quotation",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = DeepMintInk
+                            )
                         }
+                    }
+                }
+
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    itemsIndexed(filtered, key = { _, it -> it.id }) { index, item ->
+                        val isSurcharge = item.pricingModeEnum() == PricingMode.PERCENTAGE_SURCHARGE
+                        val count = if (isSurcharge) (if (urgentSelected) 1 else 0) else (selectedCounts[item.id] ?: 0)
+                        val isSelected = count > 0
+
+                        val handleAdd = {
+                            AppHapticsAndNotifier.triggerSuccessHaptic(context)
+                            lastAddedName = item.name
+                            lastAddedSeq += 1
+                            onAddItem(item)
+                        }
+
+                        CatalogueServiceTicketCard(
+                            item = item,
+                            index = index,
+                            isSelected = isSelected,
+                            selectedCount = count,
+                            buttonLabel = "Check",
+                            onButtonClick = handleAdd,
+                            onCardClick = handleAdd,
+                            modifier = Modifier
+                                .animateItem()
+                                .testTag("catalogue_item_${item.id}")
+                        )
                     }
                 }
             }

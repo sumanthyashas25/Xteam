@@ -111,7 +111,10 @@ fun AgencyMenuDrawerContent(
             Spacer(Modifier.height(14.dp))
 
             Surface(
-                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpenProfilePhoto,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("drawer_profile_card"),
                 shape = RoundedCornerShape(20.dp),
                 color = SoftCardSurface,
                 border = BorderStroke(1.dp, SubtleOutline)
@@ -133,11 +136,11 @@ fun AgencyMenuDrawerContent(
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = member.fullName.ifBlank { "MEMBER" }.uppercase(),
+                                text = formatTitleCase(member.fullName.ifBlank { "Member" }),
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = ObsidianCharcoal,
-                                maxLines = 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
@@ -148,6 +151,12 @@ fun AgencyMenuDrawerContent(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                        Icon(
+                            imageVector = Icons.Filled.CameraAlt,
+                            contentDescription = "Update Profile Photo",
+                            tint = VioletPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
 
                     Spacer(Modifier.height(10.dp))
@@ -157,13 +166,13 @@ fun AgencyMenuDrawerContent(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         StatusPill(
-                            label = access.label.uppercase(),
+                            label = formatTitleCase(access.label),
                             containerColor = ObsidianCharcoal,
                             contentColor = PureWhite
                         )
                         if (member.jobRoleName.isNotBlank()) {
                             StatusPill(
-                                label = member.jobRoleName.uppercase(),
+                                label = formatTitleCase(member.jobRoleName),
                                 containerColor = PureWhite,
                                 contentColor = ObsidianCharcoal
                             )
@@ -177,21 +186,21 @@ fun AgencyMenuDrawerContent(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             DrawerMiniCounter(
-                                label = "PROJECTS",
+                                label = "Projects",
                                 count = "$activeProjectsCount",
                                 containerColor = KpiSkyBg,
                                 modifier = Modifier.weight(1f),
-                                onClick = { onSelectTab(PrimaryTab.PROJECTS) }
+                                onClick = { onSelectSecondary(SecondaryDestination.PROJECTS) }
                             )
                             DrawerMiniCounter(
-                                label = "REQUESTS",
+                                label = "Requests",
                                 count = "$pendingRequestsCount",
                                 containerColor = KpiLavenderBg,
                                 modifier = Modifier.weight(1f),
                                 onClick = { onSelectTab(PrimaryTab.REQUESTS) }
                             )
                             DrawerMiniCounter(
-                                label = "APPROVALS",
+                                label = "Approvals",
                                 count = "$pendingMembersCount",
                                 containerColor = if (pendingMembersCount > 0) ButterYellow else KpiMintBg,
                                 modifier = Modifier.weight(1f),
@@ -213,13 +222,13 @@ fun AgencyMenuDrawerContent(
                 MenuSectionLabel("Workspace")
                 visibleTabs.forEach { tab ->
                     val badge = when (tab) {
-                        PrimaryTab.PROJECTS -> activeProjectsCount.takeIf { it > 0 }?.toString()
+                        PrimaryTab.CHAT -> state.chatChannels.size.takeIf { it > 0 }?.toString()
                         PrimaryTab.REQUESTS -> pendingRequestsCount.takeIf { it > 0 }?.toString()
                         PrimaryTab.MY_WORK -> myPendingCount.takeIf { it > 0 }?.toString()
                         PrimaryTab.HOME -> null
                     }
                     MinimalSidebarRow(
-                        title = tab.label.uppercase(),
+                        title = formatTitleCase(tab.label),
                         icon = tab.inactiveIcon,
                         activeIcon = tab.icon,
                         selected = secondaryDest == null && activeTab == tab,
@@ -228,9 +237,20 @@ fun AgencyMenuDrawerContent(
                         onClick = { onSelectTab(tab) }
                     )
                 }
+                if (permittedSecondary.contains(SecondaryDestination.PROJECTS)) {
+                    MinimalSidebarRow(
+                        title = formatTitleCase(SecondaryDestination.PROJECTS.label),
+                        icon = SecondaryDestination.PROJECTS.icon,
+                        activeIcon = SecondaryDestination.PROJECTS.icon,
+                        selected = secondaryDest == SecondaryDestination.PROJECTS,
+                        badgeText = activeProjectsCount.takeIf { it > 0 }?.toString(),
+                        modifier = Modifier.testTag("menu_dest_projects"),
+                        onClick = { onSelectSecondary(SecondaryDestination.PROJECTS) }
+                    )
+                }
                 if (permittedSecondary.contains(SecondaryDestination.CHAT)) {
                     MinimalSidebarRow(
-                        title = SecondaryDestination.CHAT.label.uppercase(),
+                        title = formatTitleCase(SecondaryDestination.CHAT.label),
                         icon = SecondaryDestination.CHAT.icon,
                         activeIcon = SecondaryDestination.CHAT.icon,
                         selected = secondaryDest == SecondaryDestination.CHAT,
@@ -241,7 +261,7 @@ fun AgencyMenuDrawerContent(
                 }
                 if (permittedSecondary.contains(SecondaryDestination.NOTIFICATIONS)) {
                     MinimalSidebarRow(
-                        title = SecondaryDestination.NOTIFICATIONS.label.uppercase(),
+                        title = formatTitleCase(SecondaryDestination.NOTIFICATIONS.label),
                         icon = SecondaryDestination.NOTIFICATIONS.icon,
                         activeIcon = SecondaryDestination.NOTIFICATIONS.icon,
                         selected = secondaryDest == SecondaryDestination.NOTIFICATIONS,
@@ -262,7 +282,7 @@ fun AgencyMenuDrawerContent(
                             "$pendingMembersCount"
                         } else null
                         MinimalSidebarRow(
-                            title = dest.label.uppercase(),
+                            title = formatTitleCase(dest.label),
                             icon = dest.icon,
                             activeIcon = dest.icon,
                             selected = secondaryDest == dest,
@@ -391,9 +411,9 @@ private fun DrawerMiniCounter(
 @Composable
 private fun MenuSectionLabel(title: String) {
     Text(
-        text = title.uppercase(),
-        style = MaterialTheme.typography.labelSmall,
-        fontWeight = FontWeight.Bold,
+        text = formatTitleCase(title),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.ExtraBold,
         color = StudioTextSecondary,
         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
     )

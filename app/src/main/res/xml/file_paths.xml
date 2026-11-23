@@ -9,4 +9,7 @@
     <cache-path
         name="shared_pdfs"
         path="quotations/" />
+    <cache-path
+        name="camera_captures"
+        path="camera_captures/" />
 </paths>

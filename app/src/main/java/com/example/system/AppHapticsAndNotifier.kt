@@ -183,7 +183,8 @@ object AppHapticsAndNotifier {
             )
 
             val builder = NotificationCompat.Builder(appCtx, NOTIFICATION_CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_stat_xteam)
+                .setColor(android.graphics.Color.parseColor("#111318"))
                 .setContentTitle(title.uppercase())
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))

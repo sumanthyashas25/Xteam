@@ -1054,6 +1054,35 @@ test("Scenario 11: Logs, projects, clients, deliverables, and chats can ONLY be 
       createdAt: now,
       updatedAt: now,
     });
+    await db.collection("companies").doc(COMPANY_ID).collection("quotations").doc("qt_del").set({
+      quoteNumber: "QT-2026-0099",
+      revision: 1,
+      parentQuoteId: "",
+      requestId: "req_del",
+      linkedProjectId: "",
+      clientId: "cli_1",
+      projectTitle: "Completed Site",
+      scopeSummary: "Website launch",
+      status: "DRAFT",
+      companySnapshot: { name: "X.MAX", gstEnabled: false, gstRatePercent: 18 },
+      clientSnapshot: { clientId: "cli_1", companyName: "Acme Corp", contactPerson: "Rahul" },
+      lines: [],
+      subtotalPaise: 500000,
+      discountPaise: 0,
+      surchargePaise: 0,
+      surchargeBasePaise: 0,
+      gstEnabled: false,
+      gstRatePercent: 18,
+      gstAmountPaise: 0,
+      totalPaise: 500000,
+      advancePercent: 50,
+      advancePaise: 250000,
+      balancePaise: 250000,
+      preparedByUid: SUPER_ADMIN_UID,
+      preparedByName: "X.MAX Founder",
+      createdAt: now,
+      updatedAt: now,
+    });
     await db.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").collection("messages").doc("m_del").set({
       channelId: "ch_del",
       parentMessageId: "",
@@ -1076,7 +1105,7 @@ test("Scenario 11: Logs, projects, clients, deliverables, and chats can ONLY be 
   const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
   const superDb = testEnv.authenticatedContext(SUPER_ADMIN_UID).firestore();
 
-  // Admin & Staff CANNOT soft-delete or hard-delete projects, logs, clients, or chats
+  // Admin & Staff CANNOT soft-delete or hard-delete projects, logs, clients, quotations, or chats
   await assertFails(
     adminDb.collection("companies").doc(COMPANY_ID).collection("projects").doc("proj_del").update({
       deleted: true,
@@ -1088,18 +1117,19 @@ test("Scenario 11: Logs, projects, clients, deliverables, and chats can ONLY be 
   await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("projects").doc("proj_del").delete());
   await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("activity").doc("act_1").delete());
   await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("clients").doc("cli_1").delete());
+  await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("quotations").doc("qt_del").delete());
   await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").collection("messages").doc("m_del").delete());
   await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").delete());
 
   await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("activity").doc("act_1").delete());
+  await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("quotations").doc("qt_del").delete());
   await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").collection("messages").doc("m_del").delete());
 
-  // Super Admin CAN delete logs, clients, completed/old projects, chat messages, and chat channels
+  // Super Admin CAN delete logs, clients, quotations, completed/old projects, chat messages, and chat channels
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("activity").doc("act_1").delete());
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("clients").doc("cli_1").delete());
+  await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("quotations").doc("qt_del").delete());
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("projects").doc("proj_del").delete());
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").collection("messages").doc("m_del").delete());
   await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_del").delete());
 });
-
-
