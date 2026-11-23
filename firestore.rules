@@ -1,0 +1,919 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidEmailId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 160 && id.matches('^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$');
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isSignedIn() &&
+             ('email' in request.auth.token) &&
+             ('email_verified' in request.auth.token) &&
+             request.auth.token.email_verified == true &&
+             request.auth.token.email.lower() == 'xdotmax@gmail.com';
+    }
+
+    function memberPath(companyId, uid) {
+      return /databases/$(database)/documents/companies/$(companyId)/members/$(uid);
+    }
+
+    function fetchMe(companyId) {
+      return get(memberPath(companyId, request.auth.uid)).data;
+    }
+
+    function meExists(companyId) {
+      return isSignedIn() && exists(memberPath(companyId, request.auth.uid));
+    }
+
+    function isApproved(m) {
+      return m.status == 'APPROVED' && m.active == true;
+    }
+
+    function isSuper(m) {
+      return isApproved(m) && m.accessLevel == 'SUPER_ADMIN';
+    }
+
+    function isAdminData(m) {
+      return isApproved(m) && m.accessLevel == 'ADMIN';
+    }
+
+    function isReserved(perm) {
+      return perm == 'ACCEPT_PROJECT' || perm == 'DECLINE_PROJECT' || perm == 'DELETE_PROJECT';
+    }
+
+    function mAdminOrSuper(m, perm) {
+      return isApproved(m) && (
+        m.accessLevel == 'SUPER_ADMIN' ||
+        (m.accessLevel == 'ADMIN' && perm in m.permissions && m.permissions[perm].allowed == true)
+      );
+    }
+
+    function grantorCanDelegate(companyId, grantorUid, perm) {
+      return exists(memberPath(companyId, grantorUid)) &&
+             grantorDataCanDelegate(get(memberPath(companyId, grantorUid)).data, perm);
+    }
+
+    function grantorDataCanDelegate(g, perm) {
+      return g.status == 'APPROVED' &&
+             g.active == true &&
+             g.accessLevel == 'ADMIN' &&
+             perm in g.permissions &&
+             g.permissions[perm].allowed == true &&
+             g.permissions[perm].canDelegate == true;
+    }
+
+    function hasDelegated(companyId, m, perm) {
+      return !isReserved(perm) &&
+             m.accessLevel == 'STAFF' &&
+             perm in m.delegatedGrants &&
+             m.delegatedGrants[perm].allowed == true &&
+             m.delegatedGrants[perm].grantedByUid is string &&
+             grantorCanDelegate(companyId, m.delegatedGrants[perm].grantedByUid, perm);
+    }
+
+    function mHas(companyId, m, perm) {
+      return mAdminOrSuper(m, perm) || (isApproved(m) && hasDelegated(companyId, m, perm));
+    }
+
+    function hasPerm(companyId, perm) {
+      return meExists(companyId) && mHas(companyId, fetchMe(companyId), perm);
+    }
+
+    function hasCommercialRead(companyId) {
+      return meExists(companyId) && hasCommercialReadFor(companyId, fetchMe(companyId));
+    }
+
+    function hasCommercialReadFor(companyId, m) {
+      return isApproved(m) && (
+        m.accessLevel == 'SUPER_ADMIN' ||
+        m.accessLevel == 'ADMIN' ||
+        hasDelegated(companyId, m, 'MANAGE_CLIENTS') ||
+        hasDelegated(companyId, m, 'CREATE_REQUESTS') ||
+        hasDelegated(companyId, m, 'CREATE_QUOTATIONS') ||
+        hasDelegated(companyId, m, 'ISSUE_QUOTATIONS') ||
+        hasDelegated(companyId, m, 'VIEW_ALL_CLIENTS_AND_QUOTES') ||
+        hasDelegated(companyId, m, 'VIEW_PAYMENTS') ||
+        hasDelegated(companyId, m, 'RECORD_PAYMENTS')
+      );
+    }
+
+    function hasProjectRead(companyId) {
+      return meExists(companyId) && hasProjectReadFor(companyId, fetchMe(companyId));
+    }
+
+    function hasProjectReadFor(companyId, m) {
+      return isApproved(m) && (
+        m.accessLevel == 'SUPER_ADMIN' ||
+        m.accessLevel == 'ADMIN' ||
+        hasDelegated(companyId, m, 'ASSIGN_WORK') ||
+        hasDelegated(companyId, m, 'APPROVE_DELIVERABLES') ||
+        hasDelegated(companyId, m, 'VIEW_PAYMENTS') ||
+        hasDelegated(companyId, m, 'RECORD_PAYMENTS')
+      );
+    }
+
+    function canDelegateKey(adminData, diffKeys, key) {
+      return !(key in diffKeys) ||
+             !(key in incoming().delegatedGrants) ||
+             (
+               key in adminData.permissions &&
+               adminData.permissions[key].allowed == true &&
+               adminData.permissions[key].canDelegate == true &&
+               incoming().delegatedGrants[key] is map &&
+               incoming().delegatedGrants[key].allowed == true &&
+               incoming().delegatedGrants[key].grantedByUid == request.auth.uid
+             );
+    }
+
+    function canAdminDelegate(companyId, staffExisting) {
+      let adminData = fetchMe(companyId);
+      let diffKeys = incoming().delegatedGrants.diff(staffExisting.delegatedGrants).affectedKeys();
+      return isAdminData(adminData) &&
+             staffExisting.accessLevel == 'STAFF' &&
+             staffExisting.status == 'APPROVED' &&
+             (adminData.scopeType == 'COMPANY' || staffExisting.departmentId in adminData.scopeDepartmentIds) &&
+             incoming().delegatedGrants.keys().hasOnly([
+               'MANAGE_CLIENTS', 'CREATE_REQUESTS', 'CREATE_QUOTATIONS', 'ISSUE_QUOTATIONS',
+               'VIEW_ALL_CLIENTS_AND_QUOTES', 'EDIT_CATALOGUE_PRICES', 'OVERRIDE_QUOTE_PRICE',
+               'APPLY_DISCOUNTS', 'VIEW_PAYMENTS', 'RECORD_PAYMENTS', 'ASSIGN_WORK', 'APPROVE_DELIVERABLES'
+             ]) &&
+             canDelegateKey(adminData, diffKeys, 'MANAGE_CLIENTS') &&
+             canDelegateKey(adminData, diffKeys, 'CREATE_REQUESTS') &&
+             canDelegateKey(adminData, diffKeys, 'CREATE_QUOTATIONS') &&
+             canDelegateKey(adminData, diffKeys, 'ISSUE_QUOTATIONS') &&
+             canDelegateKey(adminData, diffKeys, 'VIEW_ALL_CLIENTS_AND_QUOTES') &&
+             canDelegateKey(adminData, diffKeys, 'EDIT_CATALOGUE_PRICES') &&
+             canDelegateKey(adminData, diffKeys, 'OVERRIDE_QUOTE_PRICE') &&
+             canDelegateKey(adminData, diffKeys, 'APPLY_DISCOUNTS') &&
+             canDelegateKey(adminData, diffKeys, 'VIEW_PAYMENTS') &&
+             canDelegateKey(adminData, diffKeys, 'RECORD_PAYMENTS') &&
+             canDelegateKey(adminData, diffKeys, 'ASSIGN_WORK') &&
+             canDelegateKey(adminData, diffKeys, 'APPROVE_DELIVERABLES');
+    }
+
+    // --- Validation Helpers ---
+    function isValidCompany(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.gstEnabled is bool &&
+             data.gstRatePercent is int && data.gstRatePercent >= 0 && data.gstRatePercent <= 28 &&
+             data.defaultAdvancePercent is int && data.defaultAdvancePercent >= 0 && data.defaultAdvancePercent <= 100 &&
+             data.defaultValidityDays is int && data.defaultValidityDays >= 1 && data.defaultValidityDays <= 365 &&
+             data.defaultRevisionRounds is int && data.defaultRevisionRounds >= 0 && data.defaultRevisionRounds <= 20 &&
+             data.nextQuoteSeq is int && data.nextQuoteSeq >= 1 &&
+             data.seededCatalogue is bool &&
+             data.createdByUid is string && data.createdByUid.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDepartment(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             data.active is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidJobRole(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+             data.departmentId is string && data.departmentId.size() >= 1 && data.departmentId.size() <= 128 &&
+             data.active is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMember(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
+             (!('photoBase64' in data) || (data.photoBase64 is string && data.photoBase64.size() <= 450000)) &&
+             data.accessLevel in ['SUPER_ADMIN', 'ADMIN', 'STAFF'] &&
+             data.status in ['PENDING', 'APPROVED', 'DECLINED', 'SUSPENDED'] &&
+             data.active is bool &&
+             data.scopeType in ['COMPANY', 'TEAM'] &&
+             data.scopeDepartmentIds is list && data.scopeDepartmentIds.size() <= 20 &&
+             data.permissions is map && data.permissions.size() <= 30 &&
+             data.delegatedGrants is map && data.delegatedGrants.size() <= 30 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMemberPrivate(data) {
+      return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
+             data.age is int && data.age >= 16 && data.age <= 100 &&
+             data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidInvitation(data) {
+      return data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+             data.accessLevel in ['SUPER_ADMIN', 'ADMIN', 'STAFF'] &&
+             data.departmentId is string && data.departmentId.size() <= 128 &&
+             data.jobRoleId is string && data.jobRoleId.size() <= 128 &&
+             data.scopeType in ['COMPANY', 'TEAM'] &&
+             data.scopeDepartmentIds is list && data.scopeDepartmentIds.size() <= 20 &&
+             data.permissions is map && data.permissions.size() <= 30 &&
+             data.invitedByUid is string && data.invitedByUid.size() <= 128 &&
+             data.status in ['PENDING', 'ACCEPTED', 'REVOKED'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidCatalogueItem(data) {
+      return data.kind in ['SERVICE', 'PACKAGE', 'ADDON'] &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.pricePaise is int && data.pricePaise >= 0 && data.pricePaise <= 1000000000 &&
+             data.pricingMode in ['FIXED', 'STARTING_FROM', 'PER_UNIT', 'PERCENTAGE_SURCHARGE', 'ACTUAL_COST', 'CUSTOM_QUOTE'] &&
+             data.surchargePercent is int && data.surchargePercent >= 0 && data.surchargePercent <= 100 &&
+             data.requiresBillingFrequency is bool &&
+             data.inclusions is list && data.inclusions.size() <= 25 &&
+             data.archived is bool &&
+             data.sortOrder is int && data.sortOrder >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidRoutingRule(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             data.keywords is list && data.keywords.size() <= 25 &&
+             data.serviceCategories is list && data.serviceCategories.size() <= 15 &&
+             data.departmentId is string && data.departmentId.size() >= 1 && data.departmentId.size() <= 128 &&
+             data.jobRoleId is string && data.jobRoleId.size() >= 1 && data.jobRoleId.size() <= 128 &&
+             data.priority is int && data.priority >= 0 && data.priority <= 1000 &&
+             data.active is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidClient(data) {
+      return data.companyName is string && data.companyName.size() >= 1 && data.companyName.size() <= 150 &&
+             data.contactPerson is string && data.contactPerson.size() >= 1 && data.contactPerson.size() <= 120 &&
+             data.createdByUid is string && data.createdByUid.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidRequest(data) {
+      return data.clientId is string && data.clientId.size() >= 1 && data.clientId.size() <= 128 &&
+             data.clientCompanyName is string && data.clientCompanyName.size() >= 1 && data.clientCompanyName.size() <= 150 &&
+             data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 160 &&
+             data.brief is string && data.brief.size() <= 4000 &&
+             data.desiredServices is list && data.desiredServices.size() <= 40 &&
+             data.responsibleManagerUid is string && data.responsibleManagerUid.size() <= 128 &&
+             data.decisionStatus in ['PENDING', 'ACCEPTED', 'DECLINED'] &&
+             data.createdByUid is string && data.createdByUid.size() <= 128 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidQuotation(data) {
+      return data.quoteNumber is string && data.quoteNumber.size() >= 1 && data.quoteNumber.size() <= 60 &&
+             data.revision is int && data.revision >= 1 && data.revision <= 100 &&
+             data.requestId is string && data.requestId.size() >= 1 && data.requestId.size() <= 128 &&
+             data.clientId is string && data.clientId.size() >= 1 && data.clientId.size() <= 128 &&
+             data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 160 &&
+             data.status in ['DRAFT', 'ISSUED', 'SENT', 'CLIENT_APPROVED', 'SUPERSEDED'] &&
+             data.companySnapshot is map &&
+             data.clientSnapshot is map &&
+             data.lines is list && data.lines.size() <= 60 &&
+             data.subtotalPaise is int && data.subtotalPaise >= 0 &&
+             data.discountPaise is int && data.discountPaise >= 0 &&
+             data.surchargePaise is int && data.surchargePaise >= 0 &&
+             data.gstEnabled is bool &&
+             data.gstRatePercent is int && data.gstRatePercent >= 0 && data.gstRatePercent <= 28 &&
+             data.gstAmountPaise is int && data.gstAmountPaise >= 0 &&
+             data.totalPaise is int && data.totalPaise >= 0 &&
+             data.advancePercent is int && data.advancePercent >= 0 && data.advancePercent <= 100 &&
+             data.advancePaise is int && data.advancePaise >= 0 &&
+             data.balancePaise is int && data.balancePaise >= 0 &&
+             data.preparedByUid is string && data.preparedByUid.size() <= 128 &&
+             data.preparedByName is string && data.preparedByName.size() >= 1 && data.preparedByName.size() <= 120 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidProject(data) {
+      return data.requestId is string && data.requestId.size() >= 1 && data.requestId.size() <= 128 &&
+             data.clientId is string && data.clientId.size() >= 1 && data.clientId.size() <= 128 &&
+             data.clientCompanyName is string && data.clientCompanyName.size() >= 1 && data.clientCompanyName.size() <= 150 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.brief is string && data.brief.size() <= 4000 &&
+             data.responsibleManagerUid is string && data.responsibleManagerUid.size() >= 1 && data.responsibleManagerUid.size() <= 128 &&
+             data.approvedQuoteId is string && data.approvedQuoteId.size() >= 1 && data.approvedQuoteId.size() <= 128 &&
+             data.agreedValuePaise is int && data.agreedValuePaise >= 0 &&
+             data.advanceDuePaise is int && data.advanceDuePaise >= 0 &&
+             data.paidPaise is int && data.paidPaise >= 0 &&
+             data.status in ['AWAITING_ADVANCE', 'IN_PROGRESS', 'COMPLETED', 'ON_HOLD'] &&
+             data.deleted is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDeliverable(data) {
+      return data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 &&
+             data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 160 &&
+             data.clientCompanyName is string && data.clientCompanyName.size() >= 1 && data.clientCompanyName.size() <= 150 &&
+             data.departmentId is string && data.departmentId.size() >= 1 && data.departmentId.size() <= 128 &&
+             data.jobRoleId is string && data.jobRoleId.size() >= 1 && data.jobRoleId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.quantity is int && data.quantity >= 1 && data.quantity <= 1000 &&
+             data.responsibleManagerUid is string && data.responsibleManagerUid.size() >= 1 && data.responsibleManagerUid.size() <= 128 &&
+             data.assignmentStatus in ['ASSIGNED', 'DEPT_QUEUE', 'NEEDS_ASSIGNMENT'] &&
+             data.status in ['NOT_STARTED', 'IN_PROGRESS', 'BLOCKED', 'READY_FOR_REVIEW', 'CHANGES_REQUESTED', 'APPROVED'] &&
+             data.checklist is list && data.checklist.size() <= 30 &&
+             data.completedChecklistCount is int && data.completedChecklistCount >= 0 &&
+             data.totalChecklistCount is int && data.totalChecklistCount >= 0 &&
+             data.clientRevisionsUsed is int && data.clientRevisionsUsed >= 0 &&
+             data.clientRevisionLimit is int && data.clientRevisionLimit >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDeliverableUpdate(data) {
+      return data.deliverableId is string && data.deliverableId.size() >= 1 && data.deliverableId.size() <= 128 &&
+             data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 &&
+             data.authorUid is string && data.authorUid.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 120 &&
+             data.actionType in ['PROGRESS', 'BLOCKED', 'SUBMIT_REVIEW', 'APPROVED', 'CHANGES_REQUESTED', 'CLIENT_REVISION'] &&
+             data.statusAfter in ['NOT_STARTED', 'IN_PROGRESS', 'BLOCKED', 'READY_FOR_REVIEW', 'CHANGES_REQUESTED', 'APPROVED'] &&
+             data.completedCount is int && data.completedCount >= 0 &&
+             data.totalCount is int && data.totalCount >= 0 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidPayment(data) {
+      return data.projectId is string && data.projectId.size() >= 1 && data.projectId.size() <= 128 &&
+             data.projectTitle is string && data.projectTitle.size() >= 1 && data.projectTitle.size() <= 160 &&
+             data.clientCompanyName is string && data.clientCompanyName.size() >= 1 && data.clientCompanyName.size() <= 150 &&
+             data.amountPaise is int && data.amountPaise > 0 && data.amountPaise <= 1000000000 &&
+             data.paymentDateMillis is int &&
+             data.method in ['UPI', 'BANK_TRANSFER', 'CARD', 'CASH', 'CHEQUE'] &&
+             data.recordedByUid is string && data.recordedByUid.size() <= 128 &&
+             data.recordedByName is string && data.recordedByName.size() >= 1 && data.recordedByName.size() <= 120 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidActivity(data) {
+      return data.category in ['MEMBERSHIP', 'PERMISSIONS', 'QUOTATION', 'PROJECT', 'ASSIGNMENT', 'DELIVERABLE', 'PAYMENT', 'COMPANY'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.detail is string && data.detail.size() <= 1000 &&
+             data.actorUid is string && data.actorUid.size() <= 128 &&
+             data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+             data.entityId is string && data.entityId.size() <= 128 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidChatChannel(data) {
+      return data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             data.topic is string && data.topic.size() <= 240 &&
+             data.channelType in ['GENERAL', 'PROJECT', 'DEPARTMENT', 'DIRECT'] &&
+             data.projectId is string && data.projectId.size() <= 128 &&
+             data.projectTitle is string && data.projectTitle.size() <= 160 &&
+             (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128)) &&
+             (!('departmentName' in data) || (data.departmentName is string && data.departmentName.size() <= 80)) &&
+             (!('participantUids' in data) || (data.participantUids is list && data.participantUids.size() <= 50)) &&
+             data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
+             data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
+             data.lastMessagePreview is string && data.lastMessagePreview.size() <= 240 &&
+             data.lastSenderName is string && data.lastSenderName.size() <= 120 &&
+             data.lastMessageAtMillis is int && data.lastMessageAtMillis >= 0 &&
+             data.messageCount is int && data.messageCount >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidChatMessage(data) {
+      return data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 128 &&
+             data.parentMessageId is string && data.parentMessageId.size() <= 128 &&
+             data.parentPreview is string && data.parentPreview.size() <= 200 &&
+             data.senderUid is string && data.senderUid.size() >= 1 && data.senderUid.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120 &&
+             data.senderRole is string && data.senderRole.size() <= 80 &&
+             data.body is string && data.body.size() <= 4000 &&
+             data.attachmentType in ['NONE', 'IMAGE', 'FILE', 'AUDIO'] &&
+             data.attachmentName is string && data.attachmentName.size() <= 200 &&
+             data.attachmentMimeType is string && data.attachmentMimeType.size() <= 120 &&
+             data.attachmentSizeBytes is int && data.attachmentSizeBytes >= 0 && data.attachmentSizeBytes <= 2000000 &&
+             data.attachmentLocalPath is string && data.attachmentLocalPath.size() <= 500 &&
+             data.attachmentDataBase64 is string && data.attachmentDataBase64.size() <= 750000 &&
+             (data.body.size() >= 1 || data.attachmentType != 'NONE') &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    function isValidNotification(data) {
+      return data.category in ['PROJECT', 'DELIVERABLE', 'CHAT', 'PAYMENT', 'MEMBERSHIP', 'SYSTEM'] &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.body is string && data.body.size() <= 600 &&
+             data.targetUid is string && data.targetUid.size() <= 128 &&
+             data.targetDepartmentId is string && data.targetDepartmentId.size() <= 128 &&
+             data.actorUid is string && data.actorUid.size() >= 1 && data.actorUid.size() <= 128 &&
+             data.actorName is string && data.actorName.size() >= 1 && data.actorName.size() <= 120 &&
+             data.entityId is string && data.entityId.size() <= 128 &&
+             data.channelId is string && data.channelId.size() <= 128 &&
+             data.readByUids is list && data.readByUids.size() <= 100 &&
+             isValidTimestamp(data.createdAt);
+    }
+
+    // --- Collection Rules ---
+    match /companies/{companyId} {
+      allow get: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+      allow create: if isValidId(companyId) &&
+                       isBootstrappedSuperAdmin() &&
+                       incoming().createdByUid == request.auth.uid &&
+                       isValidCompany(incoming());
+      allow update: if isValidId(companyId) &&
+                       isValidCompany(incoming()) &&
+                       incoming().createdByUid == existing().createdByUid &&
+                       incoming().createdAt == existing().createdAt &&
+                       meExists(companyId) &&
+                       canUpdateCompany(companyId);
+
+      match /departments/{departmentId} {
+        allow get: if isValidId(companyId) && isValidId(departmentId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+        allow list: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+        allow create: if isValidId(companyId) && isValidId(departmentId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isSuper(fetchMe(companyId)))) && isValidDepartment(incoming());
+        allow update: if isValidId(companyId) && isValidId(departmentId) && isValidDepartment(incoming()) && meExists(companyId) && isSuper(fetchMe(companyId)) && incoming().createdAt == existing().createdAt;
+      }
+
+      match /job_roles/{jobRoleId} {
+        allow get: if isValidId(companyId) && isValidId(jobRoleId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+        allow list: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+        allow create: if isValidId(companyId) && isValidId(jobRoleId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isSuper(fetchMe(companyId)))) && isValidJobRole(incoming());
+        allow update: if isValidId(companyId) && isValidId(jobRoleId) && isValidJobRole(incoming()) && meExists(companyId) && isSuper(fetchMe(companyId)) && incoming().createdAt == existing().createdAt;
+      }
+
+      match /members/{uid} {
+        allow get: if isValidId(companyId) && isValidId(uid) &&
+                      isSignedIn() && (request.auth.uid == uid || isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+        allow list: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isApproved(fetchMe(companyId))));
+
+        allow create: if isValidId(companyId) && isValidId(uid) &&
+                         isSignedIn() &&
+                         isValidMember(incoming()) &&
+                         incoming().uid == uid &&
+                         canCreateMember(companyId, uid);
+
+        allow update: if isValidId(companyId) && isValidId(uid) &&
+                         isSignedIn() &&
+                         isValidMember(incoming()) &&
+                         incoming().uid == existing().uid &&
+                         incoming().createdAt == existing().createdAt && (
+                           (
+                             request.auth.uid == uid &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'photoBase64', 'updatedAt'])
+                           ) ||
+                           (isBootstrappedSuperAdmin() && request.auth.uid == uid && incoming().accessLevel == 'SUPER_ADMIN' && incoming().status == 'APPROVED') ||
+                           (meExists(companyId) && isSuper(fetchMe(companyId))) ||
+                           (
+                             incoming().diff(existing()).affectedKeys().hasOnly(['delegatedGrants', 'updatedAt']) &&
+                             meExists(companyId) &&
+                             canAdminDelegate(companyId, existing())
+                           )
+                         );
+      }
+
+      match /member_private/{uid} {
+        allow get: if isValidId(companyId) && isValidId(uid) &&
+                      isSignedIn() && (request.auth.uid == uid || isBootstrappedSuperAdmin() || (meExists(companyId) && isSuper(fetchMe(companyId))));
+        allow list: if isValidId(companyId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isSuper(fetchMe(companyId))));
+        allow create: if isValidId(companyId) && isValidId(uid) &&
+                         isSignedIn() &&
+                         isValidMemberPrivate(incoming()) &&
+                         incoming().uid == uid &&
+                         (request.auth.uid == uid || (meExists(companyId) && isSuper(fetchMe(companyId))));
+        allow update: if isValidId(companyId) && isValidId(uid) &&
+                         isSignedIn() &&
+                         isValidMemberPrivate(incoming()) &&
+                         incoming().uid == existing().uid &&
+                         incoming().createdAt == existing().createdAt &&
+                         (request.auth.uid == uid || (meExists(companyId) && isSuper(fetchMe(companyId))));
+      }
+
+      match /invitations/{emailLower} {
+        allow get: if isValidId(companyId) && isValidEmailId(emailLower) && (
+          (meExists(companyId) && isSuper(fetchMe(companyId))) ||
+          (isSignedIn() && ('email' in request.auth.token) && ('email_verified' in request.auth.token) && request.auth.token.email_verified == true && request.auth.token.email == emailLower)
+        );
+        allow list: if isValidId(companyId) && meExists(companyId) && isSuper(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidEmailId(emailLower) && meExists(companyId) && isSuper(fetchMe(companyId)) && isValidInvitation(incoming()) && incoming().email == emailLower;
+        allow update: if isValidId(companyId) && isValidEmailId(emailLower) &&
+                         isValidInvitation(incoming()) &&
+                         incoming().createdAt == existing().createdAt && (
+                           (meExists(companyId) && isSuper(fetchMe(companyId))) ||
+                           (
+                             isSignedIn() &&
+                             ('email' in request.auth.token) &&
+                             ('email_verified' in request.auth.token) &&
+                             request.auth.token.email_verified == true &&
+                             request.auth.token.email == emailLower &&
+                             incoming().status == 'ACCEPTED' &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+                           )
+                         );
+        allow delete: if isValidId(companyId) && isValidEmailId(emailLower) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /catalogue/{itemId} {
+        allow get: if isValidId(companyId) && isValidId(itemId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(itemId) &&
+                         isValidCatalogueItem(incoming()) &&
+                         (isBootstrappedSuperAdmin() || hasPerm(companyId, 'EDIT_CATALOGUE_PRICES'));
+        allow update: if isValidId(companyId) && isValidId(itemId) &&
+                         isValidCatalogueItem(incoming()) &&
+                         incoming().createdAt == existing().createdAt &&
+                         hasPerm(companyId, 'EDIT_CATALOGUE_PRICES');
+      }
+
+      match /routing_rules/{ruleId} {
+        allow get: if isValidId(companyId) && isValidId(ruleId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(ruleId) && (isBootstrappedSuperAdmin() || (meExists(companyId) && isSuper(fetchMe(companyId)))) && isValidRoutingRule(incoming());
+        allow update: if isValidId(companyId) && isValidId(ruleId) && isValidRoutingRule(incoming()) && meExists(companyId) && isSuper(fetchMe(companyId)) && incoming().createdAt == existing().createdAt;
+        allow delete: if isValidId(companyId) && isValidId(ruleId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /clients/{clientId} {
+        allow get: if isValidId(companyId) && isValidId(clientId) && hasCommercialRead(companyId);
+        allow list: if isValidId(companyId) && hasCommercialRead(companyId);
+        allow create: if isValidId(companyId) && isValidId(clientId) &&
+                         isValidClient(incoming()) &&
+                         incoming().createdByUid == request.auth.uid &&
+                         meExists(companyId) &&
+                         canWriteClient(companyId);
+        allow update: if isValidId(companyId) && isValidId(clientId) &&
+                         isValidClient(incoming()) &&
+                         incoming().createdByUid == existing().createdByUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         meExists(companyId) &&
+                         canWriteClient(companyId);
+        allow delete: if isValidId(companyId) && isValidId(clientId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /requests/{requestId} {
+        allow get: if isValidId(companyId) && isValidId(requestId) && hasCommercialRead(companyId);
+        allow list: if isValidId(companyId) && hasCommercialRead(companyId);
+        allow create: if isValidId(companyId) && isValidId(requestId) &&
+                         isValidRequest(incoming()) &&
+                         incoming().createdByUid == request.auth.uid &&
+                         incoming().decisionStatus == 'PENDING' &&
+                         meExists(companyId) &&
+                         canCreateRequest(companyId);
+        allow update: if isValidId(companyId) && isValidId(requestId) &&
+                         isValidRequest(incoming()) &&
+                         incoming().createdByUid == existing().createdByUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         meExists(companyId) &&
+                         canUpdateRequest(companyId);
+      }
+
+      match /quotations/{quoteId} {
+        allow get: if isValidId(companyId) && isValidId(quoteId) && hasCommercialRead(companyId);
+        allow list: if isValidId(companyId) && hasCommercialRead(companyId);
+        allow create: if isValidId(companyId) && isValidId(quoteId) &&
+                         isValidQuotation(incoming()) &&
+                         incoming().preparedByUid == request.auth.uid &&
+                         meExists(companyId) &&
+                         canCreateQuotation(companyId);
+        allow update: if isValidId(companyId) && isValidId(quoteId) &&
+                         isValidQuotation(incoming()) &&
+                         incoming().preparedByUid == existing().preparedByUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         meExists(companyId) &&
+                         canUpdateQuotation(companyId);
+      }
+
+      match /projects/{projectId} {
+        allow get: if isValidId(companyId) && isValidId(projectId) && hasProjectRead(companyId);
+        allow list: if isValidId(companyId) && hasProjectRead(companyId);
+        allow create: if isValidId(companyId) && isValidId(projectId) &&
+                         isValidProject(incoming()) &&
+                         hasPerm(companyId, 'ACCEPT_PROJECT');
+        allow update: if isValidId(companyId) && isValidId(projectId) &&
+                         isValidProject(incoming()) &&
+                         incoming().requestId == existing().requestId &&
+                         incoming().createdAt == existing().createdAt &&
+                         meExists(companyId) &&
+                         canUpdateProject(companyId);
+        allow delete: if isValidId(companyId) && isValidId(projectId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /deliverables/{deliverableId} {
+        allow get: if isValidId(companyId) && isValidId(deliverableId) &&
+                      meExists(companyId) && canReadDeliverable(companyId, existing());
+        allow list: if isValidId(companyId) &&
+                       meExists(companyId) && canReadDeliverable(companyId, resource.data);
+        allow create: if isValidId(companyId) && isValidId(deliverableId) &&
+                         isValidDeliverable(incoming()) &&
+                         meExists(companyId) &&
+                         canCreateDeliverable(companyId);
+        allow update: if isValidId(companyId) && isValidId(deliverableId) &&
+                         isValidDeliverable(incoming()) &&
+                         incoming().projectId == existing().projectId &&
+                         incoming().createdAt == existing().createdAt &&
+                         meExists(companyId) &&
+                         canUpdateDeliverable(companyId);
+        allow delete: if isValidId(companyId) && isValidId(deliverableId) && meExists(companyId) && isSuper(fetchMe(companyId));
+
+        match /updates/{updateId} {
+          allow get: if isValidId(companyId) && isValidId(deliverableId) && isValidId(updateId) &&
+                        meExists(companyId) && isApproved(fetchMe(companyId)) && (
+                          existing().assignedToUid == request.auth.uid ||
+                          hasProjectReadFor(companyId, fetchMe(companyId))
+                        );
+          allow list: if isValidId(companyId) && isValidId(deliverableId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) && (
+                           resource.data.assignedToUid == request.auth.uid ||
+                           hasProjectReadFor(companyId, fetchMe(companyId))
+                         );
+          allow create: if isValidId(companyId) && isValidId(deliverableId) && isValidId(updateId) &&
+                           meExists(companyId) &&
+                           isApproved(fetchMe(companyId)) &&
+                           isValidDeliverableUpdate(incoming()) &&
+                           incoming().authorUid == request.auth.uid &&
+                           incoming().deliverableId == deliverableId && (
+                             (
+                               incoming().actionType in ['PROGRESS', 'BLOCKED', 'SUBMIT_REVIEW'] &&
+                               get(/databases/$(database)/documents/companies/$(companyId)/deliverables/$(deliverableId)).data.assignedToUid == request.auth.uid
+                             ) ||
+                             (
+                               incoming().actionType in ['APPROVED', 'CHANGES_REQUESTED', 'CLIENT_REVISION'] &&
+                               hasPerm(companyId, 'APPROVE_DELIVERABLES')
+                             )
+                           );
+          allow delete: if isValidId(companyId) && isValidId(deliverableId) && isValidId(updateId) && meExists(companyId) && isSuper(fetchMe(companyId));
+        }
+      }
+
+      match /payments/{paymentId} {
+        allow get: if isValidId(companyId) && isValidId(paymentId) && meExists(companyId) && canReadPayments(companyId);
+        allow list: if isValidId(companyId) && meExists(companyId) && canReadPayments(companyId);
+        allow create: if isValidId(companyId) && isValidId(paymentId) &&
+                         isValidPayment(incoming()) &&
+                         incoming().recordedByUid == request.auth.uid &&
+                         hasPerm(companyId, 'RECORD_PAYMENTS');
+      }
+
+      match /activity/{activityId} {
+        allow get: if isValidId(companyId) && isValidId(activityId) && meExists(companyId) && canReadActivity(companyId);
+        allow list: if isValidId(companyId) && meExists(companyId) && canReadActivity(companyId);
+        allow create: if isValidId(companyId) && isValidId(activityId) &&
+                         meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) &&
+                         isValidActivity(incoming()) &&
+                         incoming().actorUid == request.auth.uid;
+        allow delete: if isValidId(companyId) && isValidId(activityId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /chat_channels/{channelId} {
+        allow get: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && canReadChatChannel(companyId, existing());
+        allow list: if isValidId(companyId) && meExists(companyId) && canReadChatChannel(companyId, resource.data);
+        allow create: if isValidId(companyId) && isValidId(channelId) &&
+                         meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) &&
+                         isValidChatChannel(incoming()) &&
+                         incoming().createdByUid == request.auth.uid &&
+                         (incoming().channelType != 'DIRECT' || ('participantUids' in incoming() && request.auth.uid in incoming().participantUids));
+        allow update: if isValidId(companyId) && isValidId(channelId) &&
+                         meExists(companyId) &&
+                         canReadChatChannel(companyId, existing()) &&
+                         isValidChatChannel(incoming()) &&
+                         incoming().createdByUid == existing().createdByUid &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'title', 'topic', 'lastMessagePreview', 'lastSenderName',
+                           'lastMessageAtMillis', 'messageCount', 'updatedAt'
+                         ]);
+        allow delete: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && isSuper(fetchMe(companyId));
+
+        match /messages/{messageId} {
+          allow get: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) &&
+                        meExists(companyId) && canReadChatChannel(companyId, get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data);
+          allow list: if isValidId(companyId) && isValidId(channelId) &&
+                         meExists(companyId) && canReadChatChannel(companyId, get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data);
+          allow create: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) &&
+                           meExists(companyId) &&
+                           isApproved(fetchMe(companyId)) &&
+                           isValidChatMessage(incoming()) &&
+                           incoming().senderUid == request.auth.uid &&
+                           incoming().channelId == channelId &&
+                           existsAfter(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId));
+          allow delete: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) && meExists(companyId) && isSuper(fetchMe(companyId));
+        }
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isValidId(companyId) && isValidId(notificationId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(notificationId) &&
+                         meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) &&
+                         isValidNotification(incoming()) &&
+                         incoming().actorUid == request.auth.uid;
+        allow update: if isValidId(companyId) && isValidId(notificationId) &&
+                         meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) &&
+                         incoming().readByUids is list &&
+                         incoming().readByUids.size() <= 100 &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['readByUids']);
+        allow delete: if isValidId(companyId) && isValidId(notificationId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+    }
+
+    // --- Single-Fetch Action Helpers (keep AST < 250 expressions) ---
+    function canUpdateCompany(companyId) {
+      let m = fetchMe(companyId);
+      return isSuper(m) || (
+        (mHas(companyId, m, 'ISSUE_QUOTATIONS') || mHas(companyId, m, 'CREATE_QUOTATIONS')) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['nextQuoteSeq', 'updatedAt']) &&
+        incoming().nextQuoteSeq == existing().nextQuoteSeq + 1
+      );
+    }
+
+    function invMatchesMember(companyId) {
+      let inv = get(/databases/$(database)/documents/companies/$(companyId)/invitations/$(request.auth.token.email)).data;
+      return inv.status == 'PENDING' &&
+             incoming().status == 'APPROVED' &&
+             incoming().accessLevel == inv.accessLevel &&
+             incoming().departmentId == inv.departmentId &&
+             incoming().jobRoleId == inv.jobRoleId &&
+             incoming().scopeType == inv.scopeType &&
+             incoming().permissions == inv.permissions &&
+             incoming().delegatedGrants.size() == 0;
+    }
+
+    function canCreateMember(companyId, uid) {
+      let hasVerifiedEmail = ('email' in request.auth.token) && ('email_verified' in request.auth.token) && request.auth.token.email_verified == true;
+      return (isBootstrappedSuperAdmin() && request.auth.uid == uid && incoming().accessLevel == 'SUPER_ADMIN' && incoming().status == 'APPROVED') ||
+             (meExists(companyId) && isSuper(fetchMe(companyId))) ||
+             (
+               request.auth.uid == uid &&
+               hasVerifiedEmail &&
+               exists(/databases/$(database)/documents/companies/$(companyId)/invitations/$(request.auth.token.email)) &&
+               invMatchesMember(companyId)
+             ) ||
+             (
+               request.auth.uid == uid &&
+               incoming().accessLevel == 'STAFF' &&
+               incoming().status == 'PENDING' &&
+               incoming().active == true &&
+               incoming().permissions.size() == 0 &&
+               incoming().delegatedGrants.size() == 0
+             );
+    }
+
+    function canWriteClient(companyId) {
+      let m = fetchMe(companyId);
+      return mHas(companyId, m, 'MANAGE_CLIENTS') || mHas(companyId, m, 'CREATE_QUOTATIONS');
+    }
+
+    function canCreateRequest(companyId) {
+      let m = fetchMe(companyId);
+      return mHas(companyId, m, 'CREATE_REQUESTS') || mHas(companyId, m, 'CREATE_QUOTATIONS');
+    }
+
+    function canUpdateRequest(companyId) {
+      let m = fetchMe(companyId);
+      return (incoming().decisionStatus == 'ACCEPTED' && existing().decisionStatus != 'ACCEPTED' && mAdminOrSuper(m, 'ACCEPT_PROJECT')) ||
+             (incoming().decisionStatus == 'DECLINED' && existing().decisionStatus != 'DECLINED' && mAdminOrSuper(m, 'DECLINE_PROJECT')) ||
+             (
+               incoming().decisionStatus == existing().decisionStatus &&
+               (mHas(companyId, m, 'CREATE_REQUESTS') || mHas(companyId, m, 'CREATE_QUOTATIONS') || mHas(companyId, m, 'ISSUE_QUOTATIONS'))
+             );
+    }
+
+    function canCreateQuotation(companyId) {
+      let m = fetchMe(companyId);
+      return (incoming().status == 'DRAFT' && (mHas(companyId, m, 'CREATE_QUOTATIONS') || mHas(companyId, m, 'ISSUE_QUOTATIONS'))) ||
+             (incoming().status == 'ISSUED' && mHas(companyId, m, 'ISSUE_QUOTATIONS'));
+    }
+
+    function canUpdateQuotation(companyId) {
+      let m = fetchMe(companyId);
+      return (
+        existing().status == 'DRAFT' &&
+        (incoming().status == 'DRAFT' ? (mHas(companyId, m, 'CREATE_QUOTATIONS') || mHas(companyId, m, 'ISSUE_QUOTATIONS')) : mHas(companyId, m, 'ISSUE_QUOTATIONS'))
+      ) || (
+        existing().status != 'DRAFT' &&
+        mHas(companyId, m, 'ISSUE_QUOTATIONS') &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'sentAtMillis', 'clientApprovedAtMillis', 'clientApprovalNote', 'pdfLocalPath', 'pdfSha256', 'updatedAt'])
+      );
+    }
+
+    function mAdminPerm(m, perm) {
+      return isApproved(m) && m.accessLevel == 'ADMIN' && perm in m.permissions && m.permissions[perm].allowed == true;
+    }
+
+    function canUpdateProject(companyId) {
+      let m = fetchMe(companyId);
+      return isSuper(m) || (
+        incoming().deleted == existing().deleted && (
+          mAdminPerm(m, 'ACCEPT_PROJECT') ||
+          mAdminPerm(m, 'ASSIGN_WORK') ||
+          mAdminPerm(m, 'APPROVE_DELIVERABLES') ||
+          mAdminPerm(m, 'RECORD_PAYMENTS') ||
+          mAdminPerm(m, 'ISSUE_QUOTATIONS') ||
+          (isApproved(m) && hasDelegated(companyId, m, 'RECORD_PAYMENTS') && incoming().diff(existing()).affectedKeys().hasOnly(['paidPaise', 'status', 'updatedAt'])) ||
+          (isApproved(m) && hasDelegated(companyId, m, 'ISSUE_QUOTATIONS') && incoming().diff(existing()).affectedKeys().hasOnly(['agreedValuePaise', 'advanceDuePaise', 'updatedAt']))
+        )
+      );
+    }
+
+    function canReadDeliverable(companyId, d) {
+      let m = fetchMe(companyId);
+      return isApproved(m) && (
+        d.assignedToUid == request.auth.uid ||
+        (d.assignmentStatus == 'DEPT_QUEUE' && d.departmentId == m.departmentId) ||
+        hasProjectReadFor(companyId, m)
+      );
+    }
+
+    function canReadChatChannel(companyId, ch) {
+      let m = fetchMe(companyId);
+      return isApproved(m) && (
+        ch.channelType != 'DIRECT' ||
+        m.accessLevel == 'SUPER_ADMIN' ||
+        (request.auth.uid in ch.participantUids)
+      );
+    }
+
+    function canCreateDeliverable(companyId) {
+      let m = fetchMe(companyId);
+      return mAdminOrSuper(m, 'ACCEPT_PROJECT') || mHas(companyId, m, 'ASSIGN_WORK');
+    }
+
+    function canUpdateDeliverable(companyId) {
+      let m = fetchMe(companyId);
+      return isSuper(m) || (
+        isApproved(m) &&
+        existing().assignedToUid == request.auth.uid &&
+        incoming().status in ['NOT_STARTED', 'IN_PROGRESS', 'BLOCKED', 'READY_FOR_REVIEW'] &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'checklist', 'completedChecklistCount', 'previewUrl',
+          'latestNote', 'blockedReason', 'helpNeeded', 'lastUpdatedByUid',
+          'lastUpdatedByName', 'updatedAt'
+        ])
+      ) || (
+        isApproved(m) &&
+        existing().assignmentStatus == 'DEPT_QUEUE' &&
+        existing().departmentId == m.departmentId &&
+        incoming().assignedToUid == request.auth.uid &&
+        incoming().assignmentStatus == 'ASSIGNED' &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'assignedToUid', 'assignedToName', 'assignmentStatus',
+          'lastUpdatedByUid', 'lastUpdatedByName', 'updatedAt'
+        ])
+      ) || (
+        mHas(companyId, m, 'APPROVE_DELIVERABLES') &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status', 'latestFeedback', 'clientRevisionsUsed',
+          'lastUpdatedByUid', 'lastUpdatedByName', 'updatedAt'
+        ])
+      ) || (
+        mHas(companyId, m, 'ASSIGN_WORK') &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'assignedToUid', 'assignedToName', 'assignmentStatus',
+          'departmentId', 'departmentName', 'jobRoleId', 'jobRoleName',
+          'dueDateMillis', 'lastUpdatedByUid', 'lastUpdatedByName', 'updatedAt'
+        ])
+      );
+    }
+
+    function canReadPayments(companyId) {
+      let m = fetchMe(companyId);
+      return mHas(companyId, m, 'VIEW_PAYMENTS') || mHas(companyId, m, 'RECORD_PAYMENTS');
+    }
+
+    function canReadActivity(companyId) {
+      let m = fetchMe(companyId);
+      return isSuper(m) || isAdminData(m);
+    }
+  }
+}

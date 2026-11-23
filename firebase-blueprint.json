@@ -1,0 +1,527 @@
+{
+  "entities": {
+    "CompanyProfile": {
+      "title": "CompanyProfile",
+      "description": "X.MAX company profile and quotation defaults",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "tagline": { "type": "string" },
+        "address": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "gstin": { "type": "string" },
+        "gstEnabled": { "type": "boolean" },
+        "gstRatePercent": { "type": "integer" },
+        "defaultAdvancePercent": { "type": "integer" },
+        "defaultValidityDays": { "type": "integer" },
+        "defaultRevisionRounds": { "type": "integer" },
+        "defaultPaymentTerms": { "type": "string" },
+        "defaultApprovalInstructions": { "type": "string" },
+        "nextQuoteSeq": { "type": "integer" },
+        "seededCatalogue": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "gstEnabled", "gstRatePercent", "defaultAdvancePercent", "defaultValidityDays", "defaultRevisionRounds", "nextQuoteSeq", "seededCatalogue", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "Department": {
+      "title": "Department",
+      "description": "Agency department (Creative, Web, Video, Marketing)",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "active", "createdAt", "updatedAt"]
+    },
+    "JobRole": {
+      "title": "JobRole",
+      "description": "Agency job role mapped to a department",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "departmentId", "active", "createdAt", "updatedAt"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "Employee membership, role, department, and non-PII access control",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "companyNameInput": { "type": "string" },
+        "fullName": { "type": "string" },
+        "photoBase64": { "type": "string" },
+        "accessLevel": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "STAFF"] },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "DECLINED", "SUSPENDED"] },
+        "active": { "type": "boolean" },
+        "departmentId": { "type": "string" },
+        "departmentName": { "type": "string" },
+        "jobRoleId": { "type": "string" },
+        "jobRoleName": { "type": "string" },
+        "requestedDepartment": { "type": "string" },
+        "requestedJobRole": { "type": "string" },
+        "scopeType": { "type": "string", "enum": ["COMPANY", "TEAM"] },
+        "scopeDepartmentIds": { "type": "array" },
+        "permissions": { "type": "object" },
+        "delegatedGrants": { "type": "object" },
+        "invitedByUid": { "type": "string" },
+        "approvedByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "accessLevel", "status", "active", "scopeType", "scopeDepartmentIds", "permissions", "delegatedGrants", "createdAt", "updatedAt"]
+    },
+    "MemberPrivateInfo": {
+      "title": "MemberPrivateInfo",
+      "description": "Private employee PII (age, email, phone) isolated from general staff",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "age": { "type": "integer" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "age", "email", "createdAt", "updatedAt"]
+    },
+    "Invitation": {
+      "title": "Invitation",
+      "description": "Pre-authorized employee invitation keyed by verified lowercase email",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "accessLevel": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "STAFF"] },
+        "departmentId": { "type": "string" },
+        "departmentName": { "type": "string" },
+        "jobRoleId": { "type": "string" },
+        "jobRoleName": { "type": "string" },
+        "scopeType": { "type": "string", "enum": ["COMPANY", "TEAM"] },
+        "scopeDepartmentIds": { "type": "array" },
+        "permissions": { "type": "object" },
+        "invitedByUid": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REVOKED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "accessLevel", "departmentId", "jobRoleId", "scopeType", "scopeDepartmentIds", "permissions", "invitedByUid", "status", "createdAt", "updatedAt"]
+    },
+    "CatalogueItem": {
+      "title": "CatalogueItem",
+      "description": "Service, one-time package, or add-on in the agency catalogue",
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["SERVICE", "PACKAGE", "ADDON"] },
+        "category": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "pricePaise": { "type": "integer" },
+        "pricingMode": { "type": "string", "enum": ["FIXED", "STARTING_FROM", "PER_UNIT", "PERCENTAGE_SURCHARGE", "ACTUAL_COST", "CUSTOM_QUOTE"] },
+        "surchargePercent": { "type": "integer" },
+        "requiresBillingFrequency": { "type": "boolean" },
+        "unitLabel": { "type": "string" },
+        "inclusions": { "type": "array" },
+        "archived": { "type": "boolean" },
+        "sortOrder": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["kind", "category", "name", "pricePaise", "pricingMode", "surchargePercent", "requiresBillingFrequency", "inclusions", "archived", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "RoutingRule": {
+      "title": "RoutingRule",
+      "description": "Service-to-department and job-role routing rule",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "keywords": { "type": "array" },
+        "serviceCategories": { "type": "array" },
+        "departmentId": { "type": "string" },
+        "departmentName": { "type": "string" },
+        "jobRoleId": { "type": "string" },
+        "jobRoleName": { "type": "string" },
+        "priority": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "keywords", "serviceCategories", "departmentId", "jobRoleId", "priority", "active", "createdAt", "updatedAt"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Agency client contact and meeting notes",
+      "type": "object",
+      "properties": {
+        "companyName": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "address": { "type": "string" },
+        "meetingNotes": { "type": "string" },
+        "followUpDateMillis": { "type": "integer" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyName", "contactPerson", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "ProjectRequest": {
+      "title": "ProjectRequest",
+      "description": "Client project request with linked quotation history and internal decision state",
+      "type": "object",
+      "properties": {
+        "clientId": { "type": "string" },
+        "clientCompanyName": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "brief": { "type": "string" },
+        "desiredServices": { "type": "array" },
+        "targetDateMillis": { "type": "integer" },
+        "responsibleManagerUid": { "type": "string" },
+        "responsibleManagerName": { "type": "string" },
+        "decisionStatus": { "type": "string", "enum": ["PENDING", "ACCEPTED", "DECLINED"] },
+        "decisionByUid": { "type": "string" },
+        "decisionByName": { "type": "string" },
+        "decisionAtMillis": { "type": "integer" },
+        "decisionNote": { "type": "string" },
+        "acceptedProjectId": { "type": "string" },
+        "latestQuoteId": { "type": "string" },
+        "latestQuoteNumber": { "type": "string" },
+        "latestQuoteRevision": { "type": "integer" },
+        "clientApprovedQuoteId": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["clientId", "clientCompanyName", "projectTitle", "brief", "desiredServices", "responsibleManagerUid", "decisionStatus", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "Quotation": {
+      "title": "Quotation",
+      "description": "Frozen quotation snapshot and commercial terms",
+      "type": "object",
+      "properties": {
+        "quoteNumber": { "type": "string" },
+        "revision": { "type": "integer" },
+        "parentQuoteId": { "type": "string" },
+        "requestId": { "type": "string" },
+        "linkedProjectId": { "type": "string" },
+        "clientId": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "scopeSummary": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "ISSUED", "SENT", "CLIENT_APPROVED", "SUPERSEDED"] },
+        "companySnapshot": { "type": "object" },
+        "clientSnapshot": { "type": "object" },
+        "lines": { "type": "array" },
+        "subtotalPaise": { "type": "integer" },
+        "discountPaise": { "type": "integer" },
+        "surchargePaise": { "type": "integer" },
+        "surchargeBasePaise": { "type": "integer" },
+        "gstEnabled": { "type": "boolean" },
+        "gstRatePercent": { "type": "integer" },
+        "gstAmountPaise": { "type": "integer" },
+        "totalPaise": { "type": "integer" },
+        "advancePercent": { "type": "integer" },
+        "advancePaise": { "type": "integer" },
+        "balancePaise": { "type": "integer" },
+        "paymentTerms": { "type": "string" },
+        "revisionPolicy": { "type": "string" },
+        "timelineNote": { "type": "string" },
+        "separatelyBilledNote": { "type": "string" },
+        "approvalInstructions": { "type": "string" },
+        "issuedDateMillis": { "type": "integer" },
+        "expiryDateMillis": { "type": "integer" },
+        "preparedByUid": { "type": "string" },
+        "preparedByName": { "type": "string" },
+        "pdfLocalPath": { "type": "string" },
+        "pdfSha256": { "type": "string" },
+        "sentAtMillis": { "type": "integer" },
+        "clientApprovedAtMillis": { "type": "integer" },
+        "clientApprovalNote": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["quoteNumber", "revision", "requestId", "clientId", "projectTitle", "status", "companySnapshot", "clientSnapshot", "lines", "subtotalPaise", "discountPaise", "surchargePaise", "gstEnabled", "gstRatePercent", "gstAmountPaise", "totalPaise", "advancePercent", "advancePaise", "balancePaise", "preparedByUid", "preparedByName", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Accepted agency project with commercial totals and status",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientCompanyName": { "type": "string" },
+        "title": { "type": "string" },
+        "brief": { "type": "string" },
+        "responsibleManagerUid": { "type": "string" },
+        "responsibleManagerName": { "type": "string" },
+        "approvedQuoteId": { "type": "string" },
+        "approvedQuoteNumber": { "type": "string" },
+        "approvedQuoteRevision": { "type": "integer" },
+        "agreedValuePaise": { "type": "integer" },
+        "advanceDuePaise": { "type": "integer" },
+        "paidPaise": { "type": "integer" },
+        "paymentTerms": { "type": "string" },
+        "revisionLimitPerDeliverable": { "type": "integer" },
+        "status": { "type": "string", "enum": ["AWAITING_ADVANCE", "IN_PROGRESS", "COMPLETED", "ON_HOLD"] },
+        "deleted": { "type": "boolean" },
+        "deletedByUid": { "type": "string" },
+        "deletedAtMillis": { "type": "integer" },
+        "totalDeliverables": { "type": "integer" },
+        "approvedDeliverables": { "type": "integer" },
+        "inReviewDeliverables": { "type": "integer" },
+        "blockedDeliverables": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requestId", "clientId", "clientCompanyName", "title", "brief", "responsibleManagerUid", "approvedQuoteId", "agreedValuePaise", "advanceDuePaise", "paidPaise", "status", "deleted", "createdAt", "updatedAt"]
+    },
+    "Deliverable": {
+      "title": "Deliverable",
+      "description": "Staff-visible assigned deliverable without sensitive financial or client PII",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "clientCompanyName": { "type": "string" },
+        "projectBrief": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "departmentName": { "type": "string" },
+        "jobRoleId": { "type": "string" },
+        "jobRoleName": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "quantity": { "type": "integer" },
+        "responsibleManagerUid": { "type": "string" },
+        "assignedToUid": { "type": "string" },
+        "assignedToName": { "type": "string" },
+        "assignmentStatus": { "type": "string", "enum": ["ASSIGNED", "DEPT_QUEUE", "NEEDS_ASSIGNMENT"] },
+        "dueDateMillis": { "type": "integer" },
+        "status": { "type": "string", "enum": ["NOT_STARTED", "IN_PROGRESS", "BLOCKED", "READY_FOR_REVIEW", "CHANGES_REQUESTED", "APPROVED"] },
+        "checklist": { "type": "array" },
+        "completedChecklistCount": { "type": "integer" },
+        "totalChecklistCount": { "type": "integer" },
+        "previewUrl": { "type": "string" },
+        "latestNote": { "type": "string" },
+        "blockedReason": { "type": "string" },
+        "helpNeeded": { "type": "string" },
+        "latestFeedback": { "type": "string" },
+        "clientRevisionsUsed": { "type": "integer" },
+        "clientRevisionLimit": { "type": "integer" },
+        "lastUpdatedByUid": { "type": "string" },
+        "lastUpdatedByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectTitle", "clientCompanyName", "departmentId", "jobRoleId", "title", "quantity", "responsibleManagerUid", "assignmentStatus", "status", "checklist", "completedChecklistCount", "totalChecklistCount", "clientRevisionsUsed", "clientRevisionLimit", "createdAt", "updatedAt"]
+    },
+    "DeliverableUpdate": {
+      "title": "DeliverableUpdate",
+      "description": "Audit log of staff progress and manager review feedback on a deliverable",
+      "type": "object",
+      "properties": {
+        "deliverableId": { "type": "string" },
+        "projectId": { "type": "string" },
+        "assignedToUid": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "authorUid": { "type": "string" },
+        "authorName": { "type": "string" },
+        "actionType": { "type": "string", "enum": ["PROGRESS", "BLOCKED", "SUBMIT_REVIEW", "APPROVED", "CHANGES_REQUESTED", "CLIENT_REVISION"] },
+        "statusAfter": { "type": "string" },
+        "note": { "type": "string" },
+        "previewUrl": { "type": "string" },
+        "blockedReason": { "type": "string" },
+        "helpNeeded": { "type": "string" },
+        "completedCount": { "type": "integer" },
+        "totalCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["deliverableId", "projectId", "authorUid", "authorName", "actionType", "statusAfter", "completedCount", "totalCount", "createdAt"]
+    },
+    "PaymentRecord": {
+      "title": "PaymentRecord",
+      "description": "Recorded project payment or part-payment",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "clientCompanyName": { "type": "string" },
+        "amountPaise": { "type": "integer" },
+        "paymentDateMillis": { "type": "integer" },
+        "method": { "type": "string", "enum": ["UPI", "BANK_TRANSFER", "CARD", "CASH", "CHEQUE"] },
+        "reference": { "type": "string" },
+        "note": { "type": "string" },
+        "recordedByUid": { "type": "string" },
+        "recordedByName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["projectId", "projectTitle", "clientCompanyName", "amountPaise", "paymentDateMillis", "method", "recordedByUid", "recordedByName", "createdAt"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Internal agency audit trail",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "enum": ["MEMBERSHIP", "PERMISSIONS", "QUOTATION", "PROJECT", "ASSIGNMENT", "DELIVERABLE", "PAYMENT", "COMPANY"] },
+        "title": { "type": "string" },
+        "detail": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "entityId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["category", "title", "detail", "actorUid", "actorName", "entityId", "createdAt"]
+    },
+    "ChatChannel": {
+      "title": "ChatChannel",
+      "description": "Team or project workspace messaging channel",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "topic": { "type": "string" },
+        "channelType": { "type": "string", "enum": ["GENERAL", "PROJECT", "DEPARTMENT", "DIRECT"] },
+        "projectId": { "type": "string" },
+        "projectTitle": { "type": "string" },
+        "departmentId": { "type": "string" },
+        "departmentName": { "type": "string" },
+        "participantUids": { "type": "array" },
+        "createdByUid": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "lastMessagePreview": { "type": "string" },
+        "lastSenderName": { "type": "string" },
+        "lastMessageAtMillis": { "type": "integer" },
+        "messageCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "topic", "channelType", "projectId", "projectTitle", "createdByUid", "createdByName", "lastMessagePreview", "lastSenderName", "lastMessageAtMillis", "messageCount", "createdAt", "updatedAt"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Threaded workspace chat message with optional uploaded image, document, or audio attachment",
+      "type": "object",
+      "properties": {
+        "channelId": { "type": "string" },
+        "parentMessageId": { "type": "string" },
+        "parentPreview": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderRole": { "type": "string" },
+        "body": { "type": "string" },
+        "attachmentType": { "type": "string", "enum": ["NONE", "IMAGE", "FILE", "AUDIO"] },
+        "attachmentName": { "type": "string" },
+        "attachmentMimeType": { "type": "string" },
+        "attachmentSizeBytes": { "type": "integer" },
+        "attachmentLocalPath": { "type": "string" },
+        "attachmentDataBase64": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["channelId", "parentMessageId", "parentPreview", "senderUid", "senderName", "senderRole", "body", "attachmentType", "attachmentName", "attachmentMimeType", "attachmentSizeBytes", "attachmentLocalPath", "attachmentDataBase64", "createdAt"]
+    },
+    "WorkspaceNotification": {
+      "title": "WorkspaceNotification",
+      "description": "Real-time workspace alerts with sound and read tracking",
+      "type": "object",
+      "properties": {
+        "category": { "type": "string", "enum": ["PROJECT", "DELIVERABLE", "CHAT", "PAYMENT", "MEMBERSHIP", "SYSTEM"] },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "targetDepartmentId": { "type": "string" },
+        "actorUid": { "type": "string" },
+        "actorName": { "type": "string" },
+        "entityId": { "type": "string" },
+        "channelId": { "type": "string" },
+        "readByUids": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["category", "title", "body", "targetUid", "targetDepartmentId", "actorUid", "actorName", "entityId", "channelId", "readByUids", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/companies/{companyId}": {
+      "schema": { "$ref": "#/entities/CompanyProfile" },
+      "description": "Company profile and quotation defaults"
+    },
+    "/companies/{companyId}/departments/{departmentId}": {
+      "schema": { "$ref": "#/entities/Department" },
+      "description": "Agency departments"
+    },
+    "/companies/{companyId}/job_roles/{jobRoleId}": {
+      "schema": { "$ref": "#/entities/JobRole" },
+      "description": "Agency job roles"
+    },
+    "/companies/{companyId}/members/{uid}": {
+      "schema": { "$ref": "#/entities/Member" },
+      "description": "Employee memberships, roles, departments, and permission grants"
+    },
+    "/companies/{companyId}/member_private/{uid}": {
+      "schema": { "$ref": "#/entities/MemberPrivateInfo" },
+      "description": "Private employee PII (age, email, phone)"
+    },
+    "/companies/{companyId}/invitations/{emailLower}": {
+      "schema": { "$ref": "#/entities/Invitation" },
+      "description": "Employee invitations keyed by lowercase verified email"
+    },
+    "/companies/{companyId}/catalogue/{itemId}": {
+      "schema": { "$ref": "#/entities/CatalogueItem" },
+      "description": "Agency services, one-time packages, and add-ons"
+    },
+    "/companies/{companyId}/routing_rules/{ruleId}": {
+      "schema": { "$ref": "#/entities/RoutingRule" },
+      "description": "Service-to-department and job-role routing rules"
+    },
+    "/companies/{companyId}/clients/{clientId}": {
+      "schema": { "$ref": "#/entities/Client" },
+      "description": "Agency client contacts"
+    },
+    "/companies/{companyId}/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/ProjectRequest" },
+      "description": "Client project requests"
+    },
+    "/companies/{companyId}/quotations/{quoteId}": {
+      "schema": { "$ref": "#/entities/Quotation" },
+      "description": "Frozen quotation snapshots and commercial terms"
+    },
+    "/companies/{companyId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "Accepted agency projects and commercial totals"
+    },
+    "/companies/{companyId}/deliverables/{deliverableId}": {
+      "schema": { "$ref": "#/entities/Deliverable" },
+      "description": "Staff-visible project deliverables"
+    },
+    "/companies/{companyId}/deliverables/{deliverableId}/updates/{updateId}": {
+      "schema": { "$ref": "#/entities/DeliverableUpdate" },
+      "description": "Progress updates and reviewer feedback on a deliverable"
+    },
+    "/companies/{companyId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentRecord" },
+      "description": "Project payment ledger"
+    },
+    "/companies/{companyId}/activity/{activityId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Internal agency activity log"
+    },
+    "/companies/{companyId}/chat_channels/{channelId}": {
+      "schema": { "$ref": "#/entities/ChatChannel" },
+      "description": "Team & project chat channels"
+    },
+    "/companies/{companyId}/chat_channels/{channelId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Threaded chat messages and uploaded file attachments"
+    },
+    "/companies/{companyId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/WorkspaceNotification" },
+      "description": "Real-time workspace notifications with sound support"
+    }
+  }
+}

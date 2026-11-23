@@ -1,0 +1,6 @@
+{
+  "name": "Xteam",
+  "description": "Agency project, client request, quotation PDF, work assignment, deliverable review, and payment tracker for Xteam.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
