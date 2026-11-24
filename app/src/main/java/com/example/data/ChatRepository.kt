@@ -21,8 +21,8 @@ class ChatRepository(private val core: AgencyRepository) {
     companion object {
         const val GENERAL_CHANNEL_ID = "ch_general"
 
-        fun directChannelId(uidA: String, uidB: String): String {
-            val sortedUids = listOf(uidA, uidB).distinct().sorted()
+        fun directChannelId(uid1: String, uid2: String): String {
+            val sortedUids = listOf(uid1, uid2).distinct().sorted()
             val rawSuffix = sortedUids.joinToString("_").replace(Regex("[^A-Za-z0-9_-]"), "_")
             return "ch_dm_$rawSuffix".take(120)
         }
@@ -34,6 +34,25 @@ class ChatRepository(private val core: AgencyRepository) {
     }
 
     fun observeChannels(myUid: String, isSuperAdmin: Boolean): Flow<List<ChatChannel>> {
+        if (isSuperAdmin) {
+            return callbackFlow {
+                val reg = sub("chat_channels").addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        handleFirestoreError(err, OperationType.LIST, "companies/${core.companyId}/chat_channels")
+                        close(err)
+                        return@addSnapshotListener
+                    }
+                    val list = snap?.documents?.mapNotNull { doc ->
+                        doc.get("createdAt", est)
+                        doc.get("updatedAt", est)
+                        doc.toObject(ChatChannel::class.java)
+                    }.orEmpty().sortedByDescending { it.lastMessageAtMillis }
+                    trySend(list)
+                }
+                awaitClose { reg.remove() }
+            }
+        }
+
         val sharedFlow = callbackFlow<List<ChatChannel>> {
             val reg = sub("chat_channels")
                 .whereIn(
@@ -214,14 +233,15 @@ class ChatRepository(private val core: AgencyRepository) {
 
     suspend fun createOrGetDirectChannel(otherMember: Member, actor: Member): ChatChannel {
         val sortedUids = listOf(actor.uid, otherMember.uid).distinct().sorted()
-        val channelId = directChannelId(actor.uid, otherMember.uid)
+        val rawSuffix = sortedUids.joinToString("_").replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val channelId = "ch_dm_$rawSuffix".take(120)
         val ref = sub("chat_channels").document(channelId)
         val existing = runCatching { ref.get().await() }.getOrNull()
         if (existing != null && existing.exists()) {
             existing.toObject(ChatChannel::class.java)?.let { return it }
         }
         val cleanTitle = "${actor.fullName.substringBefore(" ")} & ${otherMember.fullName}".take(100)
-        val cleanTopic = "${otherMember.jobRoleName.ifBlank { otherMember.accessLevelEnum().label }} • Direct 1:1".take(240)
+        val cleanTopic = "Personal Chat • ${otherMember.jobRoleName.ifBlank { otherMember.accessLevelEnum().label }}".take(240)
         val now = System.currentTimeMillis()
         val payload = mapOf(
             "title" to cleanTitle,
@@ -258,7 +278,8 @@ class ChatRepository(private val core: AgencyRepository) {
     }
 
     suspend fun createOrGetDepartmentChannel(dept: Department, actor: Member): ChatChannel {
-        val channelId = departmentChannelId(dept.id)
+        val safeDept = dept.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val channelId = "ch_dept_$safeDept".take(120)
         val ref = sub("chat_channels").document(channelId)
         val existing = runCatching { ref.get().await() }.getOrNull()
         if (existing != null && existing.exists()) {
@@ -379,14 +400,9 @@ class ChatRepository(private val core: AgencyRepository) {
             else -> "ALL" to ""
         }
         val chTitle = channelObj?.title ?: "Chat"
-        val notifTitle = if (channelObj?.channelTypeEnum() == ChatChannelType.DIRECT) {
-            "Direct Message • $senderName"
-        } else {
-            "New Message • $chTitle"
-        }
         core.createNotification(
             category = NotificationCategory.CHAT,
-            title = notifTitle,
+            title = "New Message • $chTitle",
             body = "$senderName: $preview",
             actor = actor,
             targetUid = targetUid,
@@ -416,296 +432,6 @@ class ChatRepository(private val core: AgencyRepository) {
         sub("chat_channels").document(channelId).collection("messages").document(messageId).delete().await()
     }
 
-    suspend fun reactToMessage(channelId: String, messageId: String, uid: String, emoji: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        val snap = msgRef.get().await()
-        if (!snap.exists()) return
-        val currentReactions = (snap.get("reactions") as? Map<*, *>)?.mapKeys { it.key.toString() }?.mapValues { it.value.toString() }?.toMutableMap() ?: mutableMapOf()
-        if (emoji.isBlank() || currentReactions[uid] == emoji) {
-            currentReactions.remove(uid)
-        } else {
-            currentReactions[uid] = emoji
-        }
-        msgRef.update("reactions", currentReactions).await()
-    }
-
-    suspend fun editMessage(channelId: String, messageId: String, newBody: String) {
-        val clean = newBody.trim().take(4000)
-        if (clean.isBlank()) return
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        msgRef.update(
-            mapOf(
-                "body" to clean,
-                "isEdited" to true,
-                "editedAtMillis" to System.currentTimeMillis()
-            )
-        ).await()
-    }
-
-    suspend fun deleteMessageForEveryone(channelId: String, messageId: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        msgRef.update(
-            mapOf(
-                "body" to "This message was deleted",
-                "isDeletedForEveryone" to true,
-                "attachmentType" to ChatAttachmentType.NONE.name,
-                "attachmentName" to "",
-                "attachmentDataBase64" to "",
-                "attachmentLocalPath" to ""
-            )
-        ).await()
-    }
-
-    suspend fun deleteMessageForMe(channelId: String, messageId: String, uid: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        msgRef.update("deletedForUids", FieldValue.arrayUnion(uid)).await()
-    }
-
-    suspend fun toggleStarMessage(channelId: String, messageId: String, uid: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        val snap = msgRef.get().await()
-        val starred = (snap.get("starredByUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (uid in starred) {
-            msgRef.update("starredByUids", FieldValue.arrayRemove(uid)).await()
-        } else {
-            msgRef.update("starredByUids", FieldValue.arrayUnion(uid)).await()
-        }
-    }
-
-    suspend fun togglePinMessage(channelId: String, messageId: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        val snap = msgRef.get().await()
-        val currentPinned = snap.getBoolean("pinned") ?: false
-        msgRef.update("pinned", !currentPinned).await()
-    }
-
-    suspend fun sendPollMessage(
-        channelId: String,
-        question: String,
-        options: List<String>,
-        actor: Member
-    ): ChatMessage {
-        val cleanQ = question.trim().take(300)
-        val cleanOpts = options.map { it.trim().take(100) }.filter { it.isNotBlank() }.take(10)
-        require(cleanQ.isNotBlank() && cleanOpts.size >= 2) { "Poll requires a question and at least 2 options." }
-
-        val effectiveChannelId = channelId.ifBlank { GENERAL_CHANNEL_ID }
-        val channelRef = sub("chat_channels").document(effectiveChannelId)
-        val messageId = "msg_poll_" + UUID.randomUUID().toString().take(10)
-        val msgRef = channelRef.collection("messages").document(messageId)
-        val senderName = actor.fullName.ifBlank { "Member" }.take(120)
-        val senderRole = actor.jobRoleName.ifBlank { actor.accessLevelEnum().label }.take(80)
-
-        val payload = mapOf(
-            "channelId" to effectiveChannelId,
-            "senderUid" to actor.uid,
-            "senderName" to senderName,
-            "senderRole" to senderRole,
-            "body" to "📊 Poll: $cleanQ",
-            "pollQuestion" to cleanQ,
-            "pollOptions" to cleanOpts,
-            "pollVotes" to emptyMap<String, List<String>>(),
-            "deliveryStatus" to "SENT",
-            "createdAt" to FieldValue.serverTimestamp()
-        )
-        val preview = "📊 Poll: $cleanQ".take(240)
-        val batch = db.batch()
-        batch.set(msgRef, payload)
-        batch.update(
-            channelRef,
-            mapOf(
-                "lastMessagePreview" to preview,
-                "lastSenderName" to senderName,
-                "lastMessageAtMillis" to System.currentTimeMillis(),
-                "messageCount" to FieldValue.increment(1L),
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-        )
-        batch.commit().await()
-        return ChatMessage(
-            id = messageId,
-            channelId = effectiveChannelId,
-            senderUid = actor.uid,
-            senderName = senderName,
-            senderRole = senderRole,
-            body = "📊 Poll: $cleanQ",
-            pollQuestion = cleanQ,
-            pollOptions = cleanOpts
-        )
-    }
-
-    suspend fun votePoll(channelId: String, messageId: String, optionIndex: Int, uid: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
-        val snap = msgRef.get().await()
-        if (!snap.exists()) return
-        val rawVotes = (snap.get("pollVotes") as? Map<*, *>)?.mapNotNull { (k, v) ->
-            val keyStr = k?.toString() ?: return@mapNotNull null
-            val uids = (v as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-            keyStr to uids.toMutableList()
-        }?.toMap()?.toMutableMap() ?: mutableMapOf()
-
-        val optKey = optionIndex.toString()
-        val currentVoters = rawVotes[optKey] ?: mutableListOf()
-        if (uid in currentVoters) {
-            currentVoters.remove(uid)
-            rawVotes[optKey] = currentVoters
-        } else {
-            rawVotes.forEach { (_, voters) -> voters.remove(uid) }
-            currentVoters.add(uid)
-            rawVotes[optKey] = currentVoters
-        }
-        msgRef.update("pollVotes", rawVotes).await()
-    }
-
-    suspend fun sendBusinessCardMessage(
-        channelId: String,
-        kind: String,
-        refId: String,
-        title: String,
-        subtitle: String,
-        status: String,
-        amountPaise: Long,
-        actor: Member
-    ): ChatMessage {
-        val effectiveChannelId = channelId.ifBlank { GENERAL_CHANNEL_ID }
-        val channelRef = sub("chat_channels").document(effectiveChannelId)
-        val messageId = "msg_biz_" + UUID.randomUUID().toString().take(10)
-        val msgRef = channelRef.collection("messages").document(messageId)
-        val senderName = actor.fullName.ifBlank { "Member" }.take(120)
-        val senderRole = actor.jobRoleName.ifBlank { actor.accessLevelEnum().label }.take(80)
-
-        val emojiIcon = when (kind.uppercase()) {
-            "INVOICE" -> "🧾"
-            "QUOTATION" -> "💼"
-            "TASK" -> "✅"
-            "PROJECT" -> "📁"
-            "PAYMENT" -> "💳"
-            "APPROVAL" -> "⚖️"
-            else -> "📌"
-        }
-        val cardText = "$emojiIcon $kind: $title"
-        val payload = mapOf(
-            "channelId" to effectiveChannelId,
-            "senderUid" to actor.uid,
-            "senderName" to senderName,
-            "senderRole" to senderRole,
-            "body" to cardText,
-            "businessRefKind" to kind.uppercase(),
-            "businessRefId" to refId,
-            "businessRefTitle" to title.take(200),
-            "businessRefSubtitle" to subtitle.take(200),
-            "businessRefStatus" to status.take(60),
-            "businessRefAmountPaise" to amountPaise,
-            "deliveryStatus" to "SENT",
-            "createdAt" to FieldValue.serverTimestamp()
-        )
-        val batch = db.batch()
-        batch.set(msgRef, payload)
-        batch.update(
-            channelRef,
-            mapOf(
-                "lastMessagePreview" to cardText,
-                "lastSenderName" to senderName,
-                "lastMessageAtMillis" to System.currentTimeMillis(),
-                "messageCount" to FieldValue.increment(1L),
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-        )
-        batch.commit().await()
-        return ChatMessage(
-            id = messageId,
-            channelId = effectiveChannelId,
-            senderUid = actor.uid,
-            senderName = senderName,
-            senderRole = senderRole,
-            body = cardText,
-            businessRefKind = kind.uppercase(),
-            businessRefId = refId,
-            businessRefTitle = title,
-            businessRefSubtitle = subtitle,
-            businessRefStatus = status,
-            businessRefAmountPaise = amountPaise
-        )
-    }
-
-    suspend fun togglePinChannel(channelId: String, uid: String) {
-        val channelRef = sub("chat_channels").document(channelId)
-        val snap = channelRef.get().await()
-        val list = (snap.get("pinnedUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (uid in list) {
-            channelRef.update("pinnedUids", FieldValue.arrayRemove(uid)).await()
-        } else {
-            channelRef.update("pinnedUids", FieldValue.arrayUnion(uid)).await()
-        }
-    }
-
-    suspend fun toggleMuteChannel(channelId: String, uid: String) {
-        val channelRef = sub("chat_channels").document(channelId)
-        val snap = channelRef.get().await()
-        val list = (snap.get("mutedUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (uid in list) {
-            channelRef.update("mutedUids", FieldValue.arrayRemove(uid)).await()
-        } else {
-            channelRef.update("mutedUids", FieldValue.arrayUnion(uid)).await()
-        }
-    }
-
-    suspend fun toggleArchiveChannel(channelId: String, uid: String) {
-        val channelRef = sub("chat_channels").document(channelId)
-        val snap = channelRef.get().await()
-        val list = (snap.get("archivedUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (uid in list) {
-            channelRef.update("archivedUids", FieldValue.arrayRemove(uid)).await()
-        } else {
-            channelRef.update("archivedUids", FieldValue.arrayUnion(uid)).await()
-        }
-    }
-
-    suspend fun toggleFavouriteChannel(channelId: String, uid: String) {
-        val channelRef = sub("chat_channels").document(channelId)
-        val snap = channelRef.get().await()
-        val list = (snap.get("favouriteUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (uid in list) {
-            channelRef.update("favouriteUids", FieldValue.arrayRemove(uid)).await()
-        } else {
-            channelRef.update("favouriteUids", FieldValue.arrayUnion(uid)).await()
-        }
-    }
-
-    suspend fun updateChannelInfo(channelId: String, title: String, topic: String, photoUrl: String = "") {
-        val updates = mutableMapOf<String, Any>(
-            "title" to title.trim().take(100),
-            "topic" to topic.trim().take(240),
-            "updatedAt" to FieldValue.serverTimestamp()
-        )
-        if (photoUrl.isNotBlank()) updates["photoUrl"] = photoUrl
-        sub("chat_channels").document(channelId).update(updates).await()
-    }
-
-    suspend fun addChannelMember(channelId: String, memberUid: String) {
-        sub("chat_channels").document(channelId).update("participantUids", FieldValue.arrayUnion(memberUid)).await()
-    }
-
-    suspend fun removeChannelMember(channelId: String, memberUid: String) {
-        sub("chat_channels").document(channelId).update(
-            mapOf(
-                "participantUids" to FieldValue.arrayRemove(memberUid),
-                "adminUids" to FieldValue.arrayRemove(memberUid)
-            )
-        ).await()
-    }
-
-    suspend fun toggleChannelAdmin(channelId: String, memberUid: String) {
-        val channelRef = sub("chat_channels").document(channelId)
-        val snap = channelRef.get().await()
-        val admins = (snap.get("adminUids") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-        if (memberUid in admins) {
-            channelRef.update("adminUids", FieldValue.arrayRemove(memberUid)).await()
-        } else {
-            channelRef.update("adminUids", FieldValue.arrayUnion(memberUid)).await()
-        }
-    }
-
     suspend fun deleteChannelCascade(channelId: String) {
         val msgSnap = sub("chat_channels").document(channelId).collection("messages").get().await()
         msgSnap.documents.chunked(200).forEach { slice ->
@@ -715,5 +441,36 @@ class ChatRepository(private val core: AgencyRepository) {
         }
         sub("chat_channels").document(channelId).delete().await()
     }
+
+    suspend fun editMessage(channelId: String, messageId: String, newBody: String) {
+        sub("chat_channels").document(channelId).collection("messages").document(messageId)
+            .update(mapOf("body" to newBody, "updatedAt" to FieldValue.serverTimestamp())).await()
+    }
+
+    suspend fun sendPollMessage(channelId: String, question: String, options: List<String>, actor: Member) {}
+    suspend fun votePoll(channelId: String, messageId: String, optionIndex: Int, myUid: String) {}
+    suspend fun reactToMessage(channelId: String, messageId: String, myUid: String, emoji: String) {}
+    suspend fun deleteMessageForEveryone(channelId: String, messageId: String) { deleteMessage(channelId, messageId) }
+    suspend fun deleteMessageForMe(channelId: String, messageId: String, uid: String) {}
+    suspend fun toggleStarMessage(channelId: String, messageId: String, uid: String) {}
+    suspend fun togglePinMessage(channelId: String, messageId: String) {}
+    suspend fun sendBusinessCardMessage(
+        channelId: String,
+        kind: String,
+        refId: String,
+        title: String,
+        subtitle: String,
+        status: String,
+        amountPaise: Long,
+        actor: Member
+    ) {}
+    suspend fun togglePinChannel(channelId: String, uid: String) {}
+    suspend fun toggleMuteChannel(channelId: String, uid: String) {}
+    suspend fun toggleArchiveChannel(channelId: String, uid: String) {}
+    suspend fun toggleFavouriteChannel(channelId: String, uid: String) {}
+    suspend fun updateChannelInfo(channelId: String, title: String, topic: String, photoUrl: String = "") {}
+    suspend fun addChannelMember(channelId: String, uid: String) {}
+    suspend fun removeChannelMember(channelId: String, uid: String) {}
+    suspend fun toggleChannelAdmin(channelId: String, uid: String) {}
 }
 

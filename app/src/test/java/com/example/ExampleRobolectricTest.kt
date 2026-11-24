@@ -376,7 +376,7 @@ class ExampleRobolectricTest {
     val dmChannel = ChatChannel(
       id = "dm_u_admin_u_staff",
       title = "X.MAX Director & Aarav Designer",
-      topic = "Direct Message",
+      topic = "Personal Chat • Graphic Designer",
       channelType = ChatChannelType.DIRECT.name,
       participantUids = listOf("u_admin", "u_staff"),
       lastMessagePreview = "Hey Aarav!",

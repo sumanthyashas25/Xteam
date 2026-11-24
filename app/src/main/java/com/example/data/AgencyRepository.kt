@@ -32,7 +32,7 @@ class AgencyRepository(context: Context) {
     val db: FirebaseFirestore = getOrConfigureFirestore(context)
 
     companion object {
-        const val TARGET_FIRESTORE_DATABASE_ID = "ai-studio-android-xteam-2d3c79c2-5261-467c-ba48-b366a64e6a80"
+        const val TARGET_FIRESTORE_DATABASE_ID = "ai-studio-android-xteam-28ae82d9-933c-4b9e-8445-3ca11186cacb"
 
         @Volatile
         private var settingsConfigured = false

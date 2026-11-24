@@ -248,17 +248,7 @@ fun AgencyMenuDrawerContent(
                         onClick = { onSelectSecondary(SecondaryDestination.PROJECTS) }
                     )
                 }
-                if (!visibleTabs.contains(PrimaryTab.CHAT) && permittedSecondary.contains(SecondaryDestination.CHAT)) {
-                    MinimalSidebarRow(
-                        title = formatTitleCase(SecondaryDestination.CHAT.label),
-                        icon = SecondaryDestination.CHAT.icon,
-                        activeIcon = SecondaryDestination.CHAT.icon,
-                        selected = secondaryDest == SecondaryDestination.CHAT,
-                        badgeText = state.chatChannels.size.takeIf { it > 0 }?.toString(),
-                        modifier = Modifier.testTag("menu_dest_chat"),
-                        onClick = { onSelectSecondary(SecondaryDestination.CHAT) }
-                    )
-                }
+
                 if (permittedSecondary.contains(SecondaryDestination.NOTIFICATIONS)) {
                     MinimalSidebarRow(
                         title = formatTitleCase(SecondaryDestination.NOTIFICATIONS.label),
