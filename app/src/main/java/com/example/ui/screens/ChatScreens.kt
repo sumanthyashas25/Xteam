@@ -129,6 +129,7 @@ fun TeamChatScreen(
     var activeChannelId by remember(initialChannelId) {
         mutableStateOf(initialChannelId ?: ChatRepository.GENERAL_CHANNEL_ID)
     }
+    var activeChannelOverride by remember(initialChannelId) { mutableStateOf<ChatChannel?>(null) }
     var composerText by remember { mutableStateOf("") }
     var hubStagedAttachment by remember { mutableStateOf<StagedChatAttachment?>(null) }
     var isProcessingFile by remember { mutableStateOf(false) }
@@ -141,14 +142,16 @@ fun TeamChatScreen(
     var viewingStatuses by remember { mutableStateOf<List<ChatStatus>?>(null) }
     var previewImageMessage by remember { mutableStateOf<Pair<ChatMessage, ImageBitmap>?>(null) }
 
-    val activeChannel = remember(state.chatChannels, activeChannelId) {
+    val activeChannel = remember(state.chatChannels, activeChannelId, activeChannelOverride) {
         state.chatChannels.firstOrNull { it.id == activeChannelId }
+            ?: activeChannelOverride?.takeIf { it.id == activeChannelId }
             ?: state.chatChannels.firstOrNull { it.id == ChatRepository.GENERAL_CHANNEL_ID }
             ?: state.chatChannels.firstOrNull()
             ?: ChatChannel(
-                id = ChatRepository.GENERAL_CHANNEL_ID,
-                title = "General",
-                topic = "Agency-wide updates, briefs & file sharing"
+                id = activeChannelId,
+                title = activeChannelOverride?.title ?: "General",
+                topic = activeChannelOverride?.topic ?: "Agency-wide updates, briefs & file sharing",
+                channelType = activeChannelOverride?.channelType ?: ChatChannelType.GENERAL.name
             )
     }
 
@@ -318,6 +321,7 @@ fun TeamChatScreen(
                 onPickImages = { singleImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onSelectChannel = { ch ->
                     AppHapticsAndNotifier.triggerTickHaptic(context)
+                    activeChannelOverride = ch
                     activeChannelId = ch.id
                     mode = ChatScreenMode.THREAD
                 },
@@ -328,6 +332,7 @@ fun TeamChatScreen(
                         colleague,
                         { ch ->
                             openingThreadLabel = null
+                            activeChannelOverride = ch
                             activeChannelId = ch.id
                             mode = ChatScreenMode.THREAD
                         },
@@ -344,6 +349,7 @@ fun TeamChatScreen(
                         dept,
                         { ch ->
                             openingThreadLabel = null
+                            activeChannelOverride = ch
                             activeChannelId = ch.id
                             mode = ChatScreenMode.THREAD
                         },
@@ -357,6 +363,7 @@ fun TeamChatScreen(
                     scope.launch {
                         runCatching { chatViewModel.chatRepo.createOrGetSavedNotesChannel(member) }
                             .onSuccess { ch ->
+                                activeChannelOverride = ch
                                 activeChannelId = ch.id
                                 mode = ChatScreenMode.THREAD
                             }
@@ -844,7 +851,6 @@ private fun EnhancedChatThreadView(
         modifier = Modifier
             .fillMaxSize()
             .background(PureWhite)
-            .animatedChatGlowBackdrop(isThread = true, wallpaperId = threadWallpaper)
             .testTag("chat_thread_screen")
     ) {
         Column(
@@ -866,10 +872,10 @@ private fun EnhancedChatThreadView(
                 IconButton(
                     onClick = onBackToHub,
                     modifier = Modifier
-                        .size(48.dp)
+                        .size(44.dp)
                         .testTag("chat_thread_back_button")
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = ObsidianCharcoal)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = StudioBlueAccent)
                 }
 
                 val otherPeer = remember(channel, state.members, member.uid) {
@@ -879,12 +885,12 @@ private fun EnhancedChatThreadView(
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(14.dp))
                         .clickable { showInfoSheet = true }
-                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                        .padding(horizontal = 4.dp, vertical = 4.dp)
                         .testTag(if (channel.channelTypeEnum() == ChatChannelType.DIRECT) "chat_direct_header" else "chat_thread_header")
                 ) {
                     StudioAvatar(
@@ -902,11 +908,9 @@ private fun EnhancedChatThreadView(
                             text = when {
                                 channel.isSelfNotes(member.uid) -> "Message Yourself (Saved)"
                                 otherPeer != null -> formatTitleCase(otherPeer.fullName)
-                                channel.channelTypeEnum() == ChatChannelType.DIRECT -> formatTitleCase(channel.title)
-                                channel.channelTypeEnum() == ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
                                 else -> formatTitleCase(channel.title)
                             },
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
                             fontWeight = FontWeight.ExtraBold,
                             color = ObsidianCharcoal,
                             maxLines = 1,
@@ -921,11 +925,15 @@ private fun EnhancedChatThreadView(
                                 val ls = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(peerPresence.lastSeenMillis))
                                 "Last seen $ls"
                             }
-                            else -> channel.topic.ifBlank { "Tap for group & media info" }
+                            channel.channelTypeEnum() == ChatChannelType.DIRECT -> {
+                                val role = otherPeer?.jobRoleName?.ifBlank { "Graphic Designer" } ?: "Graphic Designer"
+                                "Personal Chat • $role"
+                            }
+                            else -> channel.topic.ifBlank { "Group conversation" }
                         }
                         Text(
                             text = subtitleText,
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
                             color = if (ephemeral.typingNames.isNotEmpty() || ephemeral.recordingNames.isNotEmpty() || peerPresence.online) EmeraldApproved else StudioTextSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -934,25 +942,26 @@ private fun EnhancedChatThreadView(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { showInThreadSearch = !showInThreadSearch }, modifier = Modifier.size(40.dp)) {
+                    IconButton(onClick = { showInThreadSearch = !showInThreadSearch }, modifier = Modifier.size(38.dp)) {
                         Icon(Icons.Default.Search, contentDescription = "Search thread", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
-                    IconButton(onClick = { showStarredSheet = true }, modifier = Modifier.size(40.dp)) {
+                    IconButton(onClick = { showStarredSheet = true }, modifier = Modifier.size(38.dp)) {
                         Icon(Icons.Default.StarBorder, contentDescription = "Starred messages", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
-                    IconButton(onClick = { showInfoSheet = true }, modifier = Modifier.size(40.dp)) {
+                    IconButton(onClick = { showInfoSheet = true }, modifier = Modifier.size(38.dp)) {
                         Icon(Icons.Default.Info, contentDescription = "Chat info", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                     IconButton(
                         onClick = onClose,
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(38.dp)
                             .testTag("chat_thread_close_button")
                     ) {
                         Icon(Icons.Filled.Close, contentDescription = "Close Chat", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                 }
             }
+            HorizontalDivider(color = Color(0xFFECEFF2))
 
             // Search-within-conversation + Search-by-Date bar
             AnimatedVisibility(visible = showInThreadSearch) {
@@ -1292,32 +1301,30 @@ private fun EnhancedChatThreadView(
                     // Main Input Capsule
                     val canSend = composerText.isNotBlank() || stagedAttachments.isNotEmpty()
                     Surface(
-                        shape = RoundedCornerShape(22.dp),
-                        color = PureWhite.copy(alpha = 0.96f),
-                        border = BorderStroke(1.dp, SubtleOutline),
+                        shape = RoundedCornerShape(26.dp),
+                        color = Color(0xFFF2F4F7),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 52.dp)
+                                .heightIn(min = 50.dp)
                                 .padding(horizontal = 6.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             IconButton(
-                                onClick = {
-                                    emojiPickerTargetMessage = null
-                                    showEmojiStickerSheet = true
-                                },
-                                modifier = Modifier.size(38.dp)
+                                onClick = { showAttachmentMenu = true },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("chat_thread_attach_button")
                             ) {
-                                Icon(Icons.Default.EmojiEmotions, contentDescription = "Emoji, Stickers & GIFs", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Add, contentDescription = "Attachments", tint = StudioBlueAccent, modifier = Modifier.size(24.dp))
                             }
 
                             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                                 if (composerText.isEmpty()) {
-                                    Text("Write a message…", style = MaterialTheme.typography.bodyMedium, color = StudioTextSecondary)
+                                    Text("Message", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF94A3B8))
                                 }
                                 BasicTextField(
                                     value = composerText,
@@ -1335,15 +1342,16 @@ private fun EnhancedChatThreadView(
                             }
 
                             IconButton(
-                                onClick = { showAttachmentMenu = true },
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .testTag("chat_thread_attach_button")
+                                onClick = {
+                                    emojiPickerTargetMessage = null
+                                    showEmojiStickerSheet = true
+                                },
+                                modifier = Modifier.size(34.dp)
                             ) {
-                                Icon(Icons.Default.AddCircleOutline, contentDescription = "More attachments", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Face, contentDescription = "Emoji", tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
                             }
-                            IconButton(onClick = onCamera, modifier = Modifier.size(36.dp)) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = "Camera", tint = ObsidianCharcoal, modifier = Modifier.size(19.dp))
+                            IconButton(onClick = onCamera, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = "Camera", tint = Color(0xFF64748B), modifier = Modifier.size(20.dp))
                             }
 
                             if (!canSend && editingMsg == null) {
@@ -1355,43 +1363,45 @@ private fun EnhancedChatThreadView(
                                             audioPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                         }
                                     },
-                                    modifier = Modifier.size(38.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
-                                    Icon(Icons.Default.Mic, contentDescription = "Record Voice", tint = VioletPrimary, modifier = Modifier.size(20.dp))
+                                    Icon(Icons.Default.Mic, contentDescription = "Record Voice", tint = StudioBlueAccent, modifier = Modifier.size(22.dp))
                                 }
                             }
 
-                            Surface(
-                                onClick = {
-                                    if (canSend && !isProcessingFile && !isUploading) {
-                                        val mentionUids = mentionCandidates.map { it.uid }
-                                        chatViewModel.sendMessage(
-                                            channelId = channel.id,
-                                            body = composerText,
-                                            actor = member,
-                                            viewOnce = viewOnceMode,
-                                            mentions = mentionUids
-                                        ) {
-                                            AppHapticsAndNotifier.triggerCompletionVibration(context)
-                                            composerText = ""
-                                            viewOnceMode = false
+                            if (canSend || editingMsg != null) {
+                                Surface(
+                                    onClick = {
+                                        if (canSend && !isProcessingFile && !isUploading) {
+                                            val mentionUids = mentionCandidates.map { it.uid }
+                                            chatViewModel.sendMessage(
+                                                channelId = channel.id,
+                                                body = composerText,
+                                                actor = member,
+                                                viewOnce = viewOnceMode,
+                                                mentions = mentionUids
+                                            ) {
+                                                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                                composerText = ""
+                                                viewOnceMode = false
+                                            }
                                         }
+                                    },
+                                    enabled = canSend && !isProcessingFile && !isUploading,
+                                    shape = CircleShape,
+                                    color = ObsidianCharcoal,
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .testTag("chat_thread_send_button")
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = "Send",
+                                            tint = PureWhite,
+                                            modifier = Modifier.size(17.dp)
+                                        )
                                     }
-                                },
-                                enabled = canSend && !isProcessingFile && !isUploading,
-                                shape = CircleShape,
-                                color = if (canSend) ObsidianCharcoal else MutedSurface,
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .testTag("chat_thread_send_button")
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Filled.ArrowUpward,
-                                        contentDescription = "Send",
-                                        tint = if (canSend) PureWhite else ObsidianCharcoal,
-                                        modifier = Modifier.size(18.dp)
-                                    )
                                 }
                             }
                         }
@@ -1842,7 +1852,7 @@ private fun CreateChatChannelDialog(
                     isSubmitting = true
                     errorMessage = null
                     onCreate(
-                        title.ifBlank { proj?.title ?: "Team Thread" },
+                        title.ifBlank { proj?.title ?: "Group" },
                         topic,
                         type,
                         proj,

@@ -792,27 +792,27 @@ fun StaffPlanCalendarSection(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.weight(1f).padding(end = 6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f, fill = false).padding(end = 4.dp)
                         ) {
                             Surface(
                                 shape = CircleShape,
                                 color = if (state.isFocusTimerRunning) PlanVioletAccent else PureWhite,
-                                modifier = Modifier.size(38.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Outlined.Timer,
                                         contentDescription = null,
                                         tint = if (state.isFocusTimerRunning) PureWhite else PlanVioletAccent,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
                                 Text(
                                     text = "Deep Work Focus Sprint",
-                                    style = MaterialTheme.typography.labelLarge,
+                                    style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = ObsidianCharcoal,
                                     maxLines = 1,
@@ -820,7 +820,7 @@ fun StaffPlanCalendarSection(
                                 )
                                 Text(
                                     text = formatCountdownMmSs(state.focusSecondsRemaining),
-                                    style = MaterialTheme.typography.headlineSmall,
+                                    style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = PlanVioletAccent
                                 )
@@ -831,14 +831,12 @@ fun StaffPlanCalendarSection(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedButton(
+                            TextButton(
                                 onClick = onResetFocusTimer,
-                                shape = RoundedCornerShape(999.dp),
-                                border = BorderStroke(1.dp, SubtleOutline),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
-                                modifier = Modifier.height(38.dp)
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                modifier = Modifier.height(36.dp)
                             ) {
-                                Text("Reset", color = ObsidianCharcoal, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                Text("Reset", color = ObsidianCharcoal, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium)
                             }
                             Button(
                                 onClick = onToggleFocusTimer,
@@ -847,10 +845,10 @@ fun StaffPlanCalendarSection(
                                     containerColor = if (state.isFocusTimerRunning) DeepBlushInk else ObsidianCharcoal,
                                     contentColor = PureWhite
                                 ),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                                 modifier = Modifier
                                     .height(38.dp)
-                                    .defaultMinSize(minWidth = 84.dp)
+                                    .defaultMinSize(minWidth = 90.dp)
                                     .testTag("focus_timer_toggle_button")
                             ) {
                                 Icon(
@@ -863,7 +861,8 @@ fun StaffPlanCalendarSection(
                                     text = if (state.isFocusTimerRunning) "Pause" else "Start",
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
-                                    softWrap = false
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelLarge
                                 )
                             }
                         }

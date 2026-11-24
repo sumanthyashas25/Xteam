@@ -1166,11 +1166,11 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
         val existing = uiState.value.chatChannels.firstOrNull { ch ->
-            ch.channelTypeEnum() == ChatChannelType.DEPARTMENT &&
-                (ch.departmentId == dept.id || ch.id == ChatRepository.departmentChannelId(dept.id))
+            (ch.channelTypeEnum() == ChatChannelType.GROUP || ch.channelTypeEnum() == ChatChannelType.DEPARTMENT) &&
+                (ch.departmentId == dept.id || ch.id == "ch_grp_dept_${dept.id.replace(Regex("[^A-Za-z0-9_-]"), "_")}")
         }
         if (existing != null) {
-            _statusMessage.value = "Opened ${dept.name} chat"
+            _statusMessage.value = "Opened ${dept.name} group"
             onReady(existing)
             return
         }

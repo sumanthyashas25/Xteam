@@ -27,6 +27,8 @@ import com.example.data.SyncedData
 import com.example.domain.CatalogueSeedData
 import com.example.domain.PermissionEngine
 import com.example.model.*
+import com.example.system.PaymentReminderAutomator
+import com.example.system.PaymentReminderKind
 import com.example.ui.AgencyUiState
 import com.example.ui.AgencyViewModel
 import com.example.ui.components.AgencyMenuDrawerContent
@@ -282,7 +284,7 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("menu_dest_projects").assertExists()
-    composeTestRule.onNodeWithTag("menu_tab_chat").assertExists()
+    composeTestRule.onNodeWithTag("menu_tab_chat").assertDoesNotExist()
     composeTestRule.onNodeWithTag("menu_dest_chat").assertDoesNotExist()
     composeTestRule.onNodeWithTag("menu_dest_notifications").assertExists()
     composeTestRule.onNodeWithTag("menu_sign_out_button").assertExists()
@@ -403,13 +405,13 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_hub_screen").assertExists()
-    composeTestRule.onNodeWithText("New Chat").assertExists()
+    composeTestRule.onAllNodesWithText("Chats")[0].assertExists()
     composeTestRule.onNodeWithTag("chat_tile_channels").assertDoesNotExist()
     composeTestRule.onNodeWithTag("chat_tile_audio").assertDoesNotExist()
     composeTestRule.onNodeWithTag("chat_tile_files").assertDoesNotExist()
     composeTestRule.onNodeWithTag("chat_tile_images").assertDoesNotExist()
     composeTestRule.onNodeWithTag("dm_person_u_staff").assertExists()
-    composeTestRule.onNodeWithTag("dept_chat_dept_creative").assertExists()
+    composeTestRule.onNodeWithTag("dept_chat_dept_creative").assertDoesNotExist()
     composeTestRule.onNodeWithTag("chat_hub_send_button").assertExists()
     // DIRECT channels must NOT show up inside Team Threads
     composeTestRule.onNodeWithTag("channel_chip_dm_u_admin_u_staff").assertDoesNotExist()
@@ -424,7 +426,6 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("chat_thread_back_button").performClick()
     composeTestRule.waitForIdle()
 
-    composeTestRule.onNodeWithTag("chat_threads_section").performScrollTo()
     composeTestRule.onNodeWithTag("channel_chip_ch_general").performScrollTo().performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_thread_screen").assertExists()
@@ -1235,5 +1236,57 @@ class ExampleRobolectricTest {
     tmpImg.delete()
     assertTrue(previewRes.isSuccess)
     assertEquals(128, previewRes.getOrNull()?.width)
+  }
+
+  @Test
+  fun `payment reminder automator generates advance reminders on client approved quotations and final payment reminders on deadlines or submissions`() {
+    val approvedQuote = Quotation(
+      id = "q_approved",
+      quoteNumber = "QT-2026-0001",
+      status = QuotationStatus.CLIENT_APPROVED.name,
+      totalPaise = 100_000_00L,
+      advancePaise = 50_000_00L,
+      clientSnapshot = ClientSnapshot(companyName = "Apex Studio")
+    )
+    val now = System.currentTimeMillis()
+    val activeProject = Project(
+      id = "proj_deadline",
+      title = "Brand Refresh",
+      agreedValuePaise = 100_000_00L,
+      paidPaise = 50_000_00L,
+      advanceDuePaise = 50_000_00L,
+      status = ProjectStatus.IN_PROGRESS.name
+    )
+    val submittedDeliverable = Deliverable(
+      id = "deliv_sub",
+      projectId = "proj_deadline",
+      title = "Logo Suite",
+      status = DeliverableStatus.READY_FOR_REVIEW.name
+    )
+
+    val alerts = PaymentReminderAutomator.evaluatePaymentReminders(
+      quotations = listOf(approvedQuote),
+      projects = listOf(activeProject),
+      deliverables = listOf(submittedDeliverable),
+      nowMillis = now
+    )
+
+    assertTrue(alerts.any { it.kind == PaymentReminderKind.ADVANCE_DUE && it.amountPaise == 50_000_00L })
+    assertTrue(alerts.any { it.kind == PaymentReminderKind.POST_SUBMISSION_FINAL && it.amountPaise == 50_000_00L })
+
+    val pendingDeliverable = Deliverable(
+      id = "deliv_due_soon",
+      projectId = "proj_deadline",
+      title = "Icon Set",
+      dueDateMillis = now + (24 * 3600 * 1000L),
+      status = DeliverableStatus.IN_PROGRESS.name
+    )
+    val deadlineAlerts = PaymentReminderAutomator.evaluatePaymentReminders(
+      quotations = emptyList(),
+      projects = listOf(activeProject),
+      deliverables = listOf(pendingDeliverable),
+      nowMillis = now
+    )
+    assertTrue(deadlineAlerts.any { it.kind == PaymentReminderKind.DEADLINE_FINAL && it.amountPaise == 50_000_00L })
   }
 }

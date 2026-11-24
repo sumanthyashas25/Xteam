@@ -12,6 +12,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +54,12 @@ import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+enum class ChatHubBottomTab {
+    DIRECTORY,
+    CHATS,
+    SETTINGS
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,7 +110,8 @@ fun ChatHubScreen(
     val prefs by ChatSettingsStore.prefsFlow.collectAsStateWithLifecycle()
     val companyId = CatalogueSeedData.DEFAULT_COMPANY_ID
 
-    var showSearchBar by remember { mutableStateOf(false) }
+    var activeBottomTab by remember { mutableStateOf(ChatHubBottomTab.CHATS) }
+    var showFilterChips by remember { mutableStateOf(false) }
     var showNewActionOverlay by remember { mutableStateOf(false) }
     var showHubOverflowMenu by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
@@ -110,6 +119,8 @@ fun ChatHubScreen(
     var pinUnlockCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var channelActionTarget by remember { mutableStateOf<ChatChannel?>(null) }
     var deleteChannelTarget by remember { mutableStateOf<ChatChannel?>(null) }
+    var directorySearchQuery by remember { mutableStateOf("") }
+    var directoryFilterOnlineOnly by remember { mutableStateOf(false) }
 
     fun handleProtectedOpen(channel: ChatChannel, onOpen: () -> Unit) {
         val isLocked = channel.id in prefs.lockedChannelIds && channel.id !in prefs.unlockedThisSessionIds
@@ -129,7 +140,7 @@ fun ChatHubScreen(
             }.toMap()
     }
 
-    // Main visible group/project/saved/announcement channels
+    // All group, general, announcement and saved note channels
     val nonDirectChannels = remember(channels, member.uid) {
         channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT || it.isSelfNotes(member.uid) }
     }
@@ -146,8 +157,9 @@ fun ChatHubScreen(
             val customSet = prefs.channelListsMap[ch.id].orEmpty()
             val matchesTab = when {
                 selectedCustomList != null -> selectedCustomList in customSet
+                filterTab == ChatFilterTab.DIRECT -> false
                 filterTab == ChatFilterTab.UNREAD -> ch.unreadCountFor(member.uid) > 0 && !isArchived && !isLocked
-                filterTab == ChatFilterTab.GROUPS -> (ch.channelTypeEnum() == ChatChannelType.GROUP || ch.channelTypeEnum() == ChatChannelType.GENERAL || ch.channelTypeEnum() == ChatChannelType.DEPARTMENT || ch.channelTypeEnum() == ChatChannelType.PROJECT || ch.channelTypeEnum() == ChatChannelType.ANNOUNCEMENT) && !isArchived && !isLocked
+                filterTab == ChatFilterTab.GROUPS -> !isArchived && !isLocked
                 filterTab == ChatFilterTab.FAVOURITES -> ch.isFavouriteFor(member.uid) && !isArchived
                 filterTab == ChatFilterTab.ARCHIVED -> isArchived
                 filterTab == ChatFilterTab.LOCKED -> isLocked
@@ -173,8 +185,9 @@ fun ChatHubScreen(
             val customSet = ch?.let { prefs.channelListsMap[it.id] }.orEmpty()
             val matchesTab = when {
                 selectedCustomList != null -> selectedCustomList in customSet
-                filterTab == ChatFilterTab.UNREAD -> (ch?.unreadCountFor(member.uid) ?: 0) > 0 && !isArchived && !isLocked
                 filterTab == ChatFilterTab.GROUPS -> false
+                filterTab == ChatFilterTab.DIRECT -> !isArchived && !isLocked
+                filterTab == ChatFilterTab.UNREAD -> (ch?.unreadCountFor(member.uid) ?: 0) > 0 && !isArchived && !isLocked
                 filterTab == ChatFilterTab.FAVOURITES -> ch?.isFavouriteFor(member.uid) == true && !isArchived
                 filterTab == ChatFilterTab.ARCHIVED -> isArchived
                 filterTab == ChatFilterTab.LOCKED -> isLocked
@@ -184,14 +197,16 @@ fun ChatHubScreen(
         }.sortedByDescending { directChannelsByPeer[it.uid]?.lastMessageAtMillis ?: 0L }
     }
 
+    val totalUnreadCount = remember(channels, member.uid) {
+        channels.sumOf { it.unreadCountFor(member.uid) }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(PureWhite)
-            .animatedChatGlowBackdrop(isThread = false, wallpaperId = prefs.globalWallpaperId)
             .testTag("chat_hub_screen")
     ) {
-        // Main Mengrobol-style Chat Hub Content (blurred smoothly when "+ New Chat" menu opens)
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -199,679 +214,760 @@ fun ChatHubScreen(
                 .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .then(if (showNewActionOverlay) Modifier.blur(12.dp).alpha(0.6f) else Modifier)
         ) {
-            // Clean Header Row matching Mengrobol reference: Back | Chats | Search & Overflow
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    IconButton(
-                        onClick = onBack,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("chat_hub_back_button")
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
-                    }
-                    Text(
-                        text = "Chats",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = ObsidianCharcoal
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(
-                        onClick = { showSearchBar = !showSearchBar },
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("chat_search_button")
-                    ) {
-                        Icon(Icons.Default.Search, contentDescription = "Search chats", tint = ObsidianCharcoal)
-                    }
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("chat_hub_close_button")
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Close chat", tint = ObsidianCharcoal)
-                    }
-                    Box {
-                        IconButton(
-                            onClick = { showHubOverflowMenu = true },
-                            modifier = Modifier.size(44.dp)
-                        ) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Chat options", tint = ObsidianCharcoal)
-                        }
-                        DropdownMenu(
-                            expanded = showHubOverflowMenu,
-                            onDismissRequest = { showHubOverflowMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                leadingIcon = { Icon(Icons.Default.Bookmark, null) },
-                                text = { Text("Message Yourself (Saved)") },
-                                onClick = {
-                                    showHubOverflowMenu = false
-                                    onOpenSavedNotes()
-                                }
-                            )
-                            DropdownMenuItem(
-                                leadingIcon = { Icon(Icons.Default.GroupAdd, null) },
-                                text = { Text("New Group") },
-                                onClick = {
-                                    showHubOverflowMenu = false
-                                    onOpenCreateGroup()
-                                }
-                            )
-                            DropdownMenuItem(
-                                leadingIcon = { Icon(Icons.Default.QrCode, null) },
-                                text = { Text("Join via Invite Link") },
-                                onClick = {
-                                    showHubOverflowMenu = false
-                                    onOpenJoinByInvite()
-                                }
-                            )
-                            DropdownMenuItem(
-                                leadingIcon = { Icon(Icons.Default.Tune, null) },
-                                text = { Text("Chat Settings & Lock") },
-                                onClick = {
-                                    showHubOverflowMenu = false
-                                    showSettingsSheet = true
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Expandable Search Box
-            AnimatedVisibility(
-                visible = showSearchBar,
-                enter = fadeIn(tween(180)) + expandVertically(tween(200)),
-                exit = fadeOut(tween(150)) + shrinkVertically(tween(180))
-            ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchQueryChange,
-                    placeholder = { Text("Search chats, people or messages…") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { onSearchQueryChange("") }) {
-                                Icon(Icons.Default.Close, contentDescription = "Clear search")
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = PureWhite.copy(alpha = 0.88f),
-                        unfocusedContainerColor = PureWhite.copy(alpha = 0.88f)
-                    ),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-            }
-
-            AnimatedVisibility(visible = !openingThreadLabel.isNullOrBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = ObsidianCharcoal,
-                        modifier = Modifier.testTag("chat_opening_indicator")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = PureWhite)
-                            Text(openingThreadLabel.orEmpty(), style = MaterialTheme.typography.labelMedium, color = PureWhite)
-                        }
-                    }
-                }
-            }
-
-            // Scrollable Body (keeps all test nodes in tree reliably)
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                // Status / Stories Strip matching reference layout
-                StatusAvatarBar(
-                    myMember = member,
-                    statuses = statuses,
-                    colleagues = colleagues,
-                    onAddStatus = onOpenCreateStatus,
-                    onOpenStatusesForOwner = onOpenStatusViewer
-                )
-
-                // "Chats" subheader + "..." + filter chips
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            when (activeBottomTab) {
+                ChatHubBottomTab.CHATS -> {
+                    // Top Bar matching reference: Left '...' circle, Right New Action + Close
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 18.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Conversations",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = ObsidianCharcoal
-                        )
-                        IconButton(onClick = { showSettingsSheet = true }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.MoreHoriz, contentDescription = "Filter & privacy settings", tint = ObsidianCharcoal)
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        ChatFilterTab.entries.forEach { tab ->
-                            val selected = selectedCustomList == null && filterTab == tab
-                            FilterChip(
-                                selected = selected,
-                                onClick = {
-                                    if (tab == ChatFilterTab.LOCKED && prefs.hasSecretCode) {
-                                        pinUnlockTarget = null
-                                        pinUnlockCallback = { onSelectFilterTab(tab) }
-                                    } else {
-                                        onSelectFilterTab(tab)
-                                    }
-                                },
-                                label = { Text(tab.label, fontSize = 12.sp) }
-                            )
-                        }
-                        prefs.customLists.forEach { customList ->
-                            FilterChip(
-                                selected = selectedCustomList == customList,
-                                onClick = {
-                                    onSelectCustomList(if (selectedCustomList == customList) null else customList)
-                                },
-                                label = { Text(customList, fontSize = 12.sp) }
-                            )
-                        }
-                    }
-                }
-
-                // 1:1 Colleague Rows (Direct Chats) — clean Mengrobol row style
-                if (filteredColleagues.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp)
-                            .testTag("chat_dm_section"),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        filteredColleagues.forEach { person ->
-                            val dmChannel = directChannelsByPeer[person.uid]
-                            val presence by RtdbPresenceManager.observeMemberPresence(companyId, person.uid)
-                                .collectAsStateWithLifecycle(initialValue = MemberPresenceState(uid = person.uid))
-                            val unread = dmChannel?.unreadCountFor(member.uid) ?: 0
-                            val isMuted = dmChannel?.isMutedFor(member.uid) == true
-                            val isPinned = dmChannel?.isPinnedFor(member.uid) == true
-                            val isLocked = dmChannel != null && dmChannel.id in prefs.lockedChannelIds
-                            val timeStr = remember(dmChannel?.lastMessageAtMillis) {
-                                val ms = dmChannel?.lastMessageAtMillis ?: 0L
-                                if (ms > 0L) SimpleDateFormat("hh:mm", Locale.getDefault()).format(Date(ms)) else ""
-                            }
-
-                            Surface(
-                                onClick = {
-                                    if (dmChannel != null) {
-                                        handleProtectedOpen(dmChannel) { onOpenDirectChat(person) }
-                                    } else {
-                                        onOpenDirectChat(person)
-                                    }
-                                },
-                                shape = RoundedCornerShape(18.dp),
-                                color = PureWhite.copy(alpha = 0.78f),
-                                border = BorderStroke(1.dp, PureWhite),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("dm_person_${person.uid}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    Box {
-                                        StudioAvatar(
-                                            name = person.fullName,
-                                            size = 48.dp,
-                                            borderColor = PureWhite,
-                                            photoBase64 = person.photoBase64
-                                        )
-                                        if (presence.online) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(13.dp)
-                                                    .align(Alignment.BottomEnd)
-                                                    .clip(CircleShape)
-                                                    .background(EmeraldApproved)
-                                                    .border(2.dp, PureWhite, CircleShape)
-                                            )
-                                        }
-                                    }
-
-                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                text = formatTitleCase(person.fullName.ifBlank { "Member" }),
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = ObsidianCharcoal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (isPinned) Icon(Icons.Default.PushPin, null, tint = VioletPrimary, modifier = Modifier.size(12.dp))
-                                            if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(12.dp))
-                                            if (isLocked) Icon(Icons.Default.Lock, null, tint = ObsidianCharcoal, modifier = Modifier.size(12.dp))
-                                        }
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            if (dmChannel != null && dmChannel.lastSenderUid == member.uid) {
-                                                DeliveryStatusIcon(status = dmChannel.lastMessageStatus, modifier = Modifier.size(14.dp))
-                                            }
-                                            Text(
-                                                text = dmChannel?.lastMessagePreview?.takeIf { it.isNotBlank() }
-                                                    ?: formatTitleCase(person.jobRoleName.ifBlank { person.departmentName }),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = StudioTextSecondary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-
-                                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        if (timeStr.isNotBlank()) {
-                                            Text(timeStr, style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
-                                        }
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            if (unread > 0) {
-                                                Surface(shape = CircleShape, color = Color(0xFF38BDF8)) {
-                                                    Text(
-                                                        text = unread.toString(),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        color = PureWhite,
-                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-                                            if (dmChannel != null) {
-                                                IconButton(onClick = { channelActionTarget = dmChannel }, modifier = Modifier.size(24.dp)) {
-                                                    Icon(Icons.Default.MoreVert, contentDescription = "Chat actions", tint = StudioTextSecondary, modifier = Modifier.size(16.dp))
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Group / Project / Announcements / Saved Conversations List Rows
-                if (filteredNonDirectChannels.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        filteredNonDirectChannels.forEach { ch ->
-                            val unread = ch.unreadCountFor(member.uid)
-                            val isMuted = ch.isMutedFor(member.uid)
-                            val isPinned = ch.isPinnedFor(member.uid)
-                            val isLocked = ch.id in prefs.lockedChannelIds
-                            val isSaved = ch.isSelfNotes(member.uid)
-                            val timeStr = remember(ch.lastMessageAtMillis) {
-                                if (ch.lastMessageAtMillis > 0L) SimpleDateFormat("hh:mm", Locale.getDefault()).format(Date(ch.lastMessageAtMillis)) else ""
-                            }
-
-                            Surface(
-                                onClick = { handleProtectedOpen(ch) { onSelectChannel(ch) } },
-                                shape = RoundedCornerShape(18.dp),
-                                color = PureWhite.copy(alpha = 0.78f),
-                                border = BorderStroke(1.dp, PureWhite),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("chat_row_${ch.id}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    if (isSaved) {
-                                        Surface(shape = CircleShape, color = VioletSoftBg, modifier = Modifier.size(48.dp)) {
-                                            Box(contentAlignment = Alignment.Center) {
-                                                Icon(Icons.Default.Bookmark, contentDescription = "Saved Notes", tint = VioletPrimary)
-                                            }
-                                        }
-                                    } else {
-                                        StudioAvatar(
-                                            name = ch.title,
-                                            size = 48.dp,
-                                            borderColor = PureWhite,
-                                            photoBase64 = ch.photoBase64
-                                        )
-                                    }
-
-                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                text = if (isSaved) "Message Yourself" else formatTitleCase(ch.title),
-                                                style = MaterialTheme.typography.titleSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = ObsidianCharcoal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (isPinned) Icon(Icons.Default.PushPin, null, tint = VioletPrimary, modifier = Modifier.size(12.dp))
-                                            if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(12.dp))
-                                            if (isLocked) Icon(Icons.Default.Lock, null, tint = ObsidianCharcoal, modifier = Modifier.size(12.dp))
-                                        }
-                                        Text(
-                                            text = ch.lastMessagePreview.ifBlank { ch.topic.ifBlank { ch.channelTypeEnum().label } },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = StudioTextSecondary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-
-                                    Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        if (timeStr.isNotBlank()) {
-                                            Text(timeStr, style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
-                                        }
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            if (unread > 0) {
-                                                Surface(shape = CircleShape, color = Color(0xFF38BDF8)) {
-                                                    Text(
-                                                        text = unread.toString(),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        fontWeight = FontWeight.ExtraBold,
-                                                        color = PureWhite,
-                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
-                                            IconButton(onClick = { channelActionTarget = ch }, modifier = Modifier.size(24.dp)) {
-                                                Icon(Icons.Default.MoreVert, contentDescription = "Channel actions", tint = StudioTextSecondary, modifier = Modifier.size(16.dp))
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Department Quick Chats
-                if (departments.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .padding(horizontal = 16.dp)
-                            .testTag("chat_departments_section"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("Department Chats", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            departments.forEach { dept ->
-                                Surface(
-                                    onClick = { onOpenDepartmentChat(dept) },
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = KpiLavenderBg.copy(alpha = 0.92f),
-                                    border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.28f)),
-                                    modifier = Modifier
-                                        .height(38.dp)
-                                        .testTag("dept_chat_${dept.id}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(Icons.Filled.Groups, contentDescription = null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
-                                        Text(formatTitleCase(dept.name), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Team Threads Strip (explicitly excludes DIRECT channels per test contract)
-                Column(
-                    modifier = Modifier
-                        .padding(horizontal = 16.dp)
-                        .testTag("chat_threads_section"),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Team Threads", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
-                        TextButton(
-                            onClick = onCreateNewChannelClick,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.testTag("create_channel_button")
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = ObsidianCharcoal)
-                            Spacer(Modifier.width(4.dp))
-                            Text("New Channel", color = ObsidianCharcoal, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    val displayChannels = remember(channels, activeChannel) {
-                        val filtered = channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT }
-                        if (filtered.isEmpty()) listOf(activeChannel) else filtered
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        displayChannels.forEach { ch ->
-                            Surface(
-                                onClick = { handleProtectedOpen(ch) { onSelectChannel(ch) } },
-                                shape = RoundedCornerShape(999.dp),
-                                color = PureWhite.copy(alpha = 0.88f),
-                                border = BorderStroke(1.dp, SubtleOutline),
-                                modifier = Modifier
-                                    .height(38.dp)
-                                    .testTag("channel_chip_${ch.id}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text("#${ch.title}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Quick Send Pill (keeps quick compose seamless + preserves chat_hub_send_button)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (stagedAttachment != null || isProcessingFile) {
-                    Surface(shape = RoundedCornerShape(12.dp), color = PureWhite.copy(alpha = 0.92f), border = BorderStroke(1.dp, SubtleOutline)) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = if (isProcessingFile) "Preparing file…" else "${stagedAttachment?.fileName} (${ChatFileManager.formatFileSize(stagedAttachment?.sizeBytes ?: 0L)})",
-                                style = MaterialTheme.typography.labelMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (stagedAttachment != null) {
-                                IconButton(onClick = onClearAttachment, modifier = Modifier.size(24.dp)) {
-                                    Icon(Icons.Default.Close, contentDescription = "Remove attachment", modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(999.dp),
-                    color = PureWhite.copy(alpha = 0.94f),
-                    border = BorderStroke(1.dp, PureWhite),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 12.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        IconButton(onClick = onPickImages, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Outlined.Image, contentDescription = "Attach image", tint = ObsidianCharcoal, modifier = Modifier.size(18.dp))
-                        }
-                        IconButton(onClick = onPickFiles, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Outlined.Description, contentDescription = "Attach file", tint = ObsidianCharcoal, modifier = Modifier.size(18.dp))
-                        }
-                        BasicTextField(
-                            value = composerText,
-                            onValueChange = onComposerTextChange,
-                            cursorBrush = SolidColor(ObsidianCharcoal),
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
-                            decorationBox = { inner ->
-                                if (composerText.isEmpty()) {
-                                    Text("Quick message to #${activeChannel.title}…", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                                inner()
-                            },
-                            modifier = Modifier.weight(1f)
-                        )
-                        val canSend = composerText.isNotBlank() || stagedAttachment != null
                         Surface(
-                            onClick = { if (canSend) onSendQuickCompose() },
+                            onClick = { showHubOverflowMenu = true },
                             shape = CircleShape,
-                            color = if (canSend) ObsidianCharcoal else MutedSurface,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .testTag("chat_hub_send_button")
+                            color = PureWhite,
+                            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.MoreHoriz, contentDescription = "Chat Options", tint = ObsidianCharcoal, modifier = Modifier.size(18.dp))
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            IconButton(
+                                onClick = onBack,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("chat_hub_back_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
+                            }
+                            IconButton(
+                                onClick = { showNewActionOverlay = true },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("create_channel_button")
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "Compose or new group", tint = StudioBlueAccent, modifier = Modifier.size(22.dp))
+                            }
+                            IconButton(
+                                onClick = onClose,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("chat_hub_close_button")
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "Close chat", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+
+                    // Large Bold "Chats" Header matching reference
+                    Text(
+                        text = "Chats",
+                        style = MaterialTheme.typography.headlineMedium.copy(fontSize = 30.sp),
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ObsidianCharcoal,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                    )
+
+                    // Rounded Search Input with Filter Toggle Icon
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0xFFF2F4F7),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null, tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = onSearchQueryChange,
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
+                                cursorBrush = SolidColor(ObsidianCharcoal),
+                                decorationBox = { inner ->
+                                    if (searchQuery.isEmpty()) {
+                                        Text("Search", style = MaterialTheme.typography.bodyMedium, color = StudioTextSecondary)
+                                    }
+                                    inner()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("chat_search_button")
+                            )
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { onSearchQueryChange("") }, modifier = Modifier.size(20.dp)) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear", tint = StudioTextSecondary, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            IconButton(onClick = { showFilterChips = !showFilterChips }, modifier = Modifier.size(24.dp)) {
                                 Icon(
-                                    imageVector = Icons.Default.ArrowUpward,
-                                    contentDescription = "Send quick message",
-                                    tint = if (canSend) PureWhite else StudioTextSecondary,
-                                    modifier = Modifier.size(18.dp)
+                                    imageVector = Icons.Default.FilterList,
+                                    contentDescription = "Filters",
+                                    tint = if (showFilterChips || filterTab != ChatFilterTab.ALL) StudioBlueAccent else StudioTextSecondary,
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                         }
                     }
+
+                    // Optional Filter Pills Row (when toggled or active)
+                    AnimatedVisibility(
+                        visible = showFilterChips || filterTab != ChatFilterTab.ALL,
+                        enter = fadeIn() + expandVertically(),
+                        exit = fadeOut() + shrinkVertically()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ChatFilterTab.entries.forEach { tab ->
+                                val selected = selectedCustomList == null && filterTab == tab
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        if (tab == ChatFilterTab.LOCKED && prefs.hasSecretCode) {
+                                            pinUnlockTarget = null
+                                            pinUnlockCallback = { onSelectFilterTab(tab) }
+                                        } else {
+                                            onSelectFilterTab(tab)
+                                        }
+                                    },
+                                    label = { Text(tab.label, fontSize = 12.sp) }
+                                )
+                            }
+                            prefs.customLists.forEach { customList ->
+                                FilterChip(
+                                    selected = selectedCustomList == customList,
+                                    onClick = { onSelectCustomList(if (selectedCustomList == customList) null else customList) },
+                                    label = { Text(customList, fontSize = 12.sp) }
+                                )
+                            }
+                        }
+                    }
+
+                    AnimatedVisibility(visible = !openingThreadLabel.isNullOrBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Surface(shape = RoundedCornerShape(999.dp), color = ObsidianCharcoal, modifier = Modifier.testTag("chat_opening_indicator")) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = PureWhite)
+                                    Text(openingThreadLabel.orEmpty(), style = MaterialTheme.typography.labelMedium, color = PureWhite)
+                                }
+                            }
+                        }
+                    }
+
+                    // Main Scrollable Conversations List
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(bottom = 8.dp)
+                    ) {
+                        // Status / Stories Strip
+                        StatusAvatarBar(
+                            myMember = member,
+                            statuses = statuses,
+                            colleagues = colleagues,
+                            onAddStatus = onOpenCreateStatus,
+                            onOpenStatusesForOwner = onOpenStatusViewer
+                        )
+
+                        // Direct Messages (1:1 Person-to-person chats)
+                        if (filteredColleagues.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("chat_dm_section")
+                            ) {
+                                filteredColleagues.forEach { person ->
+                                    val dmChannel = directChannelsByPeer[person.uid]
+                                    val presence by RtdbPresenceManager.observeMemberPresence(companyId, person.uid)
+                                        .collectAsStateWithLifecycle(initialValue = MemberPresenceState(uid = person.uid))
+                                    val unread = dmChannel?.unreadCountFor(member.uid) ?: 0
+                                    val isMuted = dmChannel?.isMutedFor(member.uid) == true
+                                    val isPinned = dmChannel?.isPinnedFor(member.uid) == true
+                                    val isLocked = dmChannel != null && dmChannel.id in prefs.lockedChannelIds
+                                    val timeStr = remember(dmChannel?.lastMessageAtMillis) {
+                                        val ms = dmChannel?.lastMessageAtMillis ?: 0L
+                                        if (ms > 0L) SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms)) else ""
+                                    }
+
+                                    Surface(
+                                        onClick = {
+                                            if (dmChannel != null) {
+                                                handleProtectedOpen(dmChannel) { onOpenDirectChat(person) }
+                                            } else {
+                                                onOpenDirectChat(person)
+                                            }
+                                        },
+                                        color = PureWhite,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("dm_person_${person.uid}")
+                                    ) {
+                                        Column {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                            ) {
+                                                Box {
+                                                    StudioAvatar(
+                                                        name = person.fullName,
+                                                        size = 48.dp,
+                                                        borderColor = PureWhite,
+                                                        photoBase64 = person.photoBase64
+                                                    )
+                                                    if (presence.online) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(13.dp)
+                                                                .align(Alignment.BottomEnd)
+                                                                .clip(CircleShape)
+                                                                .background(EmeraldApproved)
+                                                                .border(2.dp, PureWhite, CircleShape)
+                                                        )
+                                                    }
+                                                }
+
+                                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                        Text(
+                                                            text = formatTitleCase(person.fullName.ifBlank { "Colleague" }),
+                                                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = ObsidianCharcoal,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (isPinned) Icon(Icons.Default.PushPin, null, tint = StudioBlueAccent, modifier = Modifier.size(13.dp))
+                                                        if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(13.dp))
+                                                        if (isLocked) Icon(Icons.Default.Lock, null, tint = ObsidianCharcoal, modifier = Modifier.size(13.dp))
+                                                    }
+                                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                        if (dmChannel != null && dmChannel.lastSenderUid == member.uid) {
+                                                            DeliveryStatusIcon(status = dmChannel.lastMessageStatus, modifier = Modifier.size(14.dp))
+                                                        }
+                                                        Text(
+                                                            text = dmChannel?.lastMessagePreview?.takeIf { it.isNotBlank() }
+                                                                ?: formatTitleCase(person.jobRoleName.ifBlank { "Personal Chat" }),
+                                                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                                            color = StudioTextSecondary,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+
+                                                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    if (timeStr.isNotBlank()) {
+                                                        Text(timeStr, style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp), color = StudioTextSecondary)
+                                                    }
+                                                    if (unread > 0) {
+                                                        Surface(shape = CircleShape, color = StudioBlueAccent) {
+                                                            Text(
+                                                                text = unread.toString(),
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = PureWhite,
+                                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            HorizontalDivider(color = Color(0xFFECEFF2), modifier = Modifier.padding(start = 76.dp, end = 18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Groups & Communities List
+                        if (filteredNonDirectChannels.isNotEmpty()) {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                filteredNonDirectChannels.forEach { ch ->
+                                    val unread = ch.unreadCountFor(member.uid)
+                                    val isMuted = ch.isMutedFor(member.uid)
+                                    val isPinned = ch.isPinnedFor(member.uid)
+                                    val isLocked = ch.id in prefs.lockedChannelIds
+                                    val isSaved = ch.isSelfNotes(member.uid)
+                                    val timeStr = remember(ch.lastMessageAtMillis) {
+                                        if (ch.lastMessageAtMillis > 0L) SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ch.lastMessageAtMillis)) else ""
+                                    }
+
+                                    Surface(
+                                        onClick = { handleProtectedOpen(ch) { onSelectChannel(ch) } },
+                                        color = PureWhite,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("chat_row_${ch.id}")
+                                            .testTag("channel_chip_${ch.id}")
+                                    ) {
+                                        Column {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                            ) {
+                                                if (isSaved) {
+                                                    Surface(shape = CircleShape, color = VioletSoftBg, modifier = Modifier.size(48.dp)) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(Icons.Default.Bookmark, contentDescription = "Saved Notes", tint = VioletPrimary)
+                                                        }
+                                                    }
+                                                } else {
+                                                    StudioAvatar(
+                                                        name = ch.title,
+                                                        size = 48.dp,
+                                                        borderColor = PureWhite,
+                                                        photoBase64 = ch.photoBase64
+                                                    )
+                                                }
+
+                                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                                        Text(
+                                                            text = if (isSaved) "Message Yourself" else formatTitleCase(ch.title),
+                                                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = ObsidianCharcoal,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        if (isPinned) Icon(Icons.Default.PushPin, null, tint = StudioBlueAccent, modifier = Modifier.size(13.dp))
+                                                        if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(13.dp))
+                                                        if (isLocked) Icon(Icons.Default.Lock, null, tint = ObsidianCharcoal, modifier = Modifier.size(13.dp))
+                                                    }
+                                                    Text(
+                                                        text = ch.lastMessagePreview.ifBlank { ch.topic.ifBlank { "Group conversation" } },
+                                                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                                        color = StudioTextSecondary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+
+                                                Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    if (timeStr.isNotBlank()) {
+                                                        Text(timeStr, style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp), color = StudioTextSecondary)
+                                                    }
+                                                    if (unread > 0) {
+                                                        Surface(shape = CircleShape, color = StudioBlueAccent) {
+                                                            Text(
+                                                                text = unread.toString(),
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = PureWhite,
+                                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            HorizontalDivider(color = Color(0xFFECEFF2), modifier = Modifier.padding(start = 76.dp, end = 18.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Preserves quick send composer if user typed text
+                        if (composerText.isNotEmpty() || stagedAttachment != null) {
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFFF2F4F7),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    BasicTextField(
+                                        value = composerText,
+                                        onValueChange = onComposerTextChange,
+                                        cursorBrush = SolidColor(ObsidianCharcoal),
+                                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = onSendQuickCompose,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("chat_hub_send_button")
+                                    ) {
+                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Send", tint = StudioBlueAccent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ChatHubBottomTab.DIRECTORY -> {
+                    // "Find People" Tab matching center screen in reference image
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
+                        }
+                        IconButton(onClick = onClose, modifier = Modifier.size(38.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = ObsidianCharcoal)
+                        }
+                    }
+
+                    Text(
+                        text = "Find People",
+                        style = MaterialTheme.typography.headlineMedium.copy(fontSize = 30.sp),
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ObsidianCharcoal,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                    )
+
+                    // Search input + Cancel button matching reference
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = Color(0xFFF2F4F7),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Search, contentDescription = null, tint = StudioTextSecondary, modifier = Modifier.size(18.dp))
+                                BasicTextField(
+                                    value = directorySearchQuery,
+                                    onValueChange = { directorySearchQuery = it },
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
+                                    cursorBrush = SolidColor(ObsidianCharcoal),
+                                    decorationBox = { inner ->
+                                        if (directorySearchQuery.isEmpty()) {
+                                            Text("Search colleagues…", style = MaterialTheme.typography.bodyMedium, color = StudioTextSecondary)
+                                        }
+                                        inner()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (directorySearchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { directorySearchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                                        Icon(Icons.Default.Close, contentDescription = "Clear", tint = StudioTextSecondary, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                        TextButton(onClick = { directorySearchQuery = "" }) {
+                            Text("Cancel", color = StudioBlueAccent, fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // Filter Pills matching reference
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilterChip(
+                            selected = !directoryFilterOnlineOnly,
+                            onClick = { directoryFilterOnlineOnly = false },
+                            label = { Text("All Colleagues") }
+                        )
+                        FilterChip(
+                            selected = directoryFilterOnlineOnly,
+                            onClick = { directoryFilterOnlineOnly = true },
+                            label = { Text("Online Now") }
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = { onOpenCreateGroup() },
+                            leadingIcon = { Icon(Icons.Default.Add, null, modifier = Modifier.size(14.dp)) },
+                            label = { Text("New Group") }
+                        )
+                    }
+
+                    // Directory Colleagues List
+                    val dirFiltered = remember(colleagues, directorySearchQuery, directoryFilterOnlineOnly) {
+                        val q = directorySearchQuery.trim().lowercase()
+                        colleagues.filter { c ->
+                            (q.isBlank() || c.fullName.lowercase().contains(q) || c.jobRoleName.lowercase().contains(q) || c.departmentName.lowercase().contains(q))
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    ) {
+                        items(dirFiltered, key = { it.uid }) { person ->
+                            val presence by RtdbPresenceManager.observeMemberPresence(companyId, person.uid)
+                                .collectAsStateWithLifecycle(initialValue = MemberPresenceState(uid = person.uid))
+                            if (!directoryFilterOnlineOnly || presence.online) {
+                                Surface(
+                                    onClick = { onOpenDirectChat(person) },
+                                    color = PureWhite,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                        ) {
+                                            Box {
+                                                StudioAvatar(name = person.fullName, size = 48.dp, borderColor = PureWhite, photoBase64 = person.photoBase64)
+                                                if (presence.online) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(13.dp)
+                                                            .align(Alignment.BottomEnd)
+                                                            .clip(CircleShape)
+                                                            .background(EmeraldApproved)
+                                                            .border(2.dp, PureWhite, CircleShape)
+                                                    )
+                                                }
+                                            }
+                                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                Text(formatTitleCase(person.fullName), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                                                Text(formatTitleCase(person.jobRoleName.ifBlank { "Team Member" }), style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                                                Text("📍 ${formatTitleCase(person.departmentName.ifBlank { "Workspace" })}", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                                            }
+                                            IconButton(onClick = { onOpenDirectChat(person) }) {
+                                                Icon(Icons.Outlined.ChatBubbleOutline, contentDescription = "Chat", tint = StudioBlueAccent)
+                                            }
+                                        }
+                                        HorizontalDivider(color = Color(0xFFECEFF2), modifier = Modifier.padding(start = 76.dp, end = 18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                ChatHubBottomTab.SETTINGS -> {
+                    // Clean Settings Tab Content directly rendered
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Chat Settings & Privacy", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                            IconButton(onClick = onClose) { Icon(Icons.Default.Close, null) }
+                        }
+
+                        // Chat Lock Secret Code
+                        Surface(shape = RoundedCornerShape(16.dp), color = Color(0xFFF2F4F7), modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text("Secret Code for Locked Chats", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (prefs.hasSecretCode) "Secret PIN configured (${prefs.lockedChannelIds.size} locked)" else "Not set",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioTextSecondary
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { showSettingsSheet = true }) {
+                                        Text(if (prefs.hasSecretCode) "Change PIN" else "Set Secret PIN")
+                                    }
+                                    if (prefs.hasSecretCode) {
+                                        TextButton(onClick = { ChatSettingsStore.clearSecretCode(context) }) {
+                                            Text("Remove PIN", color = CrimsonBlocked)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bubble Theme Preset
+                        Text("Chat Bubble Appearance", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ChatVisualCatalog.bubbleThemes.forEach { bt ->
+                                FilterChip(
+                                    selected = prefs.bubbleThemeId == bt.id,
+                                    onClick = { ChatSettingsStore.setBubbleTheme(context, bt.id) },
+                                    label = { Text(bt.label) }
+                                )
+                            }
+                        }
+
+                        // Canvas Tint / Wallpapers
+                        Text("Canvas Tone", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ChatVisualCatalog.wallpapers.forEach { wp ->
+                                FilterChip(
+                                    selected = prefs.globalWallpaperId == wp.id,
+                                    onClick = { ChatSettingsStore.setWallpaper(context, wp.id) },
+                                    label = { Text(wp.label) }
+                                )
+                            }
+                        }
+
+                        // Media Settings
+                        Text("Media & Auto-Download", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Surface(shape = RoundedCornerShape(16.dp), color = Color(0xFFF2F4F7), modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Auto-download photos", style = MaterialTheme.typography.bodyMedium)
+                                    Switch(checked = prefs.autoDownloadPhotos, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, it, prefs.autoDownloadAudio, prefs.autoDownloadDocs, prefs.mediaVisibleInGallery) })
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Auto-download audio & voice", style = MaterialTheme.typography.bodyMedium)
+                                    Switch(checked = prefs.autoDownloadAudio, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, prefs.autoDownloadPhotos, it, prefs.autoDownloadDocs, prefs.mediaVisibleInGallery) })
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Show media in device gallery", style = MaterialTheme.typography.bodyMedium)
+                                    Switch(checked = prefs.mediaVisibleInGallery, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, prefs.autoDownloadPhotos, prefs.autoDownloadAudio, prefs.autoDownloadDocs, it) })
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
-            // Bottom Floating Dock matching Mengrobol UI: Home | [+ New Chat] / [Cancel] | Saved/Settings
+            // Reference Image 3-Tab Bottom Navigation Bar (Directory | Chats | Settings)
             Surface(
-                shape = RoundedCornerShape(999.dp),
-                color = PureWhite.copy(alpha = 0.94f),
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 10.dp)
+                shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+                color = PureWhite,
+                border = BorderStroke(1.dp, Color(0xFFECEFF2)),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceAround,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onClose, modifier = Modifier.size(44.dp)) {
-                        Icon(Icons.Outlined.Home, contentDescription = "Home", tint = ObsidianCharcoal)
+                    // Tab 1: Directory (Find People)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clickable { activeBottomTab = ChatHubBottomTab.DIRECTORY }
+                            .padding(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (activeBottomTab == ChatHubBottomTab.DIRECTORY) Icons.Filled.People else Icons.Outlined.People,
+                            contentDescription = "Directory",
+                            tint = if (activeBottomTab == ChatHubBottomTab.DIRECTORY) StudioBlueAccent else Color(0xFF94A3B8),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Directory",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            fontWeight = if (activeBottomTab == ChatHubBottomTab.DIRECTORY) FontWeight.Bold else FontWeight.Medium,
+                            color = if (activeBottomTab == ChatHubBottomTab.DIRECTORY) StudioBlueAccent else Color(0xFF94A3B8)
+                        )
                     }
 
-                    Surface(
-                        onClick = { showNewActionOverlay = !showNewActionOverlay },
-                        shape = RoundedCornerShape(999.dp),
-                        color = ObsidianCharcoal,
+                    // Tab 2: Chats (Active default with unread badge)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .height(44.dp)
-                            .testTag("chat_new_action_pill")
+                            .clickable { activeBottomTab = ChatHubBottomTab.CHATS }
+                            .padding(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 22.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            if (!showNewActionOverlay) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = PureWhite, modifier = Modifier.size(18.dp))
+                        BadgedBox(
+                            badge = {
+                                if (totalUnreadCount > 0) {
+                                    Badge(containerColor = StudioBlueAccent) {
+                                        Text("$totalUnreadCount", color = PureWhite)
+                                    }
+                                }
                             }
-                            Text(
-                                text = if (showNewActionOverlay) "Cancel" else "New Chat",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = PureWhite
+                        ) {
+                            Icon(
+                                imageVector = if (activeBottomTab == ChatHubBottomTab.CHATS) Icons.Filled.ChatBubble else Icons.Outlined.ChatBubbleOutline,
+                                contentDescription = "Chats",
+                                tint = if (activeBottomTab == ChatHubBottomTab.CHATS) StudioBlueAccent else Color(0xFF94A3B8),
+                                modifier = Modifier.size(24.dp)
                             )
                         }
+                        Text(
+                            text = "Chats",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            fontWeight = if (activeBottomTab == ChatHubBottomTab.CHATS) FontWeight.Bold else FontWeight.Medium,
+                            color = if (activeBottomTab == ChatHubBottomTab.CHATS) StudioBlueAccent else Color(0xFF94A3B8)
+                        )
                     }
 
-                    IconButton(onClick = { showSettingsSheet = true }, modifier = Modifier.size(44.dp)) {
-                        Icon(Icons.Outlined.PersonOutline, contentDescription = "Chat settings", tint = ObsidianCharcoal)
+                    // Tab 3: Settings
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier
+                            .clickable { activeBottomTab = ChatHubBottomTab.SETTINGS }
+                            .padding(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (activeBottomTab == ChatHubBottomTab.SETTINGS) Icons.Filled.Settings else Icons.Outlined.Settings,
+                            contentDescription = "Settings",
+                            tint = if (activeBottomTab == ChatHubBottomTab.SETTINGS) StudioBlueAccent else Color(0xFF94A3B8),
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Text(
+                            text = "Settings",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            fontWeight = if (activeBottomTab == ChatHubBottomTab.SETTINGS) FontWeight.Bold else FontWeight.Medium,
+                            color = if (activeBottomTab == ChatHubBottomTab.SETTINGS) StudioBlueAccent else Color(0xFF94A3B8)
+                        )
                     }
                 }
             }
         }
 
-        // Blurred Floating Action Sheet Overlay matching Mengrobol right-hand screen
+        // New Chat / Group Action Sheet Modal (Overlay Menu)
         if (showNewActionOverlay) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.White.copy(alpha = 0.25f))
+                    .background(Color.Black.copy(alpha = 0.35f))
                     .clickable { showNewActionOverlay = false }
             ) {
                 Surface(
@@ -880,10 +976,11 @@ fun ChatHubScreen(
                     shadowElevation = 14.dp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(start = 24.dp, end = 24.dp, bottom = 88.dp)
+                        .padding(start = 20.dp, end = 20.dp, bottom = 80.dp)
                         .windowInsetsPadding(WindowInsets.navigationBars)
                         .fillMaxWidth()
                         .clickable(enabled = false) {}
+                        .testTag("chat_new_action_pill")
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         OverlayMenuRow(
@@ -895,7 +992,7 @@ fun ChatHubScreen(
                                 onOpenChannelsSheet()
                             }
                         )
-                        HorizontalDivider(color = SubtleOutline)
+                        HorizontalDivider(color = Color(0xFFECEFF2))
                         OverlayMenuRow(
                             icon = Icons.Outlined.BookmarkBorder,
                             title = "Message Yourself",
@@ -905,17 +1002,17 @@ fun ChatHubScreen(
                                 onOpenSavedNotes()
                             }
                         )
-                        HorizontalDivider(color = SubtleOutline)
+                        HorizontalDivider(color = Color(0xFFECEFF2))
                         OverlayMenuRow(
                             icon = Icons.Outlined.Groups,
-                            title = "New Community / Group",
+                            title = "New Group",
                             subtitle = "Create a group with admins, polls & invites",
                             onClick = {
                                 showNewActionOverlay = false
                                 onOpenCreateGroup()
                             }
                         )
-                        HorizontalDivider(color = SubtleOutline)
+                        HorizontalDivider(color = Color(0xFFECEFF2))
                         OverlayMenuRow(
                             icon = Icons.Outlined.QrCode,
                             title = "Join Group by Link",
@@ -931,82 +1028,30 @@ fun ChatHubScreen(
         }
     }
 
-    // Channel Quick Actions Sheet (Pin, Mute, Archive, Favourite, Lock, Read/Unread, Delete)
-    channelActionTarget?.let { ch ->
-        ModalBottomSheet(onDismissRequest = { channelActionTarget = null }, containerColor = PureWhite) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(formatTitleCase(ch.title), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold)
-                Spacer(Modifier.height(4.dp))
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Default.PushPin, null) },
-                    text = { Text(if (ch.isPinnedFor(member.uid)) "Unpin Chat" else "Pin Chat") },
-                    onClick = { onTogglePinChannel(ch); channelActionTarget = null }
-                )
-                DropdownMenuItem(
-                    leadingIcon = { Icon(if (ch.isMutedFor(member.uid)) Icons.Default.VolumeUp else Icons.Default.VolumeOff, null) },
-                    text = { Text(if (ch.isMutedFor(member.uid)) "Unmute Notifications" else "Mute Notifications") },
-                    onClick = { onToggleMuteChannel(ch); channelActionTarget = null }
-                )
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Default.Favorite, null) },
-                    text = { Text(if (ch.isFavouriteFor(member.uid)) "Remove from Favourites" else "Add to Favourites") },
-                    onClick = { onToggleFavouriteChannel(ch); channelActionTarget = null }
-                )
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Default.Archive, null) },
-                    text = { Text(if (ch.isArchivedFor(member.uid)) "Unarchive Chat" else "Archive Chat") },
-                    onClick = { onToggleArchiveChannel(ch); channelActionTarget = null }
-                )
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Default.MarkChatRead, null) },
-                    text = { Text(if (ch.unreadCountFor(member.uid) > 0) "Mark as Read" else "Mark as Unread") },
-                    onClick = { onMarkReadUnread(ch, ch.unreadCountFor(member.uid) == 0); channelActionTarget = null }
-                )
-                DropdownMenuItem(
-                    leadingIcon = { Icon(Icons.Default.Lock, null) },
-                    text = { Text(if (ch.id in prefs.lockedChannelIds) "Unlock Chat" else "Lock Chat") },
-                    onClick = {
-                        if (!prefs.hasSecretCode) {
-                            showSettingsSheet = true
-                        } else {
-                            ChatSettingsStore.toggleChannelLocked(context, ch.id)
-                        }
-                        channelActionTarget = null
-                    }
-                )
-                if (isSuperAdmin && ch.id != "ch_general") {
-                    DropdownMenuItem(
-                        leadingIcon = { Icon(Icons.Default.DeleteForever, null, tint = CrimsonBlocked) },
-                        text = { Text("Delete Conversation", color = CrimsonBlocked, fontWeight = FontWeight.Bold) },
-                        onClick = { deleteChannelTarget = ch; channelActionTarget = null }
-                    )
-                }
-            }
+    // Overflow & Dialog handlers
+    if (showHubOverflowMenu) {
+        DropdownMenu(expanded = showHubOverflowMenu, onDismissRequest = { showHubOverflowMenu = false }) {
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Default.Bookmark, null) },
+                text = { Text("Message Yourself (Saved)") },
+                onClick = { showHubOverflowMenu = false; onOpenSavedNotes() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Default.GroupAdd, null) },
+                text = { Text("New Group") },
+                onClick = { showHubOverflowMenu = false; onOpenCreateGroup() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Default.QrCode, null) },
+                text = { Text("Join via Invite Link") },
+                onClick = { showHubOverflowMenu = false; onOpenJoinByInvite() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Default.Tune, null) },
+                text = { Text("Chat Settings & Lock") },
+                onClick = { showHubOverflowMenu = false; showSettingsSheet = true }
+            )
         }
-    }
-
-    deleteChannelTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteChannelTarget = null },
-            title = { Text("Delete ${target.title}?", fontWeight = FontWeight.Bold) },
-            text = { Text("Removes this conversation and its messages from the workspace.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteChannel(target.id)
-                        deleteChannelTarget = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { deleteChannelTarget = null }) { Text("Cancel") } }
-        )
     }
 
     if (showSettingsSheet) {
@@ -1046,7 +1091,7 @@ private fun OverlayMenuRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Surface(shape = CircleShape, color = MutedSurface, modifier = Modifier.size(40.dp)) {
+        Surface(shape = CircleShape, color = Color(0xFFF2F4F7), modifier = Modifier.size(40.dp)) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(icon, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
             }

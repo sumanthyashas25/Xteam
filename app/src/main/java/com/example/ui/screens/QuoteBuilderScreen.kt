@@ -693,7 +693,7 @@ fun QuoteBuilderScreen(
     }
 
     if (showClientApproveDialog) {
-        var approvalNote by remember { mutableStateOf("Approved via WhatsApp / Email") }
+        var approvalNote by remember { mutableStateOf("Approved via Email / Messaging") }
         AlertDialog(
             onDismissRequest = { showClientApproveDialog = false },
             containerColor = PureWhite,

@@ -71,7 +71,7 @@ import kotlinx.coroutines.launch
 enum class PrimaryTab(val label: String, val icon: ImageVector, val inactiveIcon: ImageVector) {
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home),
     REQUESTS("Requests", Icons.Filled.Inbox, Icons.Outlined.Inbox),
-    CHAT("Chat", Icons.AutoMirrored.Filled.Chat, Icons.AutoMirrored.Outlined.Chat),
+    CHAT("Chats", Icons.AutoMirrored.Filled.Chat, Icons.AutoMirrored.Outlined.Chat),
     MY_WORK("My Work", Icons.Filled.TaskAlt, Icons.Outlined.TaskAlt)
 }
 
@@ -258,7 +258,6 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
     val permittedSecondary = remember(state.effectivePermissions, member.accessLevel) {
         buildList {
             if (canSeeProjects) add(SecondaryDestination.PROJECTS)
-            add(SecondaryDestination.CHAT)
             add(SecondaryDestination.NOTIFICATIONS)
             if (canSeeCommercial) add(SecondaryDestination.CLIENTS)
             if (canSeeCommercial) add(SecondaryDestination.QUOTATIONS)
@@ -547,7 +546,8 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             onDeleteNotification = { viewModel.deleteNotification(it) },
                                             onOpenChatChannel = { chId ->
                                                 chatInitialChannelId = chId
-                                                secondaryDest = SecondaryDestination.CHAT
+                                                secondaryDest = null
+                                                activeTab = PrimaryTab.CHAT
                                             },
                                             onOpenDeliverableById = { delivId ->
                                                 val target = state.deliverables.firstOrNull { it.id == delivId }
@@ -970,16 +970,6 @@ private fun QuickWorkspaceSheet(
 ) {
     val firstName = member.fullName.trim().substringBefore(" ").ifBlank { "Member" }
     val tiles = buildList {
-        add(
-            QuickActionTile(
-                title = "Team Chat",
-                subtitle = "Files & updates",
-                icon = Icons.AutoMirrored.Filled.Chat,
-                bg = KpiMintBg,
-                tint = KpiMintStroke,
-                onClick = { onOpenSecondary(SecondaryDestination.CHAT) }
-            )
-        )
         if (canCreateQuote) {
             add(
                 QuickActionTile(

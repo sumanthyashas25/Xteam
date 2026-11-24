@@ -551,19 +551,19 @@ class ChatRepository(private val core: AgencyRepository) {
 
     suspend fun createOrGetDepartmentChannel(dept: Department, actor: Member): ChatChannel {
         val safeDept = dept.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
-        val channelId = "ch_dept_$safeDept".take(120)
+        val channelId = "ch_grp_dept_$safeDept".take(120)
         val ref = sub("chat_channels").document(channelId)
         val existing = runCatching { ref.get().await() }.getOrNull()
         if (existing != null && existing.exists()) {
             existing.toObject(ChatChannel::class.java)?.let { return it }
         }
-        val cleanTitle = "${dept.name} Dept".take(100)
-        val cleanTopic = dept.description.ifBlank { "${dept.name} department team collaboration & handoffs" }.take(240)
+        val cleanTitle = "${dept.name} Group".take(100)
+        val cleanTopic = dept.description.ifBlank { "${dept.name} group collaboration" }.take(240)
         val now = System.currentTimeMillis()
         val payload = mapOf(
             "title" to cleanTitle,
             "topic" to cleanTopic,
-            "channelType" to ChatChannelType.DEPARTMENT.name,
+            "channelType" to ChatChannelType.GROUP.name,
             "projectId" to "",
             "projectTitle" to "",
             "departmentId" to dept.id,
@@ -572,7 +572,7 @@ class ChatRepository(private val core: AgencyRepository) {
             "adminUids" to listOf(actor.uid),
             "createdByUid" to actor.uid,
             "createdByName" to actor.fullName.ifBlank { "Member" }.take(120),
-            "lastMessagePreview" to "${dept.name} department chat ready",
+            "lastMessagePreview" to "${dept.name} group ready",
             "lastSenderName" to actor.fullName.ifBlank { "Member" }.take(120),
             "lastSenderUid" to actor.uid,
             "lastMessageStatus" to "SENT",
@@ -586,7 +586,7 @@ class ChatRepository(private val core: AgencyRepository) {
             id = channelId,
             title = cleanTitle,
             topic = cleanTopic,
-            channelType = ChatChannelType.DEPARTMENT.name,
+            channelType = ChatChannelType.GROUP.name,
             departmentId = dept.id,
             departmentName = dept.name,
             participantUids = listOf(actor.uid),

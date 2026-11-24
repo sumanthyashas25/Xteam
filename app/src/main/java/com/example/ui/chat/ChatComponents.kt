@@ -55,30 +55,30 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-val WhatsAppOutgoingGreen = Color(0xFFE7F8EE)
-val WhatsAppOutgoingBorder = Color(0xFFBCE7CB)
-val WhatsAppIncomingBg = PureWhite
-val WhatsAppTickBlue = Color(0xFF0288D1)
-val WhatsAppTickGray = Color(0xFF94A3B8)
+val StudioOutgoingBg = Color(0xFF111318)
+val StudioOutgoingBorder = Color(0xFF111318)
+val StudioIncomingBg = Color(0xFFECEFF2)
+val StudioBlueAccent = Color(0xFF0A84FF)
+val StudioTickGray = Color(0xFF94A3B8)
 
 @Composable
 fun DateSeparatorPill(label: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
+            .padding(vertical = 10.dp),
         contentAlignment = Alignment.Center
     ) {
         Surface(
             shape = RoundedCornerShape(999.dp),
-            color = MutedSurface.copy(alpha = 0.92f),
-            border = BorderStroke(1.dp, SubtleOutline)
+            color = Color(0xFFF2F4F7),
+            border = BorderStroke(1.dp, Color(0xFFECEFF2))
         ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
-                color = StudioTextSecondary,
+                color = Color(0xFF64748B),
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
             )
         }
@@ -91,19 +91,19 @@ fun DeliveryStatusIcon(status: String, modifier: Modifier = Modifier) {
         "READ" -> Icon(
             imageVector = Icons.Default.DoneAll,
             contentDescription = "Read",
-            tint = WhatsAppTickBlue,
+            tint = StudioBlueAccent,
             modifier = modifier.size(15.dp)
         )
         "DELIVERED" -> Icon(
             imageVector = Icons.Default.DoneAll,
             contentDescription = "Delivered",
-            tint = WhatsAppTickGray,
+            tint = StudioTickGray,
             modifier = modifier.size(15.dp)
         )
         "PENDING" -> Icon(
             imageVector = Icons.Default.Schedule,
             contentDescription = "Pending",
-            tint = WhatsAppTickGray,
+            tint = StudioTickGray,
             modifier = modifier.size(13.dp)
         )
         "FAILED" -> Icon(
@@ -115,7 +115,7 @@ fun DeliveryStatusIcon(status: String, modifier: Modifier = Modifier) {
         else -> Icon( // SENT
             imageVector = Icons.Default.Check,
             contentDescription = "Sent",
-            tint = WhatsAppTickGray,
+            tint = StudioTickGray,
             modifier = modifier.size(14.dp)
         )
     }
@@ -388,7 +388,7 @@ fun VoiceNoteBubble(
 }
 
 @Composable
-fun WhatsAppMessageBubble(
+fun StudioMessageBubble(
     message: ChatMessage,
     isMe: Boolean,
     myUid: String,
@@ -421,8 +421,8 @@ fun WhatsAppMessageBubble(
         RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 4.dp, bottomEnd = 18.dp)
     }
 
-    val bubbleColor = if (isMe) WhatsAppOutgoingGreen else WhatsAppIncomingBg
-    val bubbleBorder = if (isMe) WhatsAppOutgoingBorder else SubtleOutline
+    val bubbleColor = if (isMe) StudioOutgoingBg else StudioIncomingBg
+    val bubbleBorder = if (isMe) StudioOutgoingBorder else Color(0xFFECEFF2)
 
     Box(
         modifier = Modifier
@@ -472,8 +472,8 @@ fun WhatsAppMessageBubble(
                     if (message.parentPreview.isNotBlank()) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = PureWhite.copy(alpha = 0.6f),
-                            border = BorderStroke(1.dp, SubtleOutline),
+                            color = if (isMe) PureWhite.copy(alpha = 0.12f) else PureWhite.copy(alpha = 0.7f),
+                            border = BorderStroke(1.dp, if (isMe) PureWhite.copy(alpha = 0.2f) else SubtleOutline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
@@ -486,12 +486,12 @@ fun WhatsAppMessageBubble(
                                         .width(3.dp)
                                         .height(24.dp)
                                         .clip(RoundedCornerShape(2.dp))
-                                        .background(VioletPrimary)
+                                        .background(if (isMe) PureWhite else VioletPrimary)
                                 )
                                 Text(
                                     text = message.parentPreview,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = ObsidianCharcoal,
+                                    color = if (isMe) PureWhite else ObsidianCharcoal,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -504,7 +504,7 @@ fun WhatsAppMessageBubble(
                         Text(
                             text = "🚫 This message was deleted",
                             style = MaterialTheme.typography.bodyMedium.copy(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic),
-                            color = StudioTextSecondary
+                            color = if (isMe) Color(0xFF94A3B8) else StudioTextSecondary
                         )
                     } else {
                         // Poll
@@ -527,7 +527,7 @@ fun WhatsAppMessageBubble(
                             Text(
                                 text = message.body,
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = ObsidianCharcoal
+                                color = if (isMe) PureWhite else ObsidianCharcoal
                             )
                         }
 

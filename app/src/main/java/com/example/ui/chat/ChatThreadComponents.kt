@@ -389,8 +389,8 @@ fun RichChatMessageBubble(
                         if (message.parentPreview.isNotBlank()) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = PureWhite.copy(alpha = 0.65f),
-                                border = BorderStroke(1.dp, SubtleOutline),
+                                color = if (isMe) PureWhite.copy(alpha = 0.12f) else PureWhite.copy(alpha = 0.65f),
+                                border = BorderStroke(1.dp, if (isMe) PureWhite.copy(alpha = 0.2f) else SubtleOutline),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
@@ -403,12 +403,12 @@ fun RichChatMessageBubble(
                                             .width(3.dp)
                                             .height(22.dp)
                                             .clip(RoundedCornerShape(2.dp))
-                                            .background(theme.accent)
+                                            .background(if (isMe) PureWhite else theme.accent)
                                     )
                                     Text(
                                         text = message.parentPreview,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = ObsidianCharcoal,
+                                        color = if (isMe) PureWhite else ObsidianCharcoal,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -716,8 +716,8 @@ fun RichChatMessageBubble(
                                 Surface(
                                     onClick = onOpenAttachment,
                                     shape = RoundedCornerShape(10.dp),
-                                    color = PureWhite.copy(alpha = 0.78f),
-                                    border = BorderStroke(1.dp, SubtleOutline),
+                                    color = if (isMe) PureWhite.copy(alpha = 0.12f) else PureWhite.copy(alpha = 0.78f),
+                                    border = BorderStroke(1.dp, if (isMe) PureWhite.copy(alpha = 0.2f) else SubtleOutline),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -732,7 +732,7 @@ fun RichChatMessageBubble(
                                                     else -> Icons.Default.Description
                                                 },
                                                 contentDescription = null,
-                                                tint = ObsidianCharcoal,
+                                                tint = if (isMe) PureWhite else ObsidianCharcoal,
                                                 modifier = Modifier.size(22.dp)
                                             )
                                             Column(modifier = Modifier.weight(1f)) {
@@ -740,7 +740,7 @@ fun RichChatMessageBubble(
                                                     text = message.attachmentName.ifBlank { "Attachment" },
                                                     style = MaterialTheme.typography.labelMedium,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = ObsidianCharcoal,
+                                                    color = if (isMe) PureWhite else ObsidianCharcoal,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
@@ -749,11 +749,11 @@ fun RichChatMessageBubble(
                                                     if (message.isHd) append(" • HD")
                                                 }
                                                 if (meta.isNotBlank()) {
-                                                    Text(meta, style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                                                    Text(meta, style = MaterialTheme.typography.labelSmall, color = if (isMe) Color(0xFF94A3B8) else StudioTextSecondary)
                                                 }
                                             }
                                             IconButton(onClick = onDownloadAttachment, modifier = Modifier.size(30.dp)) {
-                                                Icon(Icons.Default.Download, contentDescription = "Download", tint = ObsidianCharcoal, modifier = Modifier.size(18.dp))
+                                                Icon(Icons.Default.Download, contentDescription = "Download", tint = if (isMe) PureWhite else ObsidianCharcoal, modifier = Modifier.size(18.dp))
                                             }
                                         }
                                         if (activeTransferProgress != null && activeTransferProgress in 0.01f..0.99f) {
@@ -791,9 +791,14 @@ fun RichChatMessageBubble(
                                     }
                                 }
                                 Text(
-                                    text = formatChatRichText(message.body, message.mentions, mentionColor = theme.accent),
+                                    text = formatChatRichText(
+                                        body = message.body,
+                                        mentions = message.mentions,
+                                        mentionColor = if (isMe) Color(0xFF38BDF8) else theme.accent,
+                                        linkColor = if (isMe) Color(0xFF38BDF8) else Color(0xFF0284C7)
+                                    ),
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = ObsidianCharcoal
+                                    color = if (isMe) PureWhite else ObsidianCharcoal
                                 )
                                 val firstUrl = message.linkUrl.ifBlank { ChatFileManager.extractHttpsUrls(message.body).firstOrNull().orEmpty() }
                                 if (firstUrl.isNotBlank()) {
@@ -806,13 +811,13 @@ fun RichChatMessageBubble(
                                             }
                                         },
                                         shape = RoundedCornerShape(10.dp),
-                                        color = PureWhite.copy(alpha = 0.8f),
-                                        border = BorderStroke(1.dp, SubtleOutline),
+                                        color = if (isMe) PureWhite.copy(alpha = 0.15f) else PureWhite.copy(alpha = 0.8f),
+                                        border = BorderStroke(1.dp, if (isMe) PureWhite.copy(alpha = 0.2f) else SubtleOutline),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(modifier = Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Icon(Icons.Default.Link, contentDescription = null, tint = Color(0xFF0284C7), modifier = Modifier.size(18.dp))
-                                            Text(firstUrl, style = MaterialTheme.typography.labelSmall, color = Color(0xFF0284C7), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Icon(Icons.Default.Link, contentDescription = null, tint = if (isMe) Color(0xFF38BDF8) else Color(0xFF0284C7), modifier = Modifier.size(18.dp))
+                                            Text(firstUrl, style = MaterialTheme.typography.labelSmall, color = if (isMe) Color(0xFF38BDF8) else Color(0xFF0284C7), maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                     }
                                 }
@@ -826,18 +831,18 @@ fun RichChatMessageBubble(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             if (message.viewOnce) {
-                                Icon(Icons.Default.LooksOne, contentDescription = "View once", tint = VioletPrimary, modifier = Modifier.size(12.dp))
+                                Icon(Icons.Default.LooksOne, contentDescription = "View once", tint = if (isMe) PureWhite else VioletPrimary, modifier = Modifier.size(12.dp))
                             }
                             if (message.pinned) {
-                                Icon(Icons.Default.PushPin, contentDescription = "Pinned", tint = VioletPrimary, modifier = Modifier.size(12.dp))
+                                Icon(Icons.Default.PushPin, contentDescription = "Pinned", tint = if (isMe) PureWhite else VioletPrimary, modifier = Modifier.size(12.dp))
                             }
                             if (message.isStarredBy(myUid)) {
                                 Icon(Icons.Default.Star, contentDescription = "Starred", tint = Color(0xFFF59E0B), modifier = Modifier.size(12.dp))
                             }
                             if (message.isEdited) {
-                                Text("edited", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = StudioTextSecondary)
+                                Text("edited", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = if (isMe) Color(0xFF94A3B8) else StudioTextSecondary)
                             }
-                            Text(timeLabel, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = StudioTextSecondary)
+                            Text(timeLabel, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = if (isMe) Color(0xFF94A3B8) else StudioTextSecondary)
                             if (isMe) {
                                 DeliveryStatusIcon(status = message.effectiveStatusForSender(otherParticipantCount))
                             }

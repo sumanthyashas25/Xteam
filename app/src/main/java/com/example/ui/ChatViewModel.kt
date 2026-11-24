@@ -30,8 +30,9 @@ import kotlinx.coroutines.launch
 
 enum class ChatFilterTab(val label: String) {
     ALL("All"),
-    UNREAD("Unread"),
+    DIRECT("Direct"),
     GROUPS("Groups"),
+    UNREAD("Unread"),
     FAVOURITES("Favourites"),
     ARCHIVED("Archived"),
     LOCKED("Locked")

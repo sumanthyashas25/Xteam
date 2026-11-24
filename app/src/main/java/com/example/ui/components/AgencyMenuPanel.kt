@@ -220,9 +220,10 @@ fun AgencyMenuDrawerContent(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 MenuSectionLabel("Workspace")
-                visibleTabs.forEach { tab ->
+                val workspaceTabs = visibleTabs.filter { it != PrimaryTab.CHAT }
+                workspaceTabs.forEach { tab ->
                     val badge = when (tab) {
-                        PrimaryTab.CHAT -> state.chatChannels.size.takeIf { it > 0 }?.toString()
+                        PrimaryTab.CHAT -> null
                         PrimaryTab.REQUESTS -> pendingRequestsCount.takeIf { it > 0 }?.toString()
                         PrimaryTab.MY_WORK -> myPendingCount.takeIf { it > 0 }?.toString()
                         PrimaryTab.HOME -> null

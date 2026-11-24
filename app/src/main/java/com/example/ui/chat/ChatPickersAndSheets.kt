@@ -583,7 +583,7 @@ fun MessageInfoBottomSheet(
                 text = "Read By (${message.readByUids.size})",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
-                color = WhatsAppTickBlue
+                color = StudioBlueAccent
             )
             if (message.readByUids.isEmpty()) {
                 Text("No read receipts yet.", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
@@ -790,7 +790,7 @@ fun ChatSettingsAndSecuritySheet(
             }
 
             // Global Wallpaper
-            Text("Animated Glow Wallpaper", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("Canvas Tint & Wallpaper", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

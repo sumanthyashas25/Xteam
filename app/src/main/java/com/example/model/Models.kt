@@ -724,8 +724,8 @@ data class ChatMessage(
     val attachmentSha256: String = "",
     val storageProvider: String = "",
     @get:com.google.firebase.firestore.PropertyName("isHd")
-    @param:com.google.firebase.firestore.PropertyName("isHd")
-    val isHd: Boolean = false,
+    @set:com.google.firebase.firestore.PropertyName("isHd")
+    var isHd: Boolean = false,
     val viewOnce: Boolean = false,
     val viewedByUids: List<String> = emptyList(),
     val expiresAtMillis: Long = 0L,
@@ -733,12 +733,12 @@ data class ChatMessage(
     val deliveredToUids: List<String> = emptyList(),
     val readByUids: List<String> = emptyList(),
     @get:com.google.firebase.firestore.PropertyName("isEdited")
-    @param:com.google.firebase.firestore.PropertyName("isEdited")
-    val isEdited: Boolean = false,
+    @set:com.google.firebase.firestore.PropertyName("isEdited")
+    var isEdited: Boolean = false,
     val editedAtMillis: Long = 0L,
     @get:com.google.firebase.firestore.PropertyName("isDeletedForEveryone")
-    @param:com.google.firebase.firestore.PropertyName("isDeletedForEveryone")
-    val isDeletedForEveryone: Boolean = false,
+    @set:com.google.firebase.firestore.PropertyName("isDeletedForEveryone")
+    var isDeletedForEveryone: Boolean = false,
     val deletedForUids: List<String> = emptyList(),
     val starredByUids: List<String> = emptyList(),
     val pinned: Boolean = false,
@@ -769,8 +769,8 @@ data class ChatMessage(
     val eventTimeMillis: Long = 0L,
     val eventRsvps: Map<String, String> = emptyMap(),
     @get:com.google.firebase.firestore.PropertyName("isFailed")
-    @param:com.google.firebase.firestore.PropertyName("isFailed")
-    val isFailed: Boolean = false,
+    @set:com.google.firebase.firestore.PropertyName("isFailed")
+    var isFailed: Boolean = false,
     val failureReason: String = "",
     val createdAt: Timestamp? = null
 ) {

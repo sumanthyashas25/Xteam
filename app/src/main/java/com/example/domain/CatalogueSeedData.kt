@@ -100,7 +100,7 @@ object CatalogueSeedData {
             name = "Websites & Pages -> Web / Web Developer",
             keywords = listOf(
                 "website", "web", "page", "landing", "e-commerce", "portfolio",
-                "redesign", "hosting", "domain", "maintenance", "whatsapp integration"
+                "redesign", "hosting", "domain", "maintenance", "chat integration"
             ),
             serviceCategories = listOf("Website Development", "Web & E-Commerce"),
             departmentId = "dept_web",
@@ -198,7 +198,7 @@ object CatalogueSeedData {
         // === 4. WEBSITE DEVELOPMENT (srv_26 .. srv_31) ===
         srv("srv_26", "Website Development", "Landing page", "Single-page responsive landing page built for high conversion, inquiry capture, and fast mobile loading.", p(8000), PricingMode.FIXED, false, "page", 26),
         srv("srv_27", "Website Development", "Portfolio website", "Clean responsive portfolio showcase website with work gallery, about sections, and contact form.", p(15000), PricingMode.FIXED, false, "website", 27),
-        srv("srv_28", "Website Development", "Business website", "Multi-page responsive business website (up to 5 pages) with lead capture, WhatsApp CTA, and basic SEO.", p(20000), PricingMode.FIXED, false, "website", 28),
+        srv("srv_28", "Website Development", "Business website", "Multi-page responsive business website (up to 5 pages) with lead capture, Direct Chat CTA, and basic SEO.", p(20000), PricingMode.FIXED, false, "website", 28),
         srv("srv_29", "Website Development", "E-commerce website", "Full online store with product catalog, cart, checkout flow, shipping setup, and payment gateway integration.", p(35000), PricingMode.FIXED, false, "store", 29),
         srv("srv_30", "Website Development", "Website redesign", "Modern UI/UX and speed overhaul for an existing website (₹10,000 onwards depending on page count).", p(10000), PricingMode.STARTING_FROM, false, "website", 30),
         srv("srv_31", "Website Development", "Website maintenance", "Monthly backups, security patches, uptime monitoring, and minor content updates (₹2,000 onwards).", p(2000), PricingMode.STARTING_FROM, true, "month", 31),

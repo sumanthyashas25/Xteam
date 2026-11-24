@@ -24,7 +24,7 @@ class PaymentReminderWorker(
     override suspend fun doWork(): Result {
         return runCatching {
             val user = FirebaseAuth.getInstance().currentUser ?: return Result.success()
-            val repo = AgencyRepository(applicationContext, CatalogueSeedData.DEFAULT_COMPANY_ID)
+            val repo = AgencyRepository(applicationContext)
             val memberSnap = repo.sub("members").document(user.uid).get().await()
             val member = memberSnap.toObject(Member::class.java) ?: return Result.success()
             if (!PaymentReminderAutomator.canReceivePaymentReminders(member)) {
