@@ -714,8 +714,11 @@ private fun ChatHubView(
     onBack: () -> Unit,
     onClose: () -> Unit
 ) {
+    val context = LocalContext.current
     val firstName = member.fullName.trim().substringBefore(" ").ifBlank { "Member" }
     var deleteChannelTarget by remember { mutableStateOf<ChatChannel?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedFilter by remember { mutableStateOf("All") } // "All", "Unread", "Groups", "Favourites"
 
     Box(
         modifier = Modifier
@@ -732,43 +735,134 @@ private fun ChatHubView(
                 .widthIn(max = 620.dp)
                 .align(Alignment.Center)
         ) {
-            // Top Bar: <-  New Chat  X
+            // WhatsApp-Style Top Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_hub_back_button")
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = ObsidianCharcoal
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .testTag("chat_hub_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = ObsidianCharcoal
+                        )
+                    }
+                    Text(
+                        text = "X.MAX Chats",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ObsidianCharcoal
                     )
                 }
-                Text(
-                    text = "New Chat",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = ObsidianCharcoal
-                )
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_hub_close_button")
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "Close Chat",
-                        tint = ObsidianCharcoal
-                    )
+                    IconButton(
+                        onClick = onCreateNewChannelClick,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .testTag("chat_new_group_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.GroupAdd,
+                            contentDescription = "New Group or Channel",
+                            tint = ObsidianCharcoal
+                        )
+                    }
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier
+                            .size(40.dp)
+                            .testTag("chat_hub_close_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = "Close Chat",
+                            tint = ObsidianCharcoal
+                        )
+                    }
+                }
+            }
+
+            // Search Bar
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MutedSurface.copy(alpha = 0.90f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Filled.Search, contentDescription = null, tint = StudioTextSecondary, modifier = Modifier.size(20.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "Search chats & messages…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = StudioTextSecondary
+                            )
+                        }
+                        BasicTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
+                            cursorBrush = SolidColor(ObsidianCharcoal),
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("chat_search_input")
+                        )
+                    }
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(20.dp)) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search", tint = StudioTextSecondary)
+                        }
+                    }
+                }
+            }
+
+            // Filter Chips: All, Unread, Groups, Favourites
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf("All", "Unread", "Groups", "Favourites").forEach { filter ->
+                    val isSelected = selectedFilter == filter
+                    Surface(
+                        onClick = { selectedFilter = filter },
+                        shape = RoundedCornerShape(999.dp),
+                        color = if (isSelected) ObsidianCharcoal else MutedSurface.copy(alpha = 0.70f),
+                        modifier = Modifier.testTag("filter_chip_$filter")
+                    ) {
+                        Text(
+                            text = filter,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isSelected) PureWhite else ObsidianCharcoal,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
                 }
             }
 
@@ -810,292 +904,203 @@ private fun ChatHubView(
                 }
             }
 
-            Column(
+            // Unified Conversation List (LazyColumn)
+            LazyColumn(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    StudioAvatar(
-                        name = member.fullName,
-                        size = 56.dp,
-                        borderColor = PureWhite,
-                        photoBase64 = member.photoBase64
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = "Hi, ${formatTitleCase(firstName)}!",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Text(
-                            text = "Share updates & files",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = ObsidianCharcoal
-                        )
-                    }
+                // 1. Direct Messages
+                val filteredColleagues = colleagues.filter { person ->
+                    val name = person.fullName.ifBlank { "Member" }
+                    val matchesSearch = searchQuery.isBlank() || name.contains(searchQuery, ignoreCase = true)
+                    matchesSearch && (selectedFilter == "All" || selectedFilter == "Unread")
                 }
 
-                // 1:1 Direct Message Section for Everyone
-                if (colleagues.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.testTag("chat_dm_section"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Direct Messages (1:1)",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            colleagues.forEach { person ->
-                                val existingDm = channels.firstOrNull { ch ->
-                                    ch.channelTypeEnum() == ChatChannelType.DIRECT && (
-                                        ch.id == ChatRepository.directChannelId(member.uid, person.uid) ||
-                                            (ch.participantUids.contains(person.uid) && ch.participantUids.contains(member.uid))
-                                        )
-                                }
-                                val roleOrDept = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName })
-                                val previewLine = existingDm?.lastMessagePreview?.takeIf { it.isNotBlank() } ?: roleOrDept
-                                Surface(
-                                    onClick = { onOpenDirectChat(person) },
-                                    shape = RoundedCornerShape(18.dp),
-                                    color = PureWhite.copy(alpha = 0.90f),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if ((existingDm?.messageCount ?: 0L) > 0L) VioletPrimary.copy(alpha = 0.30f) else SubtleOutline
-                                    ),
-                                    modifier = Modifier
-                                        .widthIn(min = 148.dp, max = 204.dp)
-                                        .testTag("dm_person_${person.uid}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        StudioAvatar(
-                                            name = person.fullName,
-                                            size = 34.dp,
-                                            borderColor = PureWhite,
-                                            photoBase64 = person.photoBase64
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                            ) {
-                                                Text(
-                                                    text = formatTitleCase(person.fullName.ifBlank { "Member" }),
-                                                    style = MaterialTheme.typography.labelLarge,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = ObsidianCharcoal,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f, fill = false)
-                                                )
-                                                if ((existingDm?.messageCount ?: 0L) > 0L) {
-                                                    StatusPill(
-                                                        label = "${existingDm?.messageCount ?: 0}",
-                                                        containerColor = VioletSoftBg,
-                                                        contentColor = VioletPrimary
-                                                    )
-                                                }
-                                            }
-                                            Text(
-                                                text = previewLine,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = StudioTextSecondary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Department Chat Section for Everyone
-                if (departments.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.testTag("chat_departments_section"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Department Chats",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            departments.forEach { dept ->
-                                Surface(
-                                    onClick = { onOpenDepartmentChat(dept) },
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = KpiLavenderBg.copy(alpha = 0.92f),
-                                    border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.28f)),
-                                    modifier = Modifier
-                                        .height(40.dp)
-                                        .testTag("dept_chat_${dept.id}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(Icons.Filled.Groups, contentDescription = null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
-                                        Text(
-                                            text = formatTitleCase(dept.name),
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ObsidianCharcoal
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Recent Channels Strip for 1-Tap Thread Switching
-                Column(
-                    modifier = Modifier.testTag("chat_threads_section"),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Team Threads",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        TextButton(
-                            onClick = onCreateNewChannelClick,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.testTag("create_channel_button")
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = ObsidianCharcoal)
-                            Spacer(Modifier.width(4.dp))
-                            Text("New Channel", color = ObsidianCharcoal, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    val teamChannels = remember(channels) {
-                        channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT }
-                    }
-                    val displayChannels = if (teamChannels.isEmpty()) {
-                        val fallback = if (activeChannel.channelTypeEnum() != ChatChannelType.DIRECT) {
-                            activeChannel
-                        } else {
-                            ChatChannel(
-                                id = ChatRepository.GENERAL_CHANNEL_ID,
-                                title = "General",
-                                topic = "Agency-wide updates, briefs & file sharing"
+                items(filteredColleagues.size) { index ->
+                    val person = filteredColleagues[index]
+                    val existingDm = channels.firstOrNull { ch ->
+                        ch.channelTypeEnum() == ChatChannelType.DIRECT && (
+                            ch.id == ChatRepository.directChannelId(member.uid, person.uid) ||
+                                (ch.participantUids.contains(person.uid) && ch.participantUids.contains(member.uid))
                             )
-                        }
-                        listOf(fallback)
-                    } else {
-                        teamChannels
                     }
-                    Row(
+                    val roleOrDept = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName })
+                    val previewLine = existingDm?.lastMessagePreview?.takeIf { it.isNotBlank() } ?: roleOrDept
+                    val unreadCount = existingDm?.messageCount ?: 0L
+
+                    Surface(
+                        onClick = { onOpenDirectChat(person) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = PureWhite.copy(alpha = 0.95f),
+                        border = BorderStroke(1.dp, SubtleOutline),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            .testTag("dm_item_${person.uid}")
                     ) {
-                        displayChannels.forEach { ch ->
-                            val isSelected = ch.id == activeChannel.id
-                            val prefix = when (ch.channelTypeEnum()) {
-                                ChatChannelType.DEPARTMENT -> "Dept:"
-                                else -> "#"
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Box {
+                                StudioAvatar(
+                                    name = person.fullName,
+                                    size = 50.dp,
+                                    borderColor = PureWhite,
+                                    photoBase64 = person.photoBase64
+                                )
+                                // Online indicator dot
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .background(EmeraldApproved, CircleShape)
+                                        .border(2.dp, PureWhite, CircleShape)
+                                        .align(Alignment.BottomEnd)
+                                )
                             }
-                            Surface(
-                                onClick = { onSelectChannel(ch) },
-                                shape = RoundedCornerShape(18.dp),
-                                color = if (isSelected) PureWhite.copy(alpha = 0.96f) else PureWhite.copy(alpha = 0.78f),
-                                border = BorderStroke(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) ObsidianCharcoal else SubtleOutline
-                                ),
-                                modifier = Modifier
-                                    .widthIn(min = 148.dp, max = 230.dp)
-                                    .testTag("channel_chip_${ch.id}")
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "$prefix ${formatTitleCase(ch.title)}",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ObsidianCharcoal,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f, fill = false)
+                                    Text(
+                                        text = formatTitleCase(person.fullName.ifBlank { "Member" }),
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "Active",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = EmeraldApproved
+                                    )
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = previewLine,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioTextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (unreadCount > 0L) {
+                                        Spacer(Modifier.width(8.dp))
+                                        StatusPill(
+                                            label = "$unreadCount",
+                                            containerColor = VioletPrimary,
+                                            contentColor = PureWhite
                                         )
-                                        if (ch.messageCount > 0) {
-                                            StatusPill(
-                                                label = "${ch.messageCount}",
-                                                containerColor = MutedSurface,
-                                                contentColor = ObsidianCharcoal
-                                            )
-                                        }
-                                        if (isSuperAdmin && ch.id != ChatRepository.GENERAL_CHANNEL_ID) {
-                                            IconButton(
-                                                onClick = { deleteChannelTarget = ch },
-                                                modifier = Modifier
-                                                    .size(24.dp)
-                                                    .testTag("delete_channel_${ch.id}")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.DeleteOutline,
-                                                    contentDescription = "Delete Channel",
-                                                    tint = CrimsonBlocked,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. Team Channels & Department Chats
+                val teamChannels = channels.filter { ch ->
+                    val name = ch.title
+                    val matchesSearch = searchQuery.isBlank() || name.contains(searchQuery, ignoreCase = true)
+                    val isGroup = ch.channelTypeEnum() == ChatChannelType.DEPARTMENT || ch.channelTypeEnum() == ChatChannelType.GENERAL
+                    val matchesGroupFilter = selectedFilter == "All" || (selectedFilter == "Groups" && isGroup) || (selectedFilter == "Unread" && ch.messageCount > 0)
+                    matchesSearch && matchesGroupFilter
+                }
+
+                items(teamChannels.size) { index ->
+                    val ch = teamChannels[index]
+                    val isSelected = ch.id == activeChannel.id
+                    val prefix = when (ch.channelTypeEnum()) {
+                        ChatChannelType.DEPARTMENT -> "Dept:"
+                        else -> "#"
+                    }
+
+                    Surface(
+                        onClick = { onSelectChannel(ch) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isSelected) VioletSoftBg.copy(alpha = 0.5f) else PureWhite.copy(alpha = 0.95f),
+                        border = BorderStroke(1.dp, if (isSelected) VioletPrimary else SubtleOutline),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("channel_item_${ch.id}")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = KpiLavenderBg,
+                                modifier = Modifier.size(50.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = when (ch.channelTypeEnum()) {
+                                            ChatChannelType.DEPARTMENT -> Icons.Filled.Groups
+                                            else -> Icons.AutoMirrored.Filled.Chat
+                                        },
+                                        contentDescription = null,
+                                        tint = VioletPrimary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "$prefix ${formatTitleCase(ch.title)}",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    if (isSuperAdmin && ch.id != ChatRepository.GENERAL_CHANNEL_ID) {
+                                        IconButton(
+                                            onClick = { deleteChannelTarget = ch },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete", tint = CrimsonBlocked, modifier = Modifier.size(16.dp))
                                         }
                                     }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
                                     Text(
                                         text = ch.lastMessagePreview.ifBlank { ch.topic },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = StudioTextSecondary,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
+                                    if (ch.messageCount > 0) {
+                                        Spacer(Modifier.width(8.dp))
+                                        StatusPill(
+                                            label = "${ch.messageCount}",
+                                            containerColor = ObsidianCharcoal,
+                                            contentColor = PureWhite
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1103,7 +1108,7 @@ private fun ChatHubView(
                 }
             }
 
-            // Bottom Staged File Preview + Target Pill + Frosted Pill Composer
+            // Bottom Composer for Quick Broadcast / General Note
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1126,34 +1131,17 @@ private fun ChatHubView(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(horizontal = 4.dp)
                 ) {
-                    Surface(
-                        onClick = onOpenChannelsSheet,
-                        shape = RoundedCornerShape(999.dp),
-                        color = PureWhite.copy(alpha = 0.85f),
-                        border = BorderStroke(1.dp, SubtleOutline)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val isDirectTarget = activeChannel.channelTypeEnum() == ChatChannelType.DIRECT
-                            val targetTitle = if (isDirectTarget) {
-                                "@${formatTitleCase(resolveDirectPeerTitle(activeChannel, member, allMembers))}"
-                            } else {
-                                "#${formatTitleCase(activeChannel.title)}"
-                            }
-                            Text(
-                                text = "Sending to $targetTitle",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ObsidianCharcoal
-                            )
-                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(14.dp), tint = StudioTextSecondary)
-                        }
+                    IconButton(onClick = onPickImages, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Outlined.Image, contentDescription = "Attach Image", tint = ObsidianCharcoal)
+                    }
+                    IconButton(onClick = onPickFiles, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Outlined.Description, contentDescription = "Attach Document", tint = ObsidianCharcoal)
+                    }
+                    IconButton(onClick = onPickAudio, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Outlined.Mic, contentDescription = "Record Voice Note", tint = ObsidianCharcoal)
                     }
                 }
 
@@ -1178,7 +1166,7 @@ private fun ChatHubView(
                         ) {
                             if (composerText.isEmpty()) {
                                 Text(
-                                    text = "Write a message…",
+                                    text = "Broadcast to General…",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = StudioTextSecondary
                                 )

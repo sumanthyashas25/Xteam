@@ -13,8 +13,10 @@ import com.example.MainActivity
 import com.example.R
 import com.example.data.AgencyRepository
 import com.example.data.FirebaseStartup
+import com.example.domain.CatalogueSeedData
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -33,7 +35,7 @@ object PushTokenRegistry {
     const val CHANNEL_CHAT_ID = "xmax_chat_messages"
     const val CHANNEL_URGENT_ID = "xmax_chat_urgent"
 
-    suspend fun syncCurrentToken(context: Context, companyId: String = AgencyRepository.DEFAULT_COMPANY_ID) {
+    suspend fun syncCurrentToken(context: Context, companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID) {
         FirebaseStartup.ensureInitialized(context)
         val uid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull() ?: return
         val token = runCatching { FirebaseMessaging.getInstance().token.await() }.getOrNull() ?: return
@@ -53,7 +55,7 @@ object PushTokenRegistry {
                 ?.take(48)
                 .orEmpty()
                 .ifBlank { "tok_" + abs(token.hashCode()) }
-            val db = AgencyRepository.getNamedFirestore()
+            val db = FirebaseFirestore.getInstance(context.getString(R.string.firestore_database_id))
             db.collection("companies").document(companyId)
                 .collection("deviceTokens").document(uid)
                 .collection("tokens").document(deviceId)
@@ -70,7 +72,7 @@ object PushTokenRegistry {
         }
     }
 
-    suspend fun unregisterCurrentToken(context: Context, companyId: String = AgencyRepository.DEFAULT_COMPANY_ID) {
+    suspend fun unregisterCurrentToken(context: Context, companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID) {
         val uid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull() ?: return
         runCatching {
             val deviceId = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
@@ -78,8 +80,8 @@ object PushTokenRegistry {
                 ?.take(48)
                 .orEmpty()
             if (deviceId.isNotBlank()) {
-                AgencyRepository.getNamedFirestore()
-                    .collection("companies").document(companyId)
+                val db = FirebaseFirestore.getInstance(context.getString(R.string.firestore_database_id))
+                db.collection("companies").document(companyId)
                     .collection("deviceTokens").document(uid)
                     .collection("tokens").document(deviceId)
                     .delete().await()
@@ -96,7 +98,7 @@ class XMaxFirebaseMessagingService : FirebaseMessagingService() {
         super.onNewToken(token)
         val uid = runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull() ?: return
         serviceScope.launch {
-            PushTokenRegistry.registerToken(applicationContext, AgencyRepository.DEFAULT_COMPANY_ID, uid, token)
+            PushTokenRegistry.registerToken(applicationContext, CatalogueSeedData.DEFAULT_COMPANY_ID, uid, token)
         }
     }
 

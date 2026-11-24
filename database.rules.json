@@ -1,0 +1,34 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "presence": {
+      "$companyId": {
+        "$uid": {
+          ".read": "auth != null",
+          ".write": "auth != null && auth.uid == $uid"
+        }
+      }
+    },
+    "typing": {
+      "$companyId": {
+        "$chatId": {
+          "$uid": {
+            ".read": "auth != null",
+            ".write": "auth != null && auth.uid == $uid"
+          }
+        }
+      }
+    },
+    "recording": {
+      "$companyId": {
+        "$chatId": {
+          "$uid": {
+            ".read": "auth != null",
+            ".write": "auth != null && auth.uid == $uid"
+          }
+        }
+      }
+    }
+  }
+}
