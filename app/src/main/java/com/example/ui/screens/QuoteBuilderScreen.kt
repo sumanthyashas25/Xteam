@@ -45,7 +45,9 @@ import com.example.pdf.QuotationPdfGenerator
 import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
 import com.example.ui.components.CatalogueServiceTicketCard
+import com.example.ui.components.FullScreenAgencyDialog
 import com.example.ui.components.MonochromeSearchBar
+import com.example.ui.components.StatusPill
 import com.example.ui.components.XMaxLogoImage
 import com.example.ui.components.XMaxWordmarkBadge
 import com.example.ui.theme.*
@@ -883,13 +885,14 @@ private fun CataloguePickerDialog(
     }
     val totalSelected = selectedCounts.keys.size + if (urgentSelected) 1 else 0
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    FullScreenAgencyDialog(onDismissRequest = onDismiss) {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         Surface(
             modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars)
-                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .padding(12.dp),
+                .imePadding()
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = navBottom.coerceAtLeast(16.dp)),
             shape = RoundedCornerShape(28.dp),
             color = CrispCanvas
         ) {
@@ -1003,8 +1006,8 @@ private fun CataloguePickerDialog(
                             isSelected = isSelected,
                             selectedCount = count,
                             buttonLabel = "Select",
+                            expandable = true,
                             onButtonClick = handleToggle,
-                            onCardClick = handleToggle,
                             modifier = Modifier
                                 .animateItem()
                                 .testTag("catalogue_item_${item.id}")
@@ -1138,8 +1141,16 @@ fun PdfPreviewDialog(
         list
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(modifier = Modifier.fillMaxSize().padding(12.dp), shape = RoundedCornerShape(28.dp), color = CrispCanvas) {
+    FullScreenAgencyDialog(onDismissRequest = onDismiss) {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = navBottom.coerceAtLeast(16.dp)),
+            shape = RoundedCornerShape(28.dp),
+            color = CrispCanvas
+        ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(14.dp),

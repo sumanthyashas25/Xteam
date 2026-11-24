@@ -260,7 +260,8 @@ fun RequestDecisionDialog(
         DecisionStatus.PENDING -> InfoPillBg to InfoPillInk
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    FullScreenAgencyDialog(onDismissRequest = onDismiss) {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
@@ -415,8 +416,13 @@ fun RequestDecisionDialog(
                             verticalArrangement = Arrangement.spacedBy(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                                .padding(start = 18.dp, end = 18.dp, top = 12.dp, bottom = 18.dp)
+                                .imePadding()
+                                .padding(
+                                    start = 18.dp,
+                                    end = 18.dp,
+                                    top = 12.dp,
+                                    bottom = navBottom.coerceAtLeast(20.dp)
+                                )
                         ) {
                             if (canAccept) {
                                 SlideToActionButton(
@@ -522,7 +528,8 @@ fun ProjectsScreen(
     onOpenAddOnQuote: (Project) -> Unit,
     onToggleDeleteProject: (Project, Boolean) -> Unit,
     onPermanentlyDeleteProject: (Project) -> Unit = {},
-    onCleanupOldDoneProjects: () -> Unit = {}
+    onCleanupOldDoneProjects: () -> Unit = {},
+    onOpenPayments: () -> Unit = {}
 ) {
     var showDeleted by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -710,6 +717,10 @@ fun ProjectsScreen(
                 onPermanentlyDeleteProject(fresh)
                 selectedProject = null
             },
+            onOpenPayments = {
+                selectedProject = null
+                onOpenPayments()
+            },
             onDismiss = { selectedProject = null }
         )
     }
@@ -728,6 +739,7 @@ private fun ProjectDetailDialog(
     onAddOnQuote: () -> Unit,
     onToggleDelete: (Boolean) -> Unit,
     onPermanentDelete: () -> Unit,
+    onOpenPayments: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var detailTab by remember { mutableStateOf(0) } // 0 = Details & Deliverables, 1 = Summary & History
@@ -737,8 +749,16 @@ private fun ProjectDetailDialog(
     val anyStarted = deliverables.any { it.statusEnum() != DeliverableStatus.NOT_STARTED }
     val anyBlocked = deliverables.any { it.statusEnum() == DeliverableStatus.BLOCKED }
     val earliestDue = deliverables.mapNotNull { it.dueDateMillis.takeIf { d -> d > 0L } }.minOrNull() ?: 0L
+    val paymentReminder = remember(project, deliverables) {
+        WorkDistributionEngine.computePaymentReminders(
+            projects = listOf(project),
+            deliverables = deliverables,
+            quotations = emptyList()
+        ).projectReminders.firstOrNull()
+    }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    FullScreenAgencyDialog(onDismissRequest = onDismiss) {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
@@ -746,8 +766,9 @@ private fun ProjectDetailDialog(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .systemBarsPadding()
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .imePadding()
+                    .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = navBottom.coerceAtLeast(20.dp)),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
@@ -893,6 +914,60 @@ private fun ProjectDetailDialog(
                                 icon = Icons.Outlined.LocalShipping,
                                 rows = rows
                             )
+                        }
+
+                        if ((state.hasPerm(AppPermission.VIEW_PAYMENTS) || state.hasPerm(AppPermission.RECORD_PAYMENTS)) && paymentReminder != null) {
+                            item {
+                                val reminder = paymentReminder
+                                val isFinal = reminder.type != WorkDistributionEngine.PaymentReminderType.ADVANCE_DUE
+                                    Surface(
+                                        shape = RoundedCornerShape(20.dp),
+                                        color = if (isFinal) SoftBlush else ButterYellow.copy(alpha = 0.72f),
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (isFinal) CrimsonBlocked.copy(alpha = 0.35f) else DeepAmberInk.copy(alpha = 0.3f)
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("project_payment_reminder_card")
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(14.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Filled.NotificationsActive,
+                                                    contentDescription = null,
+                                                    tint = if (isFinal) CrimsonBlocked else DeepAmberInk,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                                Text(
+                                                    text = reminder.type.label,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    color = ObsidianCharcoal
+                                                )
+                                            }
+                                            Text(
+                                                text = "${reminder.detail} • Due ${MoneyFormatter.formatInr(reminder.amountDuePaise)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = StudioTextSecondary
+                                            )
+                                            Button(
+                                                onClick = onOpenPayments,
+                                                shape = RoundedCornerShape(999.dp),
+                                                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                                                modifier = Modifier.fillMaxWidth().height(42.dp)
+                                            ) {
+                                                Text("Track in Payment Tracker →", fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                            }
                         }
 
                         // Contact / Manager Row Card matching Screen 2 Contact Rider card

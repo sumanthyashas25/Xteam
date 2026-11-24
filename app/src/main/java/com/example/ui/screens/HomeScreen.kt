@@ -2,6 +2,8 @@ package com.example.ui.screens
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -26,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.MoneyFormatter
+import com.example.domain.WorkDistributionEngine
 import com.example.model.*
 import com.example.ui.AgencyUiState
 import com.example.ui.components.*
@@ -458,78 +461,124 @@ fun HomeScreen(
         }
 
         // Compact Payment Tracker Widget for roles with Payment permissions
-        if ((state.hasPerm(AppPermission.VIEW_PAYMENTS) || state.hasPerm(AppPermission.RECORD_PAYMENTS)) && activeProjects.isNotEmpty()) {
-            item {
-                val totalAgreed = activeProjects.sumOf { it.agreedValuePaise }
-                val totalPaid = activeProjects.sumOf { it.paidPaise }
-                val totalDue = activeProjects.sumOf { it.outstandingPaise }
-                val pct = if (totalAgreed <= 0L) 0 else ((totalPaid.toDouble() / totalAgreed.toDouble()) * 100.0).toInt().coerceIn(0, 100)
-                Surface(
-                    onClick = onNavigatePayments,
-                    shape = RoundedCornerShape(22.dp),
-                    color = PureWhite,
-                    border = BorderStroke(1.dp, SubtleOutline),
-                    shadowElevation = 2.dp,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("home_payment_tracker_card")
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+        if (state.hasPerm(AppPermission.VIEW_PAYMENTS) || state.hasPerm(AppPermission.RECORD_PAYMENTS)) {
+            if (activeProjects.isNotEmpty()) {
+                item {
+                    val homeReminders = remember(state.projects, state.deliverables, state.quotations) {
+                        WorkDistributionEngine.computePaymentReminders(
+                            projects = state.projects,
+                            deliverables = state.deliverables,
+                            quotations = state.quotations
+                        )
+                    }
+                    val totalAgreed = activeProjects.sumOf { it.agreedValuePaise }
+                    val totalPaid = activeProjects.sumOf { it.paidPaise }
+                    val totalDue = activeProjects.sumOf { it.outstandingPaise }
+                    val pct = if (totalAgreed <= 0L) 0 else ((totalPaid.toDouble() / totalAgreed.toDouble()) * 100.0).toInt().coerceIn(0, 100)
+                    val animatedPct by animateFloatAsState(
+                        targetValue = (pct / 100f).coerceIn(0f, 1f),
+                        animationSpec = tween(420, easing = FastOutSlowInEasing),
+                        label = "home_payment_progress"
+                    )
+                    Surface(
+                        onClick = onNavigatePayments,
+                        shape = RoundedCornerShape(22.dp),
+                        color = PureWhite,
+                        border = BorderStroke(1.dp, SubtleOutline),
+                        shadowElevation = 2.dp,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("home_payment_tracker_card")
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(CircleShape)
-                                        .background(SoftMint),
-                                    contentAlignment = Alignment.Center
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = DeepMintInk, modifier = Modifier.size(18.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(CircleShape)
+                                            .background(SoftMint),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Filled.AccountBalanceWallet, contentDescription = null, tint = DeepMintInk, modifier = Modifier.size(18.dp))
+                                    }
+                                    Text(
+                                        text = "Payment Tracker",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal
+                                    )
                                 }
+                                StatusPill("$pct% Collected", SoftMint, DeepMintInk)
+                            }
+                            LinearProgressIndicator(
+                                progress = { animatedPct },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(999.dp)),
+                                color = EmeraldApproved,
+                                trackColor = MutedSurface
+                            )
+                            if (homeReminders.totalCount > 0) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = if (homeReminders.finalCount > 0) SoftBlush else ButterYellow.copy(alpha = 0.72f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            Icons.Filled.NotificationsActive,
+                                            contentDescription = null,
+                                            tint = if (homeReminders.finalCount > 0) CrimsonBlocked else DeepAmberInk,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Text(
+                                            text = buildString {
+                                                append("Reminder: ")
+                                                val parts = mutableListOf<String>()
+                                                if (homeReminders.finalCount > 0) parts += "${homeReminders.finalCount} Final Due"
+                                                if (homeReminders.advanceCount > 0) parts += "${homeReminders.advanceCount} Advance Due"
+                                                append(parts.joinToString(" • "))
+                                            },
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (homeReminders.finalCount > 0) CrimsonBlocked else DeepAmberInk
+                                        )
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Text(
-                                    text = "Payment Tracker",
-                                    style = MaterialTheme.typography.titleMedium,
+                                    text = "Paid ${MoneyFormatter.formatInr(totalPaid)} • Due ${MoneyFormatter.formatInr(totalDue)}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary
+                                )
+                                Text(
+                                    text = "Open →",
+                                    style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = ObsidianCharcoal
+                                    color = VioletPrimary
                                 )
                             }
-                            StatusPill("$pct% Collected", SoftMint, DeepMintInk)
-                        }
-                        LinearProgressIndicator(
-                            progress = { (pct / 100f).coerceIn(0f, 1f) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(999.dp)),
-                            color = EmeraldApproved,
-                            trackColor = MutedSurface
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Paid ${MoneyFormatter.formatInr(totalPaid)} • Due ${MoneyFormatter.formatInr(totalDue)}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioTextSecondary
-                            )
-                            Text(
-                                text = "Open →",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = VioletPrimary
-                            )
                         }
                     }
                 }

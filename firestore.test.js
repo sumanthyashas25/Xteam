@@ -921,8 +921,12 @@ test("Scenario 10: Profile photo update, 1:1 & Department chat privacy, DEPT_QUE
     staffDb.collection("companies").doc(COMPANY_ID).collection("chat_channels")
       .where("participantUids", "array-contains", STAFF_UID).get()
   );
-  // Super Admin can list all channels including DMs
-  await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").get());
+  // Super Admin CANNOT read someone else's private 1:1 DM; can list shared team channels
+  await assertFails(superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels").doc("ch_dm_pair").get());
+  await assertSucceeds(
+    superDb.collection("companies").doc(COMPANY_ID).collection("chat_channels")
+      .where("channelType", "in", ["GENERAL", "PROJECT", "DEPARTMENT"]).get()
+  );
 
   // 3. Department Queue deliverable claim for matching department staff only
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
@@ -1243,4 +1247,114 @@ test("Scenario 12: Staff Plan items are strictly owner-isolated and enforce vali
     staffDb.collection("companies").doc(COMPANY_ID).collection("staff_plans").doc("plan_1").delete()
   );
 });
+
+test("Scenario 13: Advanced Chat strict DM/Saved privacy, snapshot reports, kill-switch/suspension, and Invoice permissions", async () => {
+  await seedCompanyAndMembers({
+    ISSUE_QUOTATIONS: { allowed: true, canDelegate: false },
+    VIEW_PAYMENTS: { allowed: true, canDelegate: false },
+  });
+  const now = pastDate(5000);
+  const staffDb = testEnv.authenticatedContext(STAFF_UID).firestore();
+  const otherStaffDb = testEnv.authenticatedContext(OTHER_STAFF_UID).firestore();
+  const adminDb = testEnv.authenticatedContext(ADMIN_UID).firestore();
+  const superDb = testEnv.authenticatedContext(SUPER_ADMIN_UID).firestore();
+
+  // 1. Personal 1:1 chat between STAFF_UID and OTHER_STAFF_UID (Super Admin is NOT a participant)
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("chats").doc("dm_pair_1").set({
+      type: "PERSONAL",
+      title: "Private DM",
+      participantIds: [STAFF_UID, OTHER_STAFF_UID],
+      createdByUid: STAFF_UID,
+      ownerUid: "",
+      lastMessageAtMillis: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("chats").doc("dm_pair_1").collection("messages").doc("cmsg_1").set({
+      clientMsgId: "cmsg_1",
+      chatId: "dm_pair_1",
+      senderId: STAFF_UID,
+      senderName: "Aarav Designer",
+      kind: "TEXT",
+      body: "Private direct message",
+      createdAt: now,
+    })
+  );
+
+  // Super Admin CANNOT read private PERSONAL chat or its messages
+  await assertFails(superDb.collection("companies").doc(COMPANY_ID).collection("chats").doc("dm_pair_1").get());
+  await assertFails(superDb.collection("companies").doc(COMPANY_ID).collection("chats").doc("dm_pair_1").collection("messages").get());
+
+  // 2. Saved Messages strictly owner-only
+  await assertSucceeds(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("chats").doc(`saved_${STAFF_UID}`).set({
+      type: "SAVED",
+      title: "Saved Messages",
+      participantIds: [STAFF_UID],
+      ownerUid: STAFF_UID,
+      createdByUid: STAFF_UID,
+      lastMessageAtMillis: Date.now(),
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await assertFails(superDb.collection("companies").doc(COMPANY_ID).collection("chats").doc(`saved_${STAFF_UID}`).get());
+  await assertFails(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chats").doc(`saved_${STAFF_UID}`).get());
+
+  // 3. Reported snapshot: participant reports message; ONLY Super Admin can read chatReports
+  await assertSucceeds(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chatReports").doc("rep_1").set({
+      chatId: "dm_pair_1",
+      chatType: "PERSONAL",
+      messageId: "cmsg_1",
+      reporterUid: OTHER_STAFF_UID,
+      reason: "Inappropriate language",
+      snapshotMessages: [{ messageId: "cmsg_1", senderId: STAFF_UID, body: "Private direct message" }],
+      status: "OPEN",
+      createdAt: now,
+    })
+  );
+  await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("chatReports").get());
+  await assertFails(adminDb.collection("companies").doc(COMPANY_ID).collection("chatReports").get());
+  await assertSucceeds(superDb.collection("companies").doc(COMPANY_ID).collection("chatReports").get());
+
+  // 4. Global Read-Only kill-switch blocks staff messaging
+  await assertSucceeds(
+    superDb.collection("companies").doc(COMPANY_ID).collection("chatSettings").doc("global").set({
+      chatEnabled: true,
+      globalReadOnly: true,
+      maxImageMb: 5,
+      updatedByUid: SUPER_ADMIN_UID,
+      updatedAt: pastDate(1000),
+    })
+  );
+  await assertFails(
+    staffDb.collection("companies").doc(COMPANY_ID).collection("chats").doc("dm_pair_1").collection("messages").doc("cmsg_blocked").set({
+      clientMsgId: "cmsg_blocked",
+      chatId: "dm_pair_1",
+      senderId: STAFF_UID,
+      kind: "TEXT",
+      body: "Should be blocked",
+      createdAt: pastDate(500),
+    })
+  );
+
+  // 5. Invoices: authorized manager creates/reads; regular staff cannot
+  await assertSucceeds(
+    adminDb.collection("companies").doc(COMPANY_ID).collection("invoices").doc("inv_1").set({
+      invoiceNumber: "INV-2026-0001",
+      totalPaise: 5700000,
+      balanceDuePaise: 2850000,
+      status: "ISSUED",
+      createdByUid: ADMIN_UID,
+      createdAt: pastDate(500),
+      updatedAt: pastDate(500),
+    })
+  );
+  await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("invoices").get());
+});
+
 

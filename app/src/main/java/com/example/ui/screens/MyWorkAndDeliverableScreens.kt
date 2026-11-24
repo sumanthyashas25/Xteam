@@ -1121,7 +1121,8 @@ fun DeliverableDetailDialog(
     val timeFmt = remember { SimpleDateFormat("h:mma", Locale.getDefault()) }
     val dateFmt = remember { SimpleDateFormat("d MMM yyyy", Locale.getDefault()) }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    FullScreenAgencyDialog(onDismissRequest = onDismiss) {
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         Surface(
             modifier = Modifier.fillMaxSize(),
             color = CrispCanvas
@@ -1130,8 +1131,8 @@ fun DeliverableDetailDialog(
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.statusBars)
-                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .imePadding()
+                    .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = navBottom.coerceAtLeast(20.dp)),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Row(
@@ -1234,7 +1235,7 @@ fun DeliverableDetailDialog(
                     modifier = Modifier
                         .weight(1f)
                         .testTag("deliverable_detail_list"),
-                    contentPadding = PaddingValues(bottom = 36.dp),
+                    contentPadding = PaddingValues(bottom = 52.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     if (detailTab == 0) {

@@ -104,6 +104,33 @@ private enum class ChatScreenMode {
     THREAD
 }
 
+private fun resolveDirectPeer(channel: ChatChannel, myUid: String, members: List<Member>): Member? {
+    val peerUid = channel.participantUids.firstOrNull { it.isNotBlank() && it != myUid }
+    if (!peerUid.isNullOrBlank()) {
+        members.firstOrNull { it.uid == peerUid }?.let { return it }
+    }
+    val parts = channel.title.split("&").map { it.trim() }.filter { it.isNotBlank() }
+    if (parts.isNotEmpty()) {
+        members.firstOrNull { m ->
+            m.uid != myUid && parts.any { p -> m.fullName.equals(p, ignoreCase = true) }
+        }?.let { return it }
+    }
+    return null
+}
+
+private fun resolveDirectPeerTitle(channel: ChatChannel, myMember: Member, members: List<Member>): String {
+    resolveDirectPeer(channel, myMember.uid, members)?.let { peer ->
+        if (peer.fullName.isNotBlank()) return peer.fullName
+    }
+    val myFirst = myMember.fullName.trim().substringBefore(" ")
+    val parts = channel.title.split("&").map { it.trim() }.filter { it.isNotBlank() }
+    val otherPart = parts.firstOrNull { part ->
+        !part.equals(myMember.fullName.trim(), ignoreCase = true) &&
+            (myFirst.isBlank() || !part.equals(myFirst, ignoreCase = true))
+    }
+    return otherPart ?: channel.title.ifBlank { "Direct Message" }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TeamChatScreen(
@@ -255,6 +282,7 @@ fun TeamChatScreen(
         if (currentMode == ChatScreenMode.HUB) {
             ChatHubView(
                 member = member,
+                allMembers = state.members,
                 isSuperAdmin = state.isSuperAdmin,
                 channels = state.chatChannels,
                 colleagues = state.members.filter {
@@ -327,6 +355,7 @@ fun TeamChatScreen(
         } else {
             ChatThreadView(
                 member = member,
+                allMembers = state.members,
                 isSuperAdmin = state.isSuperAdmin,
                 memberPhotoByUid = memberPhotoByUid,
                 channel = activeChannel,
@@ -395,83 +424,23 @@ fun TeamChatScreen(
                 },
                 onDeleteMessage = { msg -> onDeleteMessage(activeChannel.id, msg.id) },
                 onSend = { sendCurrentMessage(openThreadAfter = false) },
-                onBackToHub = { mode = ChatScreenMode.HUB },
+                onBackToHub = {
+                    if (activeChannel.channelTypeEnum() == ChatChannelType.DIRECT) {
+                        activeChannelId = state.chatChannels
+                            .firstOrNull { it.channelTypeEnum() != ChatChannelType.DIRECT }?.id
+                            ?: ChatRepository.GENERAL_CHANNEL_ID
+                    }
+                    mode = ChatScreenMode.HUB
+                },
                 onClose = onCloseChat
             )
         }
     }
-            messages = syncedMessages.data,
-            hasPendingWrites = syncedMessages.hasPendingWrites,
-            composerText = composerText,
-            onComposerTextChange = { composerText = it },
-            stagedAttachment = stagedAttachment,
-            isProcessingFile = isProcessingFile,
-            replyTarget = replyTarget,
-            onClearReply = { replyTarget = null },
-            onSetReply = { replyTarget = it },
-            onClearAttachment = { stagedAttachment = null },
-            onPickFiles = ::launchDocumentPicker,
-            onPickImages = ::launchImagePicker,
-            onPickAudio = ::launchAudioPicker,
-            onOpenChannelsSheet = { showChannelPicker = true },
-            onOpenMessageAttachment = { msg ->
-                if (msg.attachmentTypeEnum() == ChatAttachmentType.IMAGE) {
-                    scope.launch {
-                        val bmp = withContext(Dispatchers.IO) {
-                            ChatFileManager.decodeMessageBitmap(msg, maxEdgePx = 1400)
-                        }
-                        if (bmp != null) {
-                            previewImageMessage = msg to bmp.asImageBitmap()
-                        } else {
-                            val file = ChatFileManager.resolveLocalFile(context, msg)
-                            if (file != null) {
-                                ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, msg.attachmentName)
-                            } else {
-                                onReportMessage("Unable to open image preview.", true)
-                            }
-                        }
-                    }
-                } else {
-                    scope.launch {
-                        val file = ChatFileManager.resolveLocalFile(context, msg)
-                        if (file != null) {
-                            ChatFileManager.openOrShareAttachment(
-                                context,
-                                file,
-                                msg.attachmentMimeType,
-                                msg.attachmentName.ifBlank { file.name }
-                            )
-                        } else {
-                            onReportMessage("Attachment file is unavailable offline.", true)
-                        }
-                    }
-                }
-            },
-            onDownloadAttachment = { msg ->
-                scope.launch {
-                    val res = ChatFileManager.downloadAttachmentToDevice(context, msg)
-                    res.onSuccess { savedPath ->
-                        onReportMessage("Saved ${msg.attachmentName.ifBlank { "file" }} to $savedPath", false)
-                    }.onFailure { err ->
-                        onReportMessage(err.message ?: "Failed to save attachment.", true)
-                    }
-                }
-            },
-            onDeleteChannel = {
-                onDeleteChannel(activeChannel.id) {
-                    activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
-                    mode = ChatScreenMode.HUB
-                }
-            },
-            onDeleteMessage = { msg -> onDeleteMessage(activeChannel.id, msg.id) },
-            onSend = { sendCurrentMessage(openThreadAfter = false) },
-            onBackToHub = { mode = ChatScreenMode.HUB },
-            onClose = onCloseChat
-        )
-    }
 
     if (showChannelPicker) {
         ChannelPickerBottomSheet(
+            member = member,
+            allMembers = state.members,
             channels = state.chatChannels,
             activeChannelId = activeChannel.id,
             isSuperAdmin = state.isSuperAdmin,
@@ -720,6 +689,7 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
 @Composable
 private fun ChatHubView(
     member: Member,
+    allMembers: List<Member>,
     isSuperAdmin: Boolean,
     channels: List<ChatChannel>,
     colleagues: List<Member>,
@@ -896,13 +866,24 @@ private fun ChatHubView(
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             colleagues.forEach { person ->
+                                val existingDm = channels.firstOrNull { ch ->
+                                    ch.channelTypeEnum() == ChatChannelType.DIRECT && (
+                                        ch.id == ChatRepository.directChannelId(member.uid, person.uid) ||
+                                            (ch.participantUids.contains(person.uid) && ch.participantUids.contains(member.uid))
+                                        )
+                                }
+                                val roleOrDept = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName })
+                                val previewLine = existingDm?.lastMessagePreview?.takeIf { it.isNotBlank() } ?: roleOrDept
                                 Surface(
                                     onClick = { onOpenDirectChat(person) },
                                     shape = RoundedCornerShape(18.dp),
-                                    color = PureWhite.copy(alpha = 0.88f),
-                                    border = BorderStroke(1.dp, SubtleOutline),
+                                    color = PureWhite.copy(alpha = 0.90f),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if ((existingDm?.messageCount ?: 0L) > 0L) VioletPrimary.copy(alpha = 0.30f) else SubtleOutline
+                                    ),
                                     modifier = Modifier
-                                        .widthIn(min = 132.dp, max = 186.dp)
+                                        .widthIn(min = 148.dp, max = 204.dp)
                                         .testTag("dm_person_${person.uid}")
                                 ) {
                                     Row(
@@ -917,16 +898,29 @@ private fun ChatHubView(
                                             photoBase64 = person.photoBase64
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = formatTitleCase(person.fullName.ifBlank { "Member" }),
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = ObsidianCharcoal,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f, fill = false)
+                                                )
+                                                if ((existingDm?.messageCount ?: 0L) > 0L) {
+                                                    StatusPill(
+                                                        label = "${existingDm?.messageCount ?: 0}",
+                                                        containerColor = VioletSoftBg,
+                                                        contentColor = VioletPrimary
+                                                    )
+                                                }
+                                            }
                                             Text(
-                                                text = formatTitleCase(person.fullName.ifBlank { "Member" }),
-                                                style = MaterialTheme.typography.labelLarge,
-                                                fontWeight = FontWeight.Bold,
-                                                color = ObsidianCharcoal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName }),
+                                                text = previewLine,
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = StudioTextSecondary,
                                                 maxLines = 1,
@@ -1014,7 +1008,23 @@ private fun ChatHubView(
                         }
                     }
 
-                    val displayChannels = if (channels.isEmpty()) listOf(activeChannel) else channels
+                    val teamChannels = remember(channels) {
+                        channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT }
+                    }
+                    val displayChannels = if (teamChannels.isEmpty()) {
+                        val fallback = if (activeChannel.channelTypeEnum() != ChatChannelType.DIRECT) {
+                            activeChannel
+                        } else {
+                            ChatChannel(
+                                id = ChatRepository.GENERAL_CHANNEL_ID,
+                                title = "General",
+                                topic = "Agency-wide updates, briefs & file sharing"
+                            )
+                        }
+                        listOf(fallback)
+                    } else {
+                        teamChannels
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1024,7 +1034,6 @@ private fun ChatHubView(
                         displayChannels.forEach { ch ->
                             val isSelected = ch.id == activeChannel.id
                             val prefix = when (ch.channelTypeEnum()) {
-                                ChatChannelType.DIRECT -> "@"
                                 ChatChannelType.DEPARTMENT -> "Dept:"
                                 else -> "#"
                             }
@@ -1131,8 +1140,14 @@ private fun ChatHubView(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            val isDirectTarget = activeChannel.channelTypeEnum() == ChatChannelType.DIRECT
+                            val targetTitle = if (isDirectTarget) {
+                                "@${formatTitleCase(resolveDirectPeerTitle(activeChannel, member, allMembers))}"
+                            } else {
+                                "#${formatTitleCase(activeChannel.title)}"
+                            }
                             Text(
-                                text = "Sending to #${activeChannel.title}",
+                                text = "Sending to $targetTitle",
                                 style = MaterialTheme.typography.labelSmall,
                                 fontWeight = FontWeight.SemiBold,
                                 color = ObsidianCharcoal
@@ -1502,6 +1517,7 @@ private fun ImagesBentoArtwork() {
 @Composable
 private fun ChatThreadView(
     member: Member,
+    allMembers: List<Member>,
     isSuperAdmin: Boolean,
     memberPhotoByUid: Map<String, String>,
     channel: ChatChannel,
@@ -1567,39 +1583,85 @@ private fun ChatThreadView(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = ObsidianCharcoal)
                 }
 
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable(onClick = onOpenChannelsSheet)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                val isDirect = channel.channelTypeEnum() == ChatChannelType.DIRECT
+                val directPeer = remember(channel, member.uid, allMembers) {
+                    if (isDirect) resolveDirectPeer(channel, member.uid, allMembers) else null
+                }
+                val peerDisplayName = remember(channel, member, directPeer, allMembers) {
+                    if (isDirect) formatTitleCase(resolveDirectPeerTitle(channel, member, allMembers)) else ""
+                }
+
+                if (isDirect) {
                     Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                            .testTag("chat_direct_header"),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        StudioAvatar(
+                            name = peerDisplayName,
+                            size = 38.dp,
+                            borderColor = PureWhite,
+                            photoBase64 = directPeer?.photoBase64.orEmpty()
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = peerDisplayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ObsidianCharcoal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            val peerSubtitle = listOfNotNull(
+                                "Personal Chat",
+                                directPeer?.jobRoleName?.takeIf { it.isNotBlank() }?.let { formatTitleCase(it) }
+                            ).joinToString(" • ")
+                            Text(
+                                text = if (hasPendingWrites) "Syncing messages…" else peerSubtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable(onClick = onOpenChannelsSheet)
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = when (channel.channelTypeEnum()) {
+                                    ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
+                                    else -> "# ${formatTitleCase(channel.title)}"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ObsidianCharcoal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Switch Channel", modifier = Modifier.size(16.dp), tint = StudioTextSecondary)
+                        }
                         Text(
-                            text = when (channel.channelTypeEnum()) {
-                                ChatChannelType.DIRECT -> "@ ${formatTitleCase(channel.title)}"
-                                ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
-                                else -> "# ${formatTitleCase(channel.title)}"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = ObsidianCharcoal,
+                            text = if (hasPendingWrites) "Syncing updates…" else channel.topic.ifBlank { "Team channel & shared files" },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StudioTextSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Switch Channel", modifier = Modifier.size(16.dp), tint = StudioTextSecondary)
                     }
-                    Text(
-                        text = if (hasPendingWrites) "Syncing updates…" else channel.topic.ifBlank { "Team channel & shared files" },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1639,6 +1701,10 @@ private fun ChatThreadView(
                     .fillMaxWidth()
             ) {
                 if (messages.isEmpty()) {
+                    val isDirectEmpty = channel.channelTypeEnum() == ChatChannelType.DIRECT
+                    val emptyPeerName = if (isDirectEmpty) {
+                        formatTitleCase(resolveDirectPeerTitle(channel, member, allMembers))
+                    } else ""
                     Column(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -1647,14 +1713,22 @@ private fun ChatThreadView(
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Text(
-                            text = "Share project files, briefs, or quick updates with your team.",
+                            text = if (isDirectEmpty) {
+                                "Personal 1:1 chat with $emptyPeerName"
+                            } else {
+                                "Share project files, briefs, or quick updates with your team."
+                            },
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Normal,
                             color = ObsidianCharcoal.copy(alpha = 0.85f),
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            text = "Tap Attach File, Photo, or Audio below to upload.",
+                            text = if (isDirectEmpty) {
+                                "Messages, photos & files shared here stay private between you two."
+                            } else {
+                                "Tap Attach File, Photo, or Audio below to upload."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = StudioTextSecondary,
                             textAlign = TextAlign.Center
@@ -2333,6 +2407,8 @@ private fun StagedAttachmentBanner(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChannelPickerBottomSheet(
+    member: Member,
+    allMembers: List<Member>,
     channels: List<ChatChannel>,
     activeChannelId: String,
     isSuperAdmin: Boolean,
@@ -2341,6 +2417,9 @@ private fun ChannelPickerBottomSheet(
     onNewChannel: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val teamChannels = remember(channels) { channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT } }
+    val directChannels = remember(channels) { channels.filter { it.channelTypeEnum() == ChatChannelType.DIRECT } }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = PureWhite,
@@ -2374,13 +2453,12 @@ private fun ChannelPickerBottomSheet(
                 }
             }
 
-            channels.forEach { ch ->
+            if (teamChannels.isNotEmpty()) {
+                Text("Team & Department Channels", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+            }
+            teamChannels.forEach { ch ->
                 val selected = ch.id == activeChannelId
-                val symbol = when (ch.channelTypeEnum()) {
-                    ChatChannelType.DIRECT -> "@"
-                    ChatChannelType.DEPARTMENT -> "D"
-                    else -> "#"
-                }
+                val symbol = if (ch.channelTypeEnum() == ChatChannelType.DEPARTMENT) "D" else "#"
                 Surface(
                     onClick = { onSelectChannel(ch) },
                     shape = RoundedCornerShape(18.dp),
@@ -2437,6 +2515,57 @@ private fun ChannelPickerBottomSheet(
                                     .testTag("sheet_delete_channel_${ch.id}")
                             ) {
                                 Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete Channel", tint = CrimsonBlocked, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (directChannels.isNotEmpty()) {
+                Text("Direct Messages (1:1)", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
+                directChannels.forEach { ch ->
+                    val selected = ch.id == activeChannelId
+                    val peer = resolveDirectPeer(ch, member.uid, allMembers)
+                    val peerTitle = formatTitleCase(resolveDirectPeerTitle(ch, member, allMembers))
+                    Surface(
+                        onClick = { onSelectChannel(ch) },
+                        shape = RoundedCornerShape(18.dp),
+                        color = if (selected) VioletSoftBg else MutedSurface,
+                        border = if (selected) BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.45f)) else null,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            StudioAvatar(
+                                name = peerTitle,
+                                size = 38.dp,
+                                borderColor = PureWhite,
+                                photoBase64 = peer?.photoBase64.orEmpty()
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = peerTitle,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                                Text(
+                                    text = ch.lastMessagePreview.ifBlank { "Private 1:1 personal chat" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (ch.messageCount > 0) {
+                                StatusPill(
+                                    label = "${ch.messageCount}",
+                                    containerColor = PureWhite,
+                                    contentColor = ObsidianCharcoal
+                                )
                             }
                         }
                     }

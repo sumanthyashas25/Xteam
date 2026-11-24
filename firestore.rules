@@ -212,6 +212,10 @@ service cloud.firestore {
       return data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 &&
              data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120 &&
              (!('photoBase64' in data) || (data.photoBase64 is string && data.photoBase64.size() <= 450000)) &&
+             (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 600)) &&
+             (!('photoUpdatedAtMillis' in data) || (data.photoUpdatedAtMillis is int && data.photoUpdatedAtMillis >= 0)) &&
+             (!('messagingSuspended' in data) || data.messagingSuspended is bool) &&
+             (!('lastActiveAtMillis' in data) || (data.lastActiveAtMillis is int && data.lastActiveAtMillis >= 0)) &&
              data.accessLevel in ['SUPER_ADMIN', 'ADMIN', 'STAFF'] &&
              data.status in ['PENDING', 'APPROVED', 'DECLINED', 'SUSPENDED'] &&
              data.active is bool &&
@@ -501,7 +505,7 @@ service cloud.firestore {
                          incoming().createdAt == existing().createdAt && (
                            (
                              request.auth.uid == uid &&
-                             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'photoBase64', 'updatedAt'])
+                             incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'photoBase64', 'photoUrl', 'photoUpdatedAtMillis', 'lastActiveAtMillis', 'updatedAt'])
                            ) ||
                            (isBootstrappedSuperAdmin() && request.auth.uid == uid && incoming().accessLevel == 'SUPER_ADMIN' && incoming().status == 'APPROVED') ||
                            (meExists(companyId) && isSuper(fetchMe(companyId))) ||
@@ -736,12 +740,162 @@ service cloud.firestore {
           allow create: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) &&
                            meExists(companyId) &&
                            isApproved(fetchMe(companyId)) &&
+                           isChatEnabledForWrite(companyId, fetchMe(companyId)) &&
                            isValidChatMessage(incoming()) &&
                            incoming().senderUid == request.auth.uid &&
                            incoming().channelId == channelId &&
+                           (!exists(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)) ||
+                            canReadChatChannel(companyId, get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data)) &&
                            existsAfter(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId));
           allow delete: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) && meExists(companyId) && isSuper(fetchMe(companyId));
         }
+      }
+
+      match /chats/{chatId} {
+        allow get: if isValidId(companyId) && isValidId(chatId) && meExists(companyId) && (resource == null || canReadChatThread(companyId, existing()));
+        allow list: if isValidId(companyId) && meExists(companyId) && canReadChatThread(companyId, resource.data);
+        allow create: if isValidId(companyId) && isValidId(chatId) &&
+                         meExists(companyId) &&
+                         canCreateChatThread(companyId, incoming());
+        allow update: if isValidId(companyId) && isValidId(chatId) &&
+                         meExists(companyId) &&
+                         canUpdateChatThread(companyId, existing());
+        allow delete: if isValidId(companyId) && isValidId(chatId) && meExists(companyId) && (
+          isSuper(fetchMe(companyId)) ||
+          (existing().type == 'SAVED' && existing().ownerUid == request.auth.uid)
+        );
+
+        match /members/{memberUid} {
+          allow get: if isValidId(companyId) && isValidId(chatId) && isValidId(memberUid) &&
+                        meExists(companyId) && (resource == null || canReadChatThread(companyId, getChatDoc(companyId, chatId)));
+          allow list: if isValidId(companyId) && isValidId(chatId) &&
+                         meExists(companyId) && canReadChatThread(companyId, getChatDoc(companyId, chatId));
+          allow create, update: if isValidId(companyId) && isValidId(chatId) && isValidId(memberUid) &&
+                                   meExists(companyId) && isApproved(fetchMe(companyId)) && (
+                                     request.auth.uid == memberUid ||
+                                     isChatThreadAdmin(companyId, fetchMe(companyId), getChatDoc(companyId, chatId))
+                                   );
+          allow delete: if isValidId(companyId) && isValidId(chatId) && isValidId(memberUid) &&
+                           meExists(companyId) && (request.auth.uid == memberUid || isSuper(fetchMe(companyId)));
+        }
+
+        match /messages/{messageId} {
+          allow get: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                        meExists(companyId) && canReadChatThread(companyId, getChatDoc(companyId, chatId));
+          allow list: if isValidId(companyId) && isValidId(chatId) &&
+                         meExists(companyId) && canReadChatThread(companyId, getChatDoc(companyId, chatId));
+          allow create: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                           meExists(companyId) && canCreateThreadMessage(companyId, chatId, messageId);
+          allow update: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                           meExists(companyId) && canUpdateThreadMessage(companyId, chatId, existing());
+          allow delete: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                           meExists(companyId) && isSuper(fetchMe(companyId));
+
+          match /reactions/{reactionId} {
+            allow get, list: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                               meExists(companyId) && canReadChatThread(companyId, getChatDoc(companyId, chatId));
+            allow create, update: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) && isValidId(reactionId) &&
+                                     meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                                     canReadChatThread(companyId, getChatDoc(companyId, chatId)) &&
+                                     incoming().uid == request.auth.uid;
+            allow delete: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) && isValidId(reactionId) &&
+                             meExists(companyId) && (existing().uid == request.auth.uid || isSuper(fetchMe(companyId)));
+          }
+
+          match /receipts/{receiptUid} {
+            allow get, list: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) &&
+                               meExists(companyId) && canReadChatThread(companyId, getChatDoc(companyId, chatId));
+            allow create, update: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) && isValidId(receiptUid) &&
+                                     meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                                     request.auth.uid == receiptUid &&
+                                     canReadChatThread(companyId, getChatDoc(companyId, chatId));
+            allow delete: if isValidId(companyId) && isValidId(chatId) && isValidId(messageId) && isValidId(receiptUid) &&
+                             meExists(companyId) && isSuper(fetchMe(companyId));
+          }
+        }
+      }
+
+      match /chatPolls/{pollId} {
+        allow get, list: if isValidId(companyId) && isValidId(pollId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(pollId) && meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) && isChatEnabledForWrite(companyId, fetchMe(companyId)) &&
+                         incoming().createdByUid == request.auth.uid;
+        allow update: if isValidId(companyId) && isValidId(pollId) && meExists(companyId) && isApproved(fetchMe(companyId)) && (
+          existing().createdByUid == request.auth.uid ||
+          isSuper(fetchMe(companyId)) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['options', 'voterUids'])
+        );
+        allow delete: if isValidId(companyId) && isValidId(pollId) && meExists(companyId) && isSuper(fetchMe(companyId));
+
+        match /votes/{voteUid} {
+          allow get, list: if isValidId(companyId) && isValidId(pollId) && meExists(companyId) && isApproved(fetchMe(companyId));
+          allow create, update: if isValidId(companyId) && isValidId(pollId) && isValidId(voteUid) &&
+                                   meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                                   request.auth.uid == voteUid && incoming().uid == request.auth.uid;
+          allow delete: if isValidId(companyId) && isValidId(pollId) && isValidId(voteUid) &&
+                           meExists(companyId) && (request.auth.uid == voteUid || isSuper(fetchMe(companyId)));
+        }
+      }
+
+      match /chatReports/{reportId} {
+        allow get, list: if isValidId(companyId) && meExists(companyId) && isSuper(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(reportId) && meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) && incoming().reporterUid == request.auth.uid &&
+                         incoming().status == 'OPEN';
+        allow update: if isValidId(companyId) && isValidId(reportId) && meExists(companyId) && isSuper(fetchMe(companyId)) &&
+                         incoming().reporterUid == existing().reporterUid &&
+                         incoming().snapshotMessages == existing().snapshotMessages;
+        allow delete: if isValidId(companyId) && isValidId(reportId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /chatAnnouncements/{annId} {
+        allow get, list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create, update: if isValidId(companyId) && isValidId(annId) && meExists(companyId) &&
+                                 (isSuper(fetchMe(companyId)) || isAdminData(fetchMe(companyId)));
+        allow delete: if isValidId(companyId) && isValidId(annId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /chatAuditLogs/{logId} {
+        allow get, list, create: if isValidId(companyId) && meExists(companyId) && isSuper(fetchMe(companyId));
+        allow delete: if isValidId(companyId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /chatSettings/{settingId} {
+        allow get, list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create, update: if isValidId(companyId) && isValidId(settingId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /chatOperations/{opId} {
+        allow get, list, create, update, delete: if isValidId(companyId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /deviceTokens/{uid}/tokens/{tokenId} {
+        allow get, list, create, update, delete: if isValidId(companyId) && isValidId(uid) &&
+                                                   isSignedIn() && request.auth.uid == uid;
+      }
+
+      match /invoices/{invoiceId} {
+        allow get, list: if isValidId(companyId) && meExists(companyId) && (hasCommercialRead(companyId) || canReadPayments(companyId));
+        allow create: if isValidId(companyId) && isValidId(invoiceId) && meExists(companyId) &&
+                         isValidInvoice(incoming()) &&
+                         incoming().createdByUid == request.auth.uid &&
+                         (hasPerm(companyId, 'ISSUE_QUOTATIONS') || hasPerm(companyId, 'RECORD_PAYMENTS'));
+        allow update: if isValidId(companyId) && isValidId(invoiceId) && meExists(companyId) &&
+                         isValidInvoice(incoming()) &&
+                         incoming().createdByUid == existing().createdByUid &&
+                         (hasPerm(companyId, 'ISSUE_QUOTATIONS') || hasPerm(companyId, 'RECORD_PAYMENTS'));
+        allow delete: if isValidId(companyId) && isValidId(invoiceId) && meExists(companyId) && isSuper(fetchMe(companyId));
+      }
+
+      match /meetings/{meetingId} {
+        allow get, list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(meetingId) && meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) && incoming().createdByUid == request.auth.uid;
+        allow update: if isValidId(companyId) && isValidId(meetingId) && meExists(companyId) &&
+                         isApproved(fetchMe(companyId)) &&
+                         (existing().createdByUid == request.auth.uid || isSuper(fetchMe(companyId)) || isAdminData(fetchMe(companyId)));
+        allow delete: if isValidId(companyId) && isValidId(meetingId) && meExists(companyId) &&
+                         (existing().createdByUid == request.auth.uid || isSuper(fetchMe(companyId)));
       }
 
       match /notifications/{notificationId} {
@@ -788,9 +942,8 @@ service cloud.firestore {
     function canUpdateCompany(companyId) {
       let m = fetchMe(companyId);
       return isSuper(m) || (
-        (mHas(companyId, m, 'ISSUE_QUOTATIONS') || mHas(companyId, m, 'CREATE_QUOTATIONS')) &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['nextQuoteSeq', 'updatedAt']) &&
-        incoming().nextQuoteSeq == existing().nextQuoteSeq + 1
+        (mHas(companyId, m, 'ISSUE_QUOTATIONS') || mHas(companyId, m, 'CREATE_QUOTATIONS') || mHas(companyId, m, 'RECORD_PAYMENTS')) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['nextQuoteSeq', 'nextInvoiceSeq', 'updatedAt'])
       );
     }
 
@@ -896,9 +1049,106 @@ service cloud.firestore {
       let m = fetchMe(companyId);
       return isApproved(m) && (
         ch.channelType != 'DIRECT' ||
-        m.accessLevel == 'SUPER_ADMIN' ||
         (request.auth.uid in ch.participantUids)
       );
+    }
+
+    function getChatDoc(companyId, chatId) {
+      return get(/databases/$(database)/documents/companies/$(companyId)/chats/$(chatId)).data;
+    }
+
+    function isChatEnabledForWrite(companyId, m) {
+      let settingsPath = /databases/$(database)/documents/companies/$(companyId)/chatSettings/global;
+      return !('messagingSuspended' in m && m.messagingSuspended == true) && (
+        !exists(settingsPath) ||
+        (get(settingsPath).data.chatEnabled == true && get(settingsPath).data.globalReadOnly == false)
+      );
+    }
+
+    function isChatThreadAdmin(companyId, m, ch) {
+      return isSuper(m) ||
+             ch.ownerUid == request.auth.uid ||
+             ('adminIds' in ch && request.auth.uid in ch.adminIds);
+    }
+
+    function canReadChatThread(companyId, ch) {
+      let m = fetchMe(companyId);
+      return isApproved(m) && (
+        (ch.type == 'PERSONAL' && request.auth.uid in ch.participantIds) ||
+        (ch.type == 'SAVED' && ch.ownerUid == request.auth.uid) ||
+        ch.type == 'ANNOUNCEMENT' ||
+        (ch.type == 'GROUP' && request.auth.uid in ch.participantIds) ||
+        (ch.type == 'DEPARTMENT' && (isSuper(m) || isAdminData(m) || m.departmentId == ch.departmentId || request.auth.uid in ch.participantIds)) ||
+        (ch.type == 'PROJECT' && (isSuper(m) || isAdminData(m) || request.auth.uid in ch.participantIds))
+      );
+    }
+
+    function canCreateChatThread(companyId, ch) {
+      let m = fetchMe(companyId);
+      return isApproved(m) &&
+             isChatEnabledForWrite(companyId, m) &&
+             ch.createdByUid == request.auth.uid && (
+               (ch.type == 'SAVED' && ch.ownerUid == request.auth.uid) ||
+               (ch.type == 'ANNOUNCEMENT' && (isSuper(m) || isAdminData(m))) ||
+               (ch.type != 'SAVED' && ch.type != 'ANNOUNCEMENT' && request.auth.uid in ch.participantIds)
+             );
+    }
+
+    function canUpdateChatThread(companyId, ch) {
+      let m = fetchMe(companyId);
+      return isApproved(m) && (
+        isChatThreadAdmin(companyId, m, ch) ||
+        (
+          canReadChatThread(companyId, ch) &&
+          incoming().diff(ch).affectedKeys().hasOnly([
+            'lastMessageId', 'lastMessagePreview', 'lastSenderUid', 'lastSenderName',
+            'lastMessageAtMillis', 'messageCount', 'pinnedMessageId', 'pinnedPreview', 'updatedAt'
+          ])
+        )
+      );
+    }
+
+    function canCreateThreadMessage(companyId, chatId, messageId) {
+      let m = fetchMe(companyId);
+      let ch = getChatDoc(companyId, chatId);
+      return isApproved(m) &&
+             (isChatEnabledForWrite(companyId, m) || (ch.type == 'ANNOUNCEMENT' && isSuper(m))) &&
+             canReadChatThread(companyId, ch) &&
+             (ch.type != 'ANNOUNCEMENT' || isSuper(m) || isAdminData(m)) &&
+             incoming().senderId == request.auth.uid &&
+             incoming().chatId == chatId &&
+             incoming().clientMsgId == messageId &&
+             (incoming().kind != 'PRIORITY_ANNOUNCEMENT' || isSuper(m) || isAdminData(m));
+    }
+
+    function canUpdateThreadMessage(companyId, chatId, msg) {
+      let m = fetchMe(companyId);
+      let ch = getChatDoc(companyId, chatId);
+      return isApproved(m) && canReadChatThread(companyId, ch) && (
+        (
+          msg.senderId == request.auth.uid &&
+          msg.isDeletedForEveryone == false &&
+          request.time <= msg.createdAt + duration.value(15, 'm') &&
+          incoming().diff(msg).affectedKeys().hasOnly(['body', 'isEdited', 'editedAtMillis', 'linkUrl'])
+        ) || (
+          (msg.senderId == request.auth.uid || isSuper(m) || isChatThreadAdmin(companyId, m, ch)) &&
+          incoming().isDeletedForEveryone == true &&
+          incoming().diff(msg).affectedKeys().hasOnly(['isDeletedForEveryone', 'deletedByUid', 'body', 'status'])
+        ) || (
+          incoming().diff(msg).affectedKeys().hasOnly([
+            'hiddenForUids', 'starredByUids', 'ackBy', 'reactionsSummary',
+            'deliveredTo', 'readBy', 'isPinned', 'status'
+          ])
+        )
+      );
+    }
+
+    function isValidInvoice(data) {
+      return data.invoiceNumber is string && data.invoiceNumber.size() >= 1 && data.invoiceNumber.size() <= 60 &&
+             data.totalPaise is int && data.totalPaise >= 0 &&
+             data.balanceDuePaise is int && data.balanceDuePaise >= 0 &&
+             data.status in ['DRAFT', 'ISSUED', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'] &&
+             data.createdByUid is string && data.createdByUid.size() <= 128;
     }
 
     function canCreateDeliverable(companyId) {

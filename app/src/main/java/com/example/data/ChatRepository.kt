@@ -20,28 +20,20 @@ class ChatRepository(private val core: AgencyRepository) {
 
     companion object {
         const val GENERAL_CHANNEL_ID = "ch_general"
+
+        fun directChannelId(uidA: String, uidB: String): String {
+            val sortedUids = listOf(uidA, uidB).distinct().sorted()
+            val rawSuffix = sortedUids.joinToString("_").replace(Regex("[^A-Za-z0-9_-]"), "_")
+            return "ch_dm_$rawSuffix".take(120)
+        }
+
+        fun departmentChannelId(deptId: String): String {
+            val safeDept = deptId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+            return "ch_dept_$safeDept".take(120)
+        }
     }
 
     fun observeChannels(myUid: String, isSuperAdmin: Boolean): Flow<List<ChatChannel>> {
-        if (isSuperAdmin) {
-            return callbackFlow {
-                val reg = sub("chat_channels").addSnapshotListener { snap, err ->
-                    if (err != null) {
-                        handleFirestoreError(err, OperationType.LIST, "companies/${core.companyId}/chat_channels")
-                        close(err)
-                        return@addSnapshotListener
-                    }
-                    val list = snap?.documents?.mapNotNull { doc ->
-                        doc.get("createdAt", est)
-                        doc.get("updatedAt", est)
-                        doc.toObject(ChatChannel::class.java)
-                    }.orEmpty().sortedByDescending { it.lastMessageAtMillis }
-                    trySend(list)
-                }
-                awaitClose { reg.remove() }
-            }
-        }
-
         val sharedFlow = callbackFlow<List<ChatChannel>> {
             val reg = sub("chat_channels")
                 .whereIn(
@@ -222,8 +214,7 @@ class ChatRepository(private val core: AgencyRepository) {
 
     suspend fun createOrGetDirectChannel(otherMember: Member, actor: Member): ChatChannel {
         val sortedUids = listOf(actor.uid, otherMember.uid).distinct().sorted()
-        val rawSuffix = sortedUids.joinToString("_").replace(Regex("[^A-Za-z0-9_-]"), "_")
-        val channelId = "ch_dm_$rawSuffix".take(120)
+        val channelId = directChannelId(actor.uid, otherMember.uid)
         val ref = sub("chat_channels").document(channelId)
         val existing = runCatching { ref.get().await() }.getOrNull()
         if (existing != null && existing.exists()) {
@@ -267,8 +258,7 @@ class ChatRepository(private val core: AgencyRepository) {
     }
 
     suspend fun createOrGetDepartmentChannel(dept: Department, actor: Member): ChatChannel {
-        val safeDept = dept.id.replace(Regex("[^A-Za-z0-9_-]"), "_")
-        val channelId = "ch_dept_$safeDept".take(120)
+        val channelId = departmentChannelId(dept.id)
         val ref = sub("chat_channels").document(channelId)
         val existing = runCatching { ref.get().await() }.getOrNull()
         if (existing != null && existing.exists()) {
@@ -389,9 +379,14 @@ class ChatRepository(private val core: AgencyRepository) {
             else -> "ALL" to ""
         }
         val chTitle = channelObj?.title ?: "Chat"
+        val notifTitle = if (channelObj?.channelTypeEnum() == ChatChannelType.DIRECT) {
+            "Direct Message • $senderName"
+        } else {
+            "New Message • $chTitle"
+        }
         core.createNotification(
             category = NotificationCategory.CHAT,
-            title = "New Message • $chTitle",
+            title = notifTitle,
             body = "$senderName: $preview",
             actor = actor,
             targetUid = targetUid,

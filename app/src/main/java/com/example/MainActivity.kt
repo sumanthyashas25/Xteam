@@ -17,6 +17,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -215,38 +216,6 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         }
     }
 
-    if (quoteBuilderMode) {
-        BackHandler { quoteBuilderMode = false }
-        QuoteBuilderScreen(
-            state = state,
-            initialQuote = editingQuote,
-            initialRequest = quoteRequest,
-            linkedProject = quoteLinkedProject,
-            onBack = { quoteBuilderMode = false },
-            onQuickSaveClient = { cli, cb -> viewModel.saveClient(cli, cb) },
-            onCreateRequest = { cli, title, brief, services, target, mgr, cb ->
-                viewModel.createRequest(cli, title, brief, services, target, mgr, cb)
-            },
-            onSaveOrIssueQuote = { draft, issue, cb -> viewModel.saveOrIssueQuote(draft, issue, cb) },
-            onCreateRevision = { prev, cb -> viewModel.createQuoteRevision(prev, cb) },
-            onGeneratePdf = { q, share, cb -> viewModel.generateAndSavePdf(context, q, share, cb) },
-            onMarkSent = { q -> viewModel.markQuoteSent(q) },
-            onMarkClientApproved = { q, note -> viewModel.markQuoteClientApproved(q, note) }
-        )
-        return
-    }
-
-    if (drawerState.isOpen) {
-        BackHandler { scope.launch { drawerState.close() } }
-    } else if (secondaryDest != null) {
-        BackHandler { secondaryDest = null }
-    } else if (activeTab == PrimaryTab.CHAT) {
-        BackHandler {
-            chatInitialChannelId = null
-            activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
-        }
-    }
-
     fun openQuote(q: Quotation? = null, req: ProjectRequest? = null, proj: Project? = null) {
         editingQuote = q
         quoteRequest = req
@@ -254,7 +223,48 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         quoteBuilderMode = true
     }
 
-    val permittedSecondary = remember(state.effectivePermissions, member.accessLevel) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val isWide = maxWidth >= 600.dp
+        val isChatFullScreen = !quoteBuilderMode && (
+            secondaryDest == SecondaryDestination.CHAT ||
+                (secondaryDest == null && activeTab == PrimaryTab.CHAT)
+            )
+
+        if (quoteBuilderMode) {
+            BackHandler { quoteBuilderMode = false }
+            QuoteBuilderScreen(
+                state = state,
+                initialQuote = editingQuote,
+                initialRequest = quoteRequest,
+                linkedProject = quoteLinkedProject,
+                onBack = { quoteBuilderMode = false },
+                onQuickSaveClient = { cli, cb -> viewModel.saveClient(cli, cb) },
+                onCreateRequest = { cli, title, brief, services, target, mgr, cb ->
+                    viewModel.createRequest(cli, title, brief, services, target, mgr, cb)
+                },
+                onSaveOrIssueQuote = { draft, issue, cb -> viewModel.saveOrIssueQuote(draft, issue, cb) },
+                onCreateRevision = { prev, cb -> viewModel.createQuoteRevision(prev, cb) },
+                onGeneratePdf = { q, share, cb -> viewModel.generateAndSavePdf(context, q, share, cb) },
+                onMarkSent = { q, onDone -> viewModel.markQuoteSent(q, onDone) },
+                onMarkClientApproved = { q, note, onDone -> viewModel.markQuoteClientApproved(q, note, onDone) },
+                onOpenPayments = {
+                    quoteBuilderMode = false
+                    secondaryDest = SecondaryDestination.PAYMENTS
+                }
+            )
+        } else {
+            if (drawerState.isOpen) {
+                BackHandler { scope.launch { drawerState.close() } }
+            } else if (secondaryDest != null) {
+                BackHandler { secondaryDest = null }
+            } else if (activeTab == PrimaryTab.CHAT) {
+                BackHandler {
+                    chatInitialChannelId = null
+                    activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
+                }
+            }
+
+            val permittedSecondary = remember(state.effectivePermissions, member.accessLevel) {
         buildList {
             if (canSeeProjects) add(SecondaryDestination.PROJECTS)
             add(SecondaryDestination.CHAT)
@@ -311,11 +321,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
             )
         }
     ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().pastelAmbientBackdrop()) {
-            val isWide = maxWidth >= 600.dp
-            val isChatFullScreen = secondaryDest == SecondaryDestination.CHAT ||
-                (secondaryDest == null && activeTab == PrimaryTab.CHAT)
-
+        Box(modifier = Modifier.fillMaxSize().pastelAmbientBackdrop()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 Scaffold(
                     containerColor = Color.Transparent,
@@ -323,29 +329,6 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                         WindowInsets(0, 0, 0, 0)
                     } else {
                         ScaffoldDefaults.contentWindowInsets
-                    },
-                    snackbarHost = {
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            modifier = Modifier.padding(
-                                start = 16.dp,
-                                end = 16.dp,
-                                bottom = if (!isWide && secondaryDest == null && !isChatFullScreen) 96.dp else 16.dp
-                            )
-                        ) { data ->
-                            val toastTitle = when (activeToastTone) {
-                                ToastTone.ERROR -> "Action Needed"
-                                ToastTone.WARNING -> "Heads Up"
-                                ToastTone.INFO -> "Workspace Update"
-                                ToastTone.SUCCESS -> "Completed"
-                            }
-                            com.example.ui.components.XMaxToastBanner(
-                                title = toastTitle,
-                                message = data.visuals.message,
-                                tone = activeToastTone,
-                                onDismiss = { data.dismiss() }
-                            )
-                        }
                     },
                     topBar = {
                         val activeSecondary = secondaryDest
@@ -489,8 +472,9 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                             AnimatedContent(
                                 targetState = Pair(secondaryDest, activeTab),
                                 transitionSpec = {
-                                    (fadeIn(tween(210)) + slideInVertically(tween(220)) { it / 32 })
-                                        .togetherWith(fadeOut(tween(140)))
+                                    (fadeIn(tween(260, easing = FastOutSlowInEasing)) +
+                                        slideInVertically(tween(280, easing = FastOutSlowInEasing)) { it / 36 })
+                                        .togetherWith(fadeOut(tween(180, easing = FastOutSlowInEasing)))
                                 },
                                 label = "workspace_content_transition"
                             ) { (dest, tab) ->
@@ -503,25 +487,26 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             onOpenAddOnQuote = { proj -> openQuote(proj = proj) },
                                             onToggleDeleteProject = { proj, del -> viewModel.toggleDeleteProject(proj, del) },
                                             onPermanentlyDeleteProject = { proj -> viewModel.permanentlyDeleteProject(proj) },
-                                            onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() }
+                                            onCleanupOldDoneProjects = { viewModel.cleanupOldDoneProjects() },
+                                            onOpenPayments = { secondaryDest = SecondaryDestination.PAYMENTS }
                                         )
                                         SecondaryDestination.CHAT -> TeamChatScreen(
                                             state = state,
                                             initialChannelId = chatInitialChannelId,
                                             observeMessages = { channelId -> viewModel.observeChatMessages(channelId) },
                                             onEnsureGeneralChannel = { viewModel.ensureDefaultGeneralChannel() },
-                                            onCreateChannel = { title, topic, type, proj, cb ->
-                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, cb)
+                                            onCreateChannel = { title, topic, type, proj, onReady, onError ->
+                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, onReady, onError)
                                             },
                                             onSendMessage = { chId, body, parent, attachment, cb ->
                                                 viewModel.sendChatMessage(chId, body, parent, attachment, cb)
                                             },
                                             onReportMessage = { msg, err -> viewModel.reportChatMessage(msg, err) },
-                                            onOpenDirectChat = { targetMember, cb ->
-                                                viewModel.openDirectChat(targetMember, cb)
+                                            onOpenDirectChat = { targetMember, onReady, onError ->
+                                                viewModel.openDirectChat(targetMember, onReady, onError)
                                             },
-                                            onOpenDepartmentChat = { dept, cb ->
-                                                viewModel.openDepartmentChat(dept, cb)
+                                            onOpenDepartmentChat = { dept, onReady, onError ->
+                                                viewModel.openDepartmentChat(dept, onReady, onError)
                                             },
                                             onDeleteChannel = { channelId, onDone ->
                                                 viewModel.deleteChatChannel(channelId, onDone)
@@ -552,6 +537,9 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                                     activeTab = PrimaryTab.MY_WORK
                                                     activeDeliverable = target
                                                 }
+                                            },
+                                            onOpenPayments = {
+                                                secondaryDest = SecondaryDestination.PAYMENTS
                                             }
                                         )
                                         SecondaryDestination.CLIENTS -> ClientsScreen(
@@ -559,11 +547,17 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             onSaveClient = { viewModel.saveClient(it) },
                                             onDeleteClient = { viewModel.deleteClient(it) }
                                         )
-                                        SecondaryDestination.QUOTATIONS -> QuotationsScreen(state, onOpenQuote = { openQuote(q = it) }, onDeleteQuotation = { viewModel.deleteQuotation(it) })
+                                        SecondaryDestination.QUOTATIONS -> QuotationsScreen(
+                                            state = state,
+                                            onOpenQuote = { openQuote(q = it) },
+                                            onDeleteQuotation = { viewModel.deleteQuotation(it) },
+                                            onOpenPayments = { secondaryDest = SecondaryDestination.PAYMENTS }
+                                        )
                                         SecondaryDestination.CATALOGUE -> CatalogueScreen(
                                             state = state,
                                             onSaveItem = { viewModel.saveCatalogueItem(it) },
-                                            onToggleArchive = { item, arch -> viewModel.setCatalogueArchived(item, arch) }
+                                            onToggleArchive = { item, arch -> viewModel.setCatalogueArchived(item, arch) },
+                                            onSyncOfficialCatalogue = { viewModel.syncOfficialCatalogueNow() }
                                         )
                                         SecondaryDestination.PAYMENTS -> PaymentsScreen(
                                             state = state,
@@ -630,18 +624,18 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             initialChannelId = chatInitialChannelId,
                                             observeMessages = { channelId -> viewModel.observeChatMessages(channelId) },
                                             onEnsureGeneralChannel = { viewModel.ensureDefaultGeneralChannel() },
-                                            onCreateChannel = { title, topic, type, proj, cb ->
-                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, cb)
+                                            onCreateChannel = { title, topic, type, proj, onReady, onError ->
+                                                viewModel.createOrOpenChatChannel(title, topic, type, proj, onReady, onError)
                                             },
                                             onSendMessage = { chId, body, parent, attachment, cb ->
                                                 viewModel.sendChatMessage(chId, body, parent, attachment, cb)
                                             },
                                             onReportMessage = { msg, err -> viewModel.reportChatMessage(msg, err) },
-                                            onOpenDirectChat = { targetMember, cb ->
-                                                viewModel.openDirectChat(targetMember, cb)
+                                            onOpenDirectChat = { targetMember, onReady, onError ->
+                                                viewModel.openDirectChat(targetMember, onReady, onError)
                                             },
-                                            onOpenDepartmentChat = { dept, cb ->
-                                                viewModel.openDepartmentChat(dept, cb)
+                                            onOpenDepartmentChat = { dept, onReady, onError ->
+                                                viewModel.openDepartmentChat(dept, onReady, onError)
                                             },
                                             onDeleteChannel = { channelId, onDone ->
                                                 viewModel.deleteChatChannel(channelId, onDone)
@@ -692,8 +686,8 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                 // 5-Slot Floating White Pill Bottom Dock with Centered Jet-Black + FAB
                 AnimatedVisibility(
                     visible = !isWide && secondaryDest == null && !isChatFullScreen,
-                    enter = fadeIn(tween(180)) + slideInVertically(tween(220)) { it / 2 },
-                    exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 2 },
+                    enter = fadeIn(tween(240, easing = FastOutSlowInEasing)) + slideInVertically(tween(260, easing = FastOutSlowInEasing)) { it / 2 },
+                    exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) + slideOutVertically(tween(200, easing = FastOutSlowInEasing)) { it / 2 },
                     modifier = Modifier.align(Alignment.BottomCenter)
                 ) {
                     FloatingStudioDock(
@@ -704,6 +698,33 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                     )
                 }
             }
+        }
+    }
+        } // end else !quoteBuilderMode
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    bottom = if (!quoteBuilderMode && !isWide && secondaryDest == null && !isChatFullScreen) 96.dp else 16.dp
+                )
+        ) { data ->
+            val toastTitle = when (activeToastTone) {
+                ToastTone.ERROR -> "Action Needed"
+                ToastTone.WARNING -> "Heads Up"
+                ToastTone.INFO -> "Workspace Update"
+                ToastTone.SUCCESS -> "Completed"
+            }
+            com.example.ui.components.XMaxToastBanner(
+                title = toastTitle,
+                message = data.visuals.message,
+                tone = activeToastTone,
+                onDismiss = { data.dismiss() }
+            )
         }
     }
 

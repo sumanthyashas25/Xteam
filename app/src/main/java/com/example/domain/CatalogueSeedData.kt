@@ -22,6 +22,8 @@ object CatalogueSeedData {
         return BOOTSTRAP_SUPER_ADMIN_EMAILS.any { it.equals(email.trim(), ignoreCase = true) }
     }
 
+    const val OFFICIAL_CATALOGUE_VERSION = "2026_02"
+
     fun defaultCompanyProfile(createdByUid: String): CompanyProfile = CompanyProfile(
         id = DEFAULT_COMPANY_ID,
         name = "X.MAX",
@@ -35,8 +37,8 @@ object CatalogueSeedData {
         defaultAdvancePercent = 50,
         defaultValidityDays = 15,
         defaultRevisionRounds = 2,
-        defaultPaymentTerms = "50% advance to commence project and 50% prior to final delivery.",
-        defaultApprovalInstructions = "Please reply in writing referencing the Quotation Number and Revision to confirm approval.",
+        defaultPaymentTerms = "50% advance to begin work and 50% before final delivery. GST extra if applicable; advertising budget & third-party expenses billed separately.",
+        defaultApprovalInstructions = "Quotation valid for 15 days. Please reply in writing referencing the Quotation Number and Revision to confirm approval.",
         nextQuoteSeq = 1L,
         seededCatalogue = true,
         createdByUid = createdByUid
@@ -65,8 +67,12 @@ object CatalogueSeedData {
         RoutingRule(
             id = "rule_creative",
             name = "Design & Branding -> Creative / Graphic Designer",
-            keywords = listOf("logo", "brand", "creative", "poster", "flyer", "brochure", "packaging", "deck", "stationery", "carousel", "banner", "thumbnail", "social media creative"),
-            serviceCategories = listOf("Branding & Identity", "Social Media Design", "Print & Collateral"),
+            keywords = listOf(
+                "logo", "brand", "creative", "poster", "flyer", "brochure", "menu",
+                "infographic", "packaging", "stationery", "business card", "letterhead",
+                "carousel", "story", "thumbnail", "social media post", "guidelines"
+            ),
+            serviceCategories = listOf("Graphic Design", "Branding & Identity", "Social Media Design", "Print & Collateral"),
             departmentId = "dept_creative",
             departmentName = "Creative",
             jobRoleId = "role_graphic_designer",
@@ -76,9 +82,12 @@ object CatalogueSeedData {
         ),
         RoutingRule(
             id = "rule_video",
-            name = "Reels & Motion -> Video / Video Editor",
-            keywords = listOf("reel", "video", "motion", "promo", "edit", "ugc", "youtube", "podcast", "animation"),
-            serviceCategories = listOf("Video & Motion"),
+            name = "Reels & Video -> Video / Video Editor",
+            keywords = listOf(
+                "reel", "video", "motion", "promo", "promotional video", "edit",
+                "youtube", "product video", "short-form", "animation"
+            ),
+            serviceCategories = listOf("Video Production & Editing", "Video & Motion"),
             departmentId = "dept_video",
             departmentName = "Video",
             jobRoleId = "role_video_editor",
@@ -89,8 +98,11 @@ object CatalogueSeedData {
         RoutingRule(
             id = "rule_web",
             name = "Websites & Pages -> Web / Web Developer",
-            keywords = listOf("website", "web", "page", "landing", "e-commerce", "shopify", "wordpress", "speed", "hosting", "domain", "maintenance", "whatsapp integration"),
-            serviceCategories = listOf("Web & E-Commerce"),
+            keywords = listOf(
+                "website", "web", "page", "landing", "e-commerce", "portfolio",
+                "redesign", "hosting", "domain", "maintenance", "whatsapp integration"
+            ),
+            serviceCategories = listOf("Website Development", "Web & E-Commerce"),
             departmentId = "dept_web",
             departmentName = "Web",
             jobRoleId = "role_web_developer",
@@ -113,7 +125,10 @@ object CatalogueSeedData {
         RoutingRule(
             id = "rule_ads",
             name = "Ads & Funnels -> Marketing / Performance Marketer",
-            keywords = listOf("meta ads", "google ads", "performance", "campaign", "retargeting", "pixel", "lead generation", "analytics", "ad spend"),
+            keywords = listOf(
+                "meta ads", "google ads", "performance", "campaign", "retargeting",
+                "pixel", "lead generation", "analytics", "ad spend", "platform setup"
+            ),
             serviceCategories = listOf("Performance Marketing"),
             departmentId = "dept_marketing",
             departmentName = "Marketing",
@@ -124,9 +139,13 @@ object CatalogueSeedData {
         ),
         RoutingRule(
             id = "rule_seo_content",
-            name = "SEO & Copy -> Marketing / SEO & Content Specialist",
-            keywords = listOf("seo", "google business", "gbp", "copy", "blog", "content calendar", "social media management", "email", "newsletter"),
-            serviceCategories = listOf("SEO & Local Growth", "Content & Copywriting", "Social Media Management"),
+            name = "Digital Marketing & SEO -> Marketing / SEO Specialist",
+            keywords = listOf(
+                "seo", "keyword", "competitor", "google business", "gbp", "copy",
+                "content calendar", "content strategy", "social media account",
+                "social media strategy", "digital marketing strategy"
+            ),
+            serviceCategories = listOf("Digital Marketing", "SEO & Local Growth", "Content & Copywriting", "Social Media Management"),
             departmentId = "dept_marketing",
             departmentName = "Marketing",
             jobRoleId = "role_seo_specialist",
@@ -139,172 +158,193 @@ object CatalogueSeedData {
     private fun p(rupees: Long): Long = rupees * 100L
 
     /**
-     * Complete X.MAX Starting Catalogue:
+     * Official X.MAX Service & Pricing Catalogue (2026 Updated PDF):
      * - 40 Individual Services (srv_01 .. srv_40)
-     * - 5 One-Time Packages (pkg_01 .. pkg_05)
-     * - 11 Add-Ons (add_01 .. add_11)
+     * - 5 Bundled Project Packages (pkg_01 .. pkg_05)
+     * - 11 Additional Charges / Add-Ons (add_01 .. add_11)
      */
     fun defaultCatalogue(): List<CatalogueItem> = listOf(
-        // === BRANDING & IDENTITY (Services 1..7) ===
-        srv("srv_01", "Branding & Identity", "Logo Design (Primary + Variations)", "3 initial concepts, vector source files, light/dark marks", p(12000), PricingMode.FIXED, false, "logo", 1),
-        srv("srv_02", "Branding & Identity", "Complete Brand Identity Kit", "Logo suite, color palette, typography hierarchy, brand guidelines PDF", p(28000), PricingMode.FIXED, false, "kit", 2),
-        srv("srv_03", "Branding & Identity", "Brand Refresh / Rebranding", "Modernized visual identity, updated mark & social templates", p(22000), PricingMode.STARTING_FROM, false, "project", 3),
-        srv("srv_04", "Branding & Identity", "Business Stationery Suite", "Visiting card, letterhead, envelope & email signature design", p(5500), PricingMode.FIXED, false, "suite", 4),
-        srv("srv_05", "Branding & Identity", "Product Packaging & Label Design", "Print-ready dieline artwork for 1 SKU with 3D mockup", p(9500), PricingMode.STARTING_FROM, false, "SKU", 5),
-        srv("srv_06", "Branding & Identity", "Pitch Deck / Company Profile Design", "12-15 custom designed presentation slides with infographics", p(14000), PricingMode.FIXED, false, "deck", 6),
-        srv("srv_07", "Branding & Identity", "Brand Naming & Positioning Strategy", "Market audit, naming shortlist, tagline & brand voice guide", p(16000), PricingMode.FIXED, false, "engagement", 7),
+        // === 1. GRAPHIC DESIGN (srv_01 .. srv_10) ===
+        srv("srv_01", "Graphic Design", "Social media post", "Custom branded static social media post designed for Instagram, Facebook, or LinkedIn feeds.", p(500), PricingMode.FIXED, false, "post", 1),
+        srv("srv_02", "Graphic Design", "Instagram story", "Vertical 9:16 Instagram story creative crafted for offers, updates, and daily engagement.", p(300), PricingMode.FIXED, false, "story", 2),
+        srv("srv_03", "Graphic Design", "Carousel (up to 5 slides)", "Multi-slide swipeable carousel (up to 5 slides) designed for storytelling, product highlights, or education.", p(1500), PricingMode.FIXED, false, "carousel", 3),
+        srv("srv_04", "Graphic Design", "Promotional poster", "High-impact promotional poster layout suitable for digital announcements or print campaigns.", p(1000), PricingMode.FIXED, false, "poster", 4),
+        srv("srv_05", "Graphic Design", "Advertising creative", "Conversion-focused ad graphic engineered for paid Meta, Google Display, or sponsored placements.", p(750), PricingMode.FIXED, false, "creative", 5),
+        srv("srv_06", "Graphic Design", "YouTube thumbnail", "Click-optimized YouTube thumbnail featuring clear typography and strong visual contrast.", p(500), PricingMode.FIXED, false, "thumbnail", 6),
+        srv("srv_07", "Graphic Design", "Flyer design", "Print-ready single or double-sided promotional flyer with clean hierarchy and brand consistency.", p(1500), PricingMode.FIXED, false, "flyer", 7),
+        srv("srv_08", "Graphic Design", "Brochure design", "Structured multi-fold or multi-page company/product brochure formatted for print and digital sharing.", p(3000), PricingMode.FIXED, false, "brochure", 8),
+        srv("srv_09", "Graphic Design", "Menu design", "Clean restaurant, café, or service menu design ready for print production and digital QR viewing.", p(2000), PricingMode.FIXED, false, "menu", 9),
+        srv("srv_10", "Graphic Design", "Infographic", "Visual data, process, or comparison infographic designed for presentations and social sharing.", p(1500), PricingMode.FIXED, false, "infographic", 10),
 
-        // === SOCIAL MEDIA & GRAPHIC DESIGN (Services 8..13) ===
-        srv("srv_08", "Social Media Design", "12 Social Media Creatives Pack", "12 custom branded static & carousel posts for Instagram/LinkedIn", p(10000), PricingMode.FIXED, true, "pack", 8),
-        srv("srv_09", "Social Media Design", "20 Social Media Creatives Pack", "20 custom campaign creatives + story adaptations", p(16000), PricingMode.FIXED, true, "pack", 9),
-        srv("srv_10", "Social Media Design", "Carousel Post Design (Up to 8 Slides)", "High-retention educational or product storytelling carousel", p(2200), PricingMode.PER_UNIT, false, "carousel", 10),
-        srv("srv_11", "Social Media Design", "YouTube Thumbnail Pack (5 Thumbnails)", "Click-optimized thumbnails with custom typography", p(3500), PricingMode.FIXED, false, "pack", 11),
-        srv("srv_12", "Print & Collateral", "Brochure / Menu / Catalogue Design", "Multi-page print & digital PDF layout (up to 8 pages)", p(8500), PricingMode.STARTING_FROM, false, "brochure", 12),
-        srv("srv_13", "Print & Collateral", "Event Standee, Hoarding & Flyer Kit", "Print-ready large-format event & retail campaign artwork", p(6500), PricingMode.FIXED, false, "kit", 13),
+        // === 2. BRANDING & IDENTITY (srv_11 .. srv_18) ===
+        srv("srv_11", "Branding & Identity", "Logo design", "Custom primary logo design with original concepts, refinements, and scalable final vector exports.", p(5000), PricingMode.FIXED, false, "logo", 11),
+        srv("srv_12", "Branding & Identity", "Logo redesign", "Modernized refresh of your existing logo mark for sharper proportions and digital clarity.", p(3500), PricingMode.FIXED, false, "logo", 12),
+        srv("srv_13", "Branding & Identity", "Brand identity", "Complete brand identity system covering logo suite, colour palette, typography, and visual styling.", p(15000), PricingMode.FIXED, false, "system", 13),
+        srv("srv_14", "Branding & Identity", "Business card", "Print-ready double-sided business card layout tailored to your brand identity.", p(1000), PricingMode.FIXED, false, "design", 14),
+        srv("srv_15", "Branding & Identity", "Letterhead", "Branded official company letterhead template delivered in print PDF and editable document formats.", p(1000), PricingMode.FIXED, false, "design", 15),
+        srv("srv_16", "Branding & Identity", "Brand guidelines", "Detailed brand usage manual documenting logo clearspace, colour codes, typography, and layout rules.", p(5000), PricingMode.FIXED, false, "guide", 16),
+        srv("srv_17", "Branding & Identity", "Packaging design", "Custom packaging and label dieline design (₹5,000 onwards depending on SKU format and print finishes).", p(5000), PricingMode.STARTING_FROM, false, "SKU", 17),
+        srv("srv_18", "Branding & Identity", "Complete stationery", "Coordinated corporate stationery suite including business card, letterhead, envelope, and folder.", p(4000), PricingMode.FIXED, false, "suite", 18),
 
-        // === WEB & UI/UX (Services 14..22) ===
-        srv("srv_14", "Web & E-Commerce", "5-Page Business Website", "Responsive modern website, contact form, WhatsApp CTA & basic SEO", p(28000), PricingMode.FIXED, false, "website", 14),
-        srv("srv_15", "Web & E-Commerce", "10-Page Corporate Website", "Custom multi-section corporate site with CMS blog & lead capture", p(45000), PricingMode.FIXED, false, "website", 15),
-        srv("srv_16", "Web & E-Commerce", "High-Converting Landing Page", "Focused single-page campaign funnel with tracking integration", p(12000), PricingMode.FIXED, false, "page", 16),
-        srv("srv_17", "Web & E-Commerce", "E-Commerce Store Setup (Shopify / Woo)", "Storefront setup, up to 25 products, Razorpay/UPI & shipping rules", p(48000), PricingMode.STARTING_FROM, false, "store", 17),
-        srv("srv_18", "UI/UX Design", "Web / Mobile App UI/UX Prototype", "Figma wireframes + interactive clickable UI for up to 10 screens", p(32000), PricingMode.STARTING_FROM, false, "prototype", 18),
-        srv("srv_19", "Web & E-Commerce", "Website Speed & Core Web Vitals Optimization", "Image compression, caching, script audit & mobile load optimization", p(8000), PricingMode.FIXED, false, "audit", 19),
-        srv("srv_20", "Web & E-Commerce", "Monthly Website Maintenance & Security", "Backups, plugin updates, uptime monitoring & minor text edits", p(4500), PricingMode.FIXED, true, "month", 20),
-        srv("srv_21", "Web & E-Commerce", "Custom Web Integration / API Workflow", "Bespoke CRM webhook, booking engine, or payment workflow", p(0), PricingMode.CUSTOM_QUOTE, false, "integration", 21),
-        srv("srv_22", "Web & E-Commerce", "Portfolio / Microsite Build", "Clean 3-page showcase microsite with gallery & inquiry form", p(18000), PricingMode.FIXED, false, "site", 22),
+        // === 3. VIDEO PRODUCTION & EDITING (srv_19 .. srv_25) ===
+        srv("srv_19", "Video Production & Editing", "Basic reel editing", "Clean vertical reel editing with smooth cuts, beat sync, basic captions, and balanced audio.", p(1500), PricingMode.FIXED, false, "reel", 19),
+        srv("srv_20", "Video Production & Editing", "Advanced reel editing", "High-retention vertical reel edit with kinetic captions, motion graphics, sound design, and colour grading.", p(3000), PricingMode.FIXED, false, "reel", 20),
+        srv("srv_21", "Video Production & Editing", "Motion graphics video", "Custom 2D animated motion graphics, product callouts, or kinetic typography explainer video.", p(4000), PricingMode.FIXED, false, "video", 21),
+        srv("srv_22", "Video Production & Editing", "Promotional video", "Commercial brand or product promo edit with motion titles, colour grading, and licensed background music.", p(5000), PricingMode.FIXED, false, "video", 22),
+        srv("srv_23", "Video Production & Editing", "YouTube video editing", "Long-form YouTube episode editing with pacing, lower thirds, B-roll, and audio cleanup (₹3,000 onwards).", p(3000), PricingMode.STARTING_FROM, false, "video", 23),
+        srv("srv_24", "Video Production & Editing", "Product video editing", "Focused product showcase video highlight with feature callouts, clean transitions, and sound design.", p(3000), PricingMode.FIXED, false, "video", 24),
+        srv("srv_25", "Video Production & Editing", "Short-form ad video", "Performance-structured short ad edit engineered with an opening hook, product demo, and CTA.", p(3000), PricingMode.FIXED, false, "video", 25),
 
-        // === VIDEO & MOTION (Services 23..28) ===
-        srv("srv_23", "Video & Motion", "6 Edited Reels / Shorts Pack", "6 dynamic vertical reels with captions, B-roll & SFX", p(15000), PricingMode.FIXED, true, "pack", 23),
-        srv("srv_24", "Video & Motion", "12 Edited Reels / Shorts Pack", "12 high-retention short-form edits with hooks & subtitles", p(27000), PricingMode.FIXED, true, "pack", 24),
-        srv("srv_25", "Video & Motion", "Brand / Product Promo Video Edit (60-90s)", "Commercial edit with motion titles, color grading & licensed audio", p(14000), PricingMode.STARTING_FROM, false, "video", 25),
-        srv("srv_26", "Video & Motion", "Motion Graphics Explainer (30-45s)", "2D animated UI/product explainer video with kinetic typography", p(18000), PricingMode.STARTING_FROM, false, "video", 26),
-        srv("srv_27", "Video & Motion", "UGC Ad Video Edit (Set of 3)", "3 performance ad variations with split hooks & CTAs", p(9000), PricingMode.FIXED, false, "set", 27),
-        srv("srv_28", "Video & Motion", "Podcast / YouTube Long-Form Edit", "Full episode edit, lower thirds, audio leveling & 2 short clips", p(6000), PricingMode.PER_UNIT, false, "episode", 28),
+        // === 4. WEBSITE DEVELOPMENT (srv_26 .. srv_31) ===
+        srv("srv_26", "Website Development", "Landing page", "Single-page responsive landing page built for high conversion, inquiry capture, and fast mobile loading.", p(8000), PricingMode.FIXED, false, "page", 26),
+        srv("srv_27", "Website Development", "Portfolio website", "Clean responsive portfolio showcase website with work gallery, about sections, and contact form.", p(15000), PricingMode.FIXED, false, "website", 27),
+        srv("srv_28", "Website Development", "Business website", "Multi-page responsive business website (up to 5 pages) with lead capture, WhatsApp CTA, and basic SEO.", p(20000), PricingMode.FIXED, false, "website", 28),
+        srv("srv_29", "Website Development", "E-commerce website", "Full online store with product catalog, cart, checkout flow, shipping setup, and payment gateway integration.", p(35000), PricingMode.FIXED, false, "store", 29),
+        srv("srv_30", "Website Development", "Website redesign", "Modern UI/UX and speed overhaul for an existing website (₹10,000 onwards depending on page count).", p(10000), PricingMode.STARTING_FROM, false, "website", 30),
+        srv("srv_31", "Website Development", "Website maintenance", "Monthly backups, security patches, uptime monitoring, and minor content updates (₹2,000 onwards).", p(2000), PricingMode.STARTING_FROM, true, "month", 31),
 
-        // === PERFORMANCE MARKETING & SEO (Services 29..36) ===
-        srv("srv_29", "Performance Marketing", "Meta Ads Campaign Setup & Management", "Pixel/CAPI check, audience testing, 3 ad sets & weekly optimization", p(18000), PricingMode.FIXED, true, "month", 29),
-        srv("srv_30", "Performance Marketing", "Google Ads Search & Display Management", "Keyword architecture, negative lists, conversion tracking & reporting", p(18000), PricingMode.FIXED, true, "month", 30),
-        srv("srv_31", "Performance Marketing", "Omnichannel Performance Retainer (Meta + Google)", "Full-funnel paid acquisition across Meta & Google with ROAS dashboard", p(30000), PricingMode.FIXED, true, "month", 31),
-        srv("srv_32", "SEO & Local Growth", "Google Business Profile Setup & Local SEO", "Category optimization, geo-tagged photos, citations & review playbook", p(7500), PricingMode.FIXED, false, "profile", 32),
-        srv("srv_33", "SEO & Local Growth", "On-Page & Technical SEO Retainer", "Keyword mapping, schema, metadata & monthly search growth report", p(16000), PricingMode.FIXED, true, "month", 33),
-        srv("srv_34", "Performance Marketing", "WhatsApp & Lead Funnel Automation", "Automated WhatsApp greeting, lead sheet sync & follow-up drip", p(11000), PricingMode.FIXED, false, "funnel", 34),
-        srv("srv_35", "Performance Marketing", "GA4, GTM & Conversion Pixel Setup", "Google Tag Manager, GA4 events, Meta Pixel & CAPI verification", p(7500), PricingMode.FIXED, false, "setup", 35),
-        srv("srv_36", "Performance Marketing", "Competitor & Digital Growth Audit", "Channel audit, creative benchmarks & 90-day acquisition roadmap", p(9000), PricingMode.FIXED, false, "audit", 36),
+        // === 5. DIGITAL MARKETING (srv_32 .. srv_40) ===
+        srv("srv_32", "Digital Marketing", "Social media account setup", "Account creation, bio optimization, profile branding, story highlights, and link-in-bio setup.", p(2000), PricingMode.FIXED, false, "setup", 32),
+        srv("srv_33", "Digital Marketing", "Social media strategy", "Tailored content pillars, target audience positioning, posting cadence, and growth roadmap.", p(3000), PricingMode.FIXED, false, "strategy", 33),
+        srv("srv_34", "Digital Marketing", "Content calendar", "Structured monthly content calendar mapping topics, creative formats, hooks, and publishing dates.", p(2000), PricingMode.FIXED, false, "calendar", 34),
+        srv("srv_35", "Digital Marketing", "Meta Ads campaign setup", "Meta Business Suite setup, Pixel/conversion tracking, audience structure, and initial ad campaign launch.", p(5000), PricingMode.FIXED, false, "setup", 35),
+        srv("srv_36", "Digital Marketing", "Google Ads campaign setup", "Google Ads Search/Display campaign architecture, keyword targeting, conversion tags, and launch.", p(5000), PricingMode.FIXED, false, "setup", 36),
+        srv("srv_37", "Digital Marketing", "SEO audit", "Comprehensive website SEO health check covering indexing, technical errors, Core Web Vitals, and fixes.", p(3000), PricingMode.FIXED, false, "audit", 37),
+        srv("srv_38", "Digital Marketing", "Keyword research", "Commercial & informational keyword mapping report with search intent and priority ranking targets.", p(2000), PricingMode.FIXED, false, "report", 38),
+        srv("srv_39", "Digital Marketing", "On-page SEO", "Optimization of meta titles, descriptions, headings, schema markup, and internal links (₹5,000 onwards).", p(5000), PricingMode.STARTING_FROM, false, "website", 39),
+        srv("srv_40", "Digital Marketing", "Competitor analysis", "Detailed benchmark analysis of competitor positioning, creatives, keywords, and paid funnel angles.", p(3000), PricingMode.FIXED, false, "report", 40),
 
-        // === SOCIAL MEDIA MANAGEMENT & CONTENT (Services 37..40) ===
-        srv("srv_37", "Social Media Management", "Social Media Account Management (2 Channels)", "Content calendar, scheduling, captions, hashtags & monthly insights", p(15000), PricingMode.FIXED, true, "month", 37),
-        srv("srv_38", "Content & Copywriting", "Website Conversion Copywriting (Up to 5 Pages)", "Research-backed brand messaging, headlines, CTAs & SEO meta copy", p(12000), PricingMode.FIXED, false, "website", 38),
-        srv("srv_39", "Content & Copywriting", "SEO Blog Articles Pack (4 Articles)", "4 researched 1,000-word articles formatted with internal links", p(10000), PricingMode.FIXED, true, "pack", 39),
-        srv("srv_40", "Content & Copywriting", "Email Marketing & Newsletter Flows (4 Campaigns)", "4 responsive email templates, copy & audience segmentation setup", p(9500), PricingMode.FIXED, true, "pack", 40),
-
-        // === 5 ONE-TIME PACKAGES (pkg_01 .. pkg_05) ===
+        // === 02. OPTIONAL BUNDLED PROJECT PACKAGES (pkg_01 .. pkg_05) ===
         CatalogueItem(
             id = "pkg_01",
             kind = CatalogueKind.PACKAGE.name,
-            category = "One-Time Packages",
-            name = "Starter Brand Kit",
-            description = "Essential visual identity for new businesses launching fast.",
-            pricePaise = p(22000),
+            category = "Bundled Packages",
+            name = "BRAND ESSENTIALS",
+            description = "For startups establishing their brand identity. Includes: Logo design with 2 concepts • Logo variations • Brand colour palette • Typography selection • Business card design • 3 social media creatives • Basic brand guidelines.",
+            pricePaise = p(15000),
             pricingMode = PricingMode.FIXED.name,
             requiresBillingFrequency = false,
             unitLabel = "package",
             inclusions = listOf(
-                PackageInclusion("srv_01", "Logo design (Primary + Variations)", "Branding & Identity", 1, "3 initial concepts & final vector files"),
-                PackageInclusion("srv_04", "Business stationery suite", "Branding & Identity", 1, "Visiting card, letterhead & email signature"),
-                PackageInclusion("srv_08", "6 Social media launch creatives", "Social Media Design", 6, "Branded launch templates for Instagram/LinkedIn")
+                PackageInclusion("srv_11", "Logo design with 2 concepts", "Branding & Identity", 1, "2 initial logo concepts & refinements"),
+                PackageInclusion("srv_11", "Logo variations", "Branding & Identity", 1, "Primary, stacked, icon & monochrome marks"),
+                PackageInclusion("srv_13", "Brand colour palette", "Branding & Identity", 1, "Primary & secondary colour system"),
+                PackageInclusion("srv_13", "Typography selection", "Branding & Identity", 1, "Brand display & body font pairings"),
+                PackageInclusion("srv_14", "Business card design", "Branding & Identity", 1, "Print-ready double-sided card layout"),
+                PackageInclusion("srv_01", "3 social media creatives", "Graphic Design", 3, "Branded social launch creatives"),
+                PackageInclusion("srv_16", "Basic brand guidelines", "Branding & Identity", 1, "Essential visual usage reference")
             ),
             sortOrder = 101
         ),
         CatalogueItem(
             id = "pkg_02",
             kind = CatalogueKind.PACKAGE.name,
-            category = "One-Time Packages",
-            name = "Social Launch Pack",
-            description = "High-impact creative & reel sprint to build social momentum.",
-            pricePaise = p(32000),
+            category = "Bundled Packages",
+            name = "BRAND BUILDER",
+            description = "For businesses building a professional brand image. Includes: Complete logo design • Brand identity system • Brand guidelines • Business card and letterhead • 5 social media creatives • 2 promotional posters • 2 reel edits.",
+            pricePaise = p(25000),
             pricingMode = PricingMode.FIXED.name,
             requiresBillingFrequency = false,
             unitLabel = "package",
             inclusions = listOf(
-                PackageInclusion("srv_08", "12 Social media creatives", "Social Media Design", 12, "Static & carousel creatives"),
-                PackageInclusion("srv_23", "6 Edited reels", "Video & Motion", 6, "Short-form reels with captions & hooks"),
-                PackageInclusion("srv_37", "Content calendar & caption copy", "Social Media Management", 1, "30-day launch calendar & copywriting")
+                PackageInclusion("srv_11", "Complete logo design", "Branding & Identity", 1, "Full logo suite with vector source files"),
+                PackageInclusion("srv_13", "Brand identity system", "Branding & Identity", 1, "Coordinated colours, typography & visual language"),
+                PackageInclusion("srv_16", "Brand guidelines", "Branding & Identity", 1, "Comprehensive brand guideline PDF"),
+                PackageInclusion("srv_18", "Business card and letterhead", "Branding & Identity", 1, "Print-ready card & official letterhead"),
+                PackageInclusion("srv_01", "5 social media creatives", "Graphic Design", 5, "Custom branded social posts"),
+                PackageInclusion("srv_04", "2 promotional posters", "Graphic Design", 2, "Campaign promotional poster designs"),
+                PackageInclusion("srv_19", "2 reel edits", "Video Production & Editing", 2, "Edited vertical short-form reels")
             ),
             sortOrder = 102
         ),
         CatalogueItem(
             id = "pkg_03",
             kind = CatalogueKind.PACKAGE.name,
-            category = "One-Time Packages",
-            name = "Business Launch",
-            description = "Complete brand, website & local growth launch bundle for growing brands.",
-            pricePaise = p(55000),
+            category = "Bundled Packages",
+            name = "DIGITAL PRESENCE",
+            description = "For businesses establishing their online presence. Includes: Complete brand identity • 8 social media creatives • 4 professionally edited reels • Social media account setup • Content strategy • Landing page design and development • Basic on-page SEO.",
+            pricePaise = p(40000),
             pricingMode = PricingMode.FIXED.name,
             requiresBillingFrequency = false,
             unitLabel = "package",
             inclusions = listOf(
-                PackageInclusion("srv_01", "Logo design", "Branding & Identity", 1, "Primary logo, monochrome mark & brand guidelines"),
-                PackageInclusion("srv_14", "5-page business website", "Web & E-Commerce", 1, "Responsive 5-page website with lead form & WhatsApp CTA"),
-                PackageInclusion("srv_08", "12 Social media creatives", "Social Media Design", 12, "Branded social launch grid & story templates"),
-                PackageInclusion("srv_32", "Google Business Profile setup", "SEO & Local Growth", 1, "Verified GBP listing & local SEO checklist")
+                PackageInclusion("srv_13", "Complete brand identity", "Branding & Identity", 1, "Logo suite, palette, typography & assets"),
+                PackageInclusion("srv_01", "8 social media creatives", "Graphic Design", 8, "Branded static & feed creatives"),
+                PackageInclusion("srv_20", "4 professionally edited reels", "Video Production & Editing", 4, "Dynamic vertical reels with captions & SFX"),
+                PackageInclusion("srv_32", "Social media account setup", "Digital Marketing", 1, "Optimized profiles, bio & highlights"),
+                PackageInclusion("srv_33", "Content strategy", "Digital Marketing", 1, "Content pillars & publishing plan"),
+                PackageInclusion("srv_26", "Landing page design and development", "Website Development", 1, "Responsive high-converting landing page"),
+                PackageInclusion("srv_39", "Basic on-page SEO", "Digital Marketing", 1, "Metadata, headings & indexing setup")
             ),
             sortOrder = 103
         ),
         CatalogueItem(
             id = "pkg_04",
             kind = CatalogueKind.PACKAGE.name,
-            category = "One-Time Packages",
-            name = "Performance Growth Sprint",
-            description = "Paid acquisition, landing funnel & video ad creative testing sprint.",
-            pricePaise = p(48000),
+            category = "Bundled Packages",
+            name = "BUSINESS LAUNCH",
+            description = "For businesses launching or expanding digitally. Includes: Complete brand identity • 12 social media creatives • 6 edited reels • 4 advertising creatives • Social media account setup • Business website (up to 5 pages) • Basic SEO setup • Meta Ads campaign setup • Digital marketing strategy.",
+            pricePaise = p(55000),
             pricingMode = PricingMode.FIXED.name,
             requiresBillingFrequency = false,
             unitLabel = "package",
             inclusions = listOf(
-                PackageInclusion("srv_16", "High-converting landing page", "Web & E-Commerce", 1, "Dedicated campaign funnel page"),
-                PackageInclusion("srv_29", "Meta Ads campaign setup & launch", "Performance Marketing", 1, "Campaign architecture & audience testing"),
-                PackageInclusion("srv_27", "3 UGC video ad variations", "Video & Motion", 3, "Hook variations for A/B testing"),
-                PackageInclusion("srv_35", "GA4 & Meta Pixel / CAPI setup", "Performance Marketing", 1, "End-to-end conversion tracking")
+                PackageInclusion("srv_13", "Complete brand identity", "Branding & Identity", 1, "Full visual identity system & guidelines"),
+                PackageInclusion("srv_01", "12 social media creatives", "Graphic Design", 12, "Branded social launch creatives"),
+                PackageInclusion("srv_19", "6 edited reels", "Video Production & Editing", 6, "Engaging short-form reels with captions"),
+                PackageInclusion("srv_05", "4 advertising creatives", "Graphic Design", 4, "Conversion-ready paid ad creatives"),
+                PackageInclusion("srv_32", "Social media account setup", "Digital Marketing", 1, "Profile branding & optimization"),
+                PackageInclusion("srv_28", "Business website (up to 5 pages)", "Website Development", 1, "Responsive 5-page business website"),
+                PackageInclusion("srv_39", "Basic SEO setup", "Digital Marketing", 1, "On-page SEO & search indexing setup"),
+                PackageInclusion("srv_35", "Meta Ads campaign setup", "Digital Marketing", 1, "Pixel, audiences & launch campaign"),
+                PackageInclusion("srv_33", "Digital marketing strategy", "Digital Marketing", 1, "Growth strategy & acquisition roadmap")
             ),
             sortOrder = 104
         ),
         CatalogueItem(
             id = "pkg_05",
             kind = CatalogueKind.PACKAGE.name,
-            category = "One-Time Packages",
-            name = "E-Commerce Launch Pro",
-            description = "End-to-end D2C storefront, packaging & conversion launch kit.",
+            category = "Bundled Packages",
+            name = "COMPLETE BRAND EXPERIENCE",
+            description = "For businesses seeking a comprehensive branding and digital launch. Includes: Complete brand identity • 15 social media creatives • 8 advanced reels • 5 advertising creatives • 5-page business website • On-page SEO setup • Social media account setup • Meta Ads campaign setup • Google Ads campaign setup • Competitor analysis • Digital marketing strategy.",
             pricePaise = p(75000),
             pricingMode = PricingMode.FIXED.name,
             requiresBillingFrequency = false,
             unitLabel = "package",
             inclusions = listOf(
-                PackageInclusion("srv_02", "Complete brand identity kit", "Branding & Identity", 1, "Logo, palette, fonts & brand manual"),
-                PackageInclusion("srv_17", "E-Commerce store setup (up to 25 SKUs)", "Web & E-Commerce", 1, "Payment gateway, shipping & collection pages"),
-                PackageInclusion("srv_08", "12 Social media creatives", "Social Media Design", 12, "Product spotlight & offer creatives"),
-                PackageInclusion("srv_35", "Conversion tracking & analytics", "Performance Marketing", 1, "Purchase events & Google Analytics 4")
+                PackageInclusion("srv_13", "Complete brand identity", "Branding & Identity", 1, "Complete brand system & usage guidelines"),
+                PackageInclusion("srv_01", "15 social media creatives", "Graphic Design", 15, "Comprehensive social launch pack"),
+                PackageInclusion("srv_20", "8 advanced reels", "Video Production & Editing", 8, "Motion graphics, SFX & colour-graded reels"),
+                PackageInclusion("srv_05", "5 advertising creatives", "Graphic Design", 5, "Multi-format paid campaign ad creatives"),
+                PackageInclusion("srv_28", "5-page business website", "Website Development", 1, "Full 5-page responsive business website"),
+                PackageInclusion("srv_39", "On-page SEO setup", "Digital Marketing", 1, "Keywords, metadata, schema & on-page SEO"),
+                PackageInclusion("srv_32", "Social media account setup", "Digital Marketing", 1, "Full profile optimization & setup"),
+                PackageInclusion("srv_35", "Meta Ads campaign setup", "Digital Marketing", 1, "Meta Business, Pixel & launch ads"),
+                PackageInclusion("srv_36", "Google Ads campaign setup", "Digital Marketing", 1, "Google Search/Display campaign launch"),
+                PackageInclusion("srv_40", "Competitor analysis", "Digital Marketing", 1, "Market & competitor benchmark audit"),
+                PackageInclusion("srv_33", "Digital marketing strategy", "Digital Marketing", 1, "Full-funnel digital launch strategy")
             ),
             sortOrder = 105
         ),
 
-        // === 11 ADD-ONS (add_01 .. add_11) ===
+        // === 03. ADDITIONAL CHARGES / ADD-ONS (add_01 .. add_11) ===
         CatalogueItem(
             id = "add_01",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Extra Page",
-            description = "Additional custom designed & responsive website page beyond package limit.",
-            pricePaise = p(2000),
+            category = "Additional Charges",
+            name = "Additional design concept",
+            description = "Extra original design direction or concept option beyond standard package inclusions.",
+            pricePaise = p(1000),
             pricingMode = PricingMode.PER_UNIT.name,
-            unitLabel = "page",
+            unitLabel = "concept",
             sortOrder = 201
         ),
         CatalogueItem(
             id = "add_02",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Urgent Delivery (25% Express Surcharge)",
-            description = "Priority studio turnaround calculated as 25% of eligible creative/web lines.",
+            category = "Additional Charges",
+            name = "Urgent delivery (25% extra)",
+            description = "Priority studio turnaround calculated as 25% extra on eligible project lines.",
             pricePaise = 0L,
             pricingMode = PricingMode.PERCENTAGE_SURCHARGE.name,
             surchargePercent = 25,
@@ -314,101 +354,101 @@ object CatalogueSeedData {
         CatalogueItem(
             id = "add_03",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Media Ad Spend Budget (Pass-Through)",
-            description = "Direct Meta / Google ad budget billed directly or at actual platform cost.",
-            pricePaise = 0L,
-            pricingMode = PricingMode.ACTUAL_COST.name,
-            requiresBillingFrequency = true,
-            unitLabel = "campaign",
+            category = "Additional Charges",
+            name = "Additional revision round",
+            description = "Extra revision cycle beyond the standard 2 included rounds per major deliverable (₹500 onwards).",
+            pricePaise = p(500),
+            pricingMode = PricingMode.STARTING_FROM.name,
+            unitLabel = "round",
             sortOrder = 203
         ),
         CatalogueItem(
             id = "add_04",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Additional Revision Round",
-            description = "Extra structured revision round beyond the standard 2 included rounds.",
-            pricePaise = p(2500),
-            pricingMode = PricingMode.PER_UNIT.name,
-            unitLabel = "round",
+            category = "Additional Charges",
+            name = "Source / editable files",
+            description = "Open native working source files (AI, PSD, Figma, PRPROJ) supplied upon completion (₹1,000 onwards).",
+            pricePaise = p(1000),
+            pricingMode = PricingMode.STARTING_FROM.name,
+            unitLabel = "deliverable",
             sortOrder = 204
         ),
         CatalogueItem(
             id = "add_05",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Extra Social Creative",
-            description = "Single additional static or carousel graphic added to campaign pack.",
-            pricePaise = p(900),
-            pricingMode = PricingMode.PER_UNIT.name,
-            unitLabel = "creative",
+            category = "Additional Charges",
+            name = "Premium stock assets",
+            description = "Licensed commercial stock photography, video clips, audio, or fonts billed at actual cost.",
+            pricePaise = 0L,
+            pricingMode = PricingMode.ACTUAL_COST.name,
+            unitLabel = "asset",
             sortOrder = 205
         ),
         CatalogueItem(
             id = "add_06",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Extra Edited Reel",
-            description = "Additional 30-60s vertical reel edit with subtitles & motion callouts.",
-            pricePaise = p(2800),
-            pricingMode = PricingMode.PER_UNIT.name,
-            unitLabel = "reel",
+            category = "Additional Charges",
+            name = "Professional photography",
+            description = "On-location or studio commercial photography shoot priced by custom quotation.",
+            pricePaise = 0L,
+            pricingMode = PricingMode.CUSTOM_QUOTE.name,
+            unitLabel = "shoot",
             sortOrder = 206
         ),
         CatalogueItem(
             id = "add_07",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "WhatsApp Chat & Lead Widget Integration",
-            description = "Floating WhatsApp widget with pre-filled inquiry & UTM capture.",
-            pricePaise = p(1500),
-            pricingMode = PricingMode.FIXED.name,
-            unitLabel = "setup",
+            category = "Additional Charges",
+            name = "Professional videography",
+            description = "On-location video production crew, lighting, and camera shoot priced by custom quotation.",
+            pricePaise = 0L,
+            pricingMode = PricingMode.CUSTOM_QUOTE.name,
+            unitLabel = "shoot",
             sortOrder = 207
         ),
         CatalogueItem(
             id = "add_08",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Multi-Language Page Adaptation",
-            description = "Localized layout adaptation per additional regional language.",
-            pricePaise = p(3500),
+            category = "Additional Charges",
+            name = "Additional website page",
+            description = "Extra custom designed and responsive website page added beyond website package limit.",
+            pricePaise = p(2000),
             pricingMode = PricingMode.PER_UNIT.name,
-            unitLabel = "language",
+            unitLabel = "page",
             sortOrder = 208
         ),
         CatalogueItem(
             id = "add_09",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Domain, SSL & Hosting Setup",
-            description = "DNS configuration, SSL certificate & cloud hosting deployment (domain cost at actuals).",
-            pricePaise = p(3000),
-            pricingMode = PricingMode.FIXED.name,
-            unitLabel = "setup",
+            category = "Additional Charges",
+            name = "Website hosting / domain",
+            description = "Third-party domain registration and web hosting plan billed separately at actual cost.",
+            pricePaise = 0L,
+            pricingMode = PricingMode.ACTUAL_COST.name,
+            unitLabel = "year",
             sortOrder = 209
         ),
         CatalogueItem(
             id = "add_10",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Licensed Stock Assets / Font License",
-            description = "Commercial stock video, photography, or premium font licensing.",
-            pricePaise = 0L,
-            pricingMode = PricingMode.ACTUAL_COST.name,
-            unitLabel = "license",
+            category = "Additional Charges",
+            name = "Ad campaign management",
+            description = "Ongoing ad performance monitoring, optimization, and reporting (₹5,000 onwards; ad budget not included).",
+            pricePaise = p(5000),
+            pricingMode = PricingMode.STARTING_FROM.name,
+            requiresBillingFrequency = true,
+            unitLabel = "month",
             sortOrder = 210
         ),
         CatalogueItem(
             id = "add_11",
             kind = CatalogueKind.ADDON.name,
-            category = "Add-Ons",
-            name = "Bespoke Feature / Custom Quote Add-On",
-            description = "Custom scope priced specifically to client requirements.",
-            pricePaise = 0L,
-            pricingMode = PricingMode.CUSTOM_QUOTE.name,
-            unitLabel = "custom",
+            category = "Additional Charges",
+            name = "Additional platform setup",
+            description = "Profile creation, branding banners, and bio setup for an additional social or ad channel.",
+            pricePaise = p(1000),
+            pricingMode = PricingMode.PER_UNIT.name,
+            unitLabel = "platform",
             sortOrder = 211
         )
     )

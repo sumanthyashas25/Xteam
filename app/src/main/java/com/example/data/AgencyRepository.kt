@@ -252,6 +252,9 @@ class AgencyRepository(context: Context) {
         }
         saveMemberPrivateInfo(uid, age, emailLower, null)
         seedCatalogueAndOrgIfNeeded()
+        runCatching {
+            syncOfficialCatalogueAndRouting(syncRouting = true, syncCompanyTerms = true, actor = null)
+        }
         logActivity(
             ActivityCategory.COMPANY,
             "X.MAX Workspace Provisioned",
@@ -748,6 +751,118 @@ class AgencyRepository(context: Context) {
             mapOf("archived" to archived, "updatedAt" to FieldValue.serverTimestamp())
         ).await()
         logActivity(ActivityCategory.COMPANY, if (archived) "Archived Service" else "Restored Service", item.name, actor.uid, actor.fullName, item.id)
+    }
+
+    suspend fun syncOfficialCatalogueAndRouting(
+        syncRouting: Boolean,
+        syncCompanyTerms: Boolean,
+        actor: Member? = null
+    ): Int {
+        val officialItems = CatalogueSeedData.defaultCatalogue()
+        val existingCatIds = sub("catalogue").get().await().documents.map { it.id }.toSet()
+
+        val ops = mutableListOf<(com.google.firebase.firestore.WriteBatch) -> Unit>()
+        officialItems.forEach { item ->
+            val docRef = sub("catalogue").document(item.id)
+            if (item.id in existingCatIds) {
+                val payload = catalogueToMap(item, isCreate = false)
+                ops += { batch -> batch.update(docRef, payload) }
+            } else {
+                val payload = catalogueToMap(item, isCreate = true)
+                ops += { batch -> batch.set(docRef, payload) }
+            }
+        }
+
+        if (syncRouting) {
+            val existingDeptIds = sub("departments").get().await().documents.map { it.id }.toSet()
+            CatalogueSeedData.defaultDepartments().forEach { dept ->
+                if (dept.id !in existingDeptIds) {
+                    val docRef = sub("departments").document(dept.id)
+                    val payload = mapOf(
+                        "name" to dept.name,
+                        "description" to dept.description,
+                        "active" to dept.active,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                    ops += { batch -> batch.set(docRef, payload) }
+                }
+            }
+            val existingRoleIds = sub("job_roles").get().await().documents.map { it.id }.toSet()
+            CatalogueSeedData.defaultJobRoles().forEach { role ->
+                if (role.id !in existingRoleIds) {
+                    val docRef = sub("job_roles").document(role.id)
+                    val payload = mapOf(
+                        "name" to role.name,
+                        "departmentId" to role.departmentId,
+                        "active" to role.active,
+                        "createdAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                    ops += { batch -> batch.set(docRef, payload) }
+                }
+            }
+            val existingRuleIds = sub("routing_rules").get().await().documents.map { it.id }.toSet()
+            CatalogueSeedData.defaultRoutingRules().forEach { rule ->
+                val docRef = sub("routing_rules").document(rule.id)
+                val map = mutableMapOf<String, Any>(
+                    "name" to rule.name,
+                    "keywords" to rule.keywords,
+                    "serviceCategories" to rule.serviceCategories,
+                    "departmentId" to rule.departmentId,
+                    "departmentName" to rule.departmentName,
+                    "jobRoleId" to rule.jobRoleId,
+                    "jobRoleName" to rule.jobRoleName,
+                    "priority" to rule.priority,
+                    "active" to rule.active,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (rule.id in existingRuleIds) {
+                    ops += { batch -> batch.update(docRef, map) }
+                } else {
+                    map["createdAt"] = FieldValue.serverTimestamp()
+                    ops += { batch -> batch.set(docRef, map) }
+                }
+            }
+        }
+
+        ops.chunked(180).forEach { slice ->
+            val batch = db.batch()
+            slice.forEach { applyOp -> applyOp(batch) }
+            batch.commit().await()
+        }
+
+        if (syncCompanyTerms) {
+            val compSnap = companyRef.get().await()
+            if (compSnap.exists()) {
+                val existingTerms = compSnap.getString("defaultPaymentTerms").orEmpty()
+                if (existingTerms.isBlank() || existingTerms.contains("due before production begins", ignoreCase = true)) {
+                    val defaults = CatalogueSeedData.defaultCompanyProfile(actor?.uid ?: "")
+                    companyRef.update(
+                        mapOf(
+                            "defaultAdvancePercent" to defaults.defaultAdvancePercent,
+                            "defaultValidityDays" to defaults.defaultValidityDays,
+                            "defaultRevisionRounds" to defaults.defaultRevisionRounds,
+                            "defaultPaymentTerms" to defaults.defaultPaymentTerms,
+                            "defaultApprovalInstructions" to defaults.defaultApprovalInstructions,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+        }
+
+        if (actor != null) {
+            logActivity(
+                ActivityCategory.COMPANY,
+                "Catalogue Synced (${CatalogueSeedData.OFFICIAL_CATALOGUE_VERSION})",
+                "Updated ${officialItems.size} official PDF services, packages & add-ons",
+                actor.uid,
+                actor.fullName,
+                CatalogueSeedData.OFFICIAL_CATALOGUE_VERSION
+            )
+        }
+        return officialItems.size
     }
 
     suspend fun saveRoutingRule(rule: RoutingRule, actor: Member) {

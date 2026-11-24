@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -26,6 +29,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.domain.MoneyFormatter
+import com.example.domain.WorkDistributionEngine
 import com.example.model.*
 import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
@@ -195,7 +199,8 @@ fun ClientsScreen(
 fun QuotationsScreen(
     state: AgencyUiState,
     onOpenQuote: (Quotation?) -> Unit,
-    onDeleteQuotation: (Quotation) -> Unit = {}
+    onDeleteQuotation: (Quotation) -> Unit = {},
+    onOpenPayments: () -> Unit = {}
 ) {
     var statusFilter by remember { mutableStateOf<QuotationStatus?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -317,6 +322,40 @@ fun QuotationsScreen(
                                 color = StudioTextSecondary
                             )
                         }
+                        if (q.statusEnum() == QuotationStatus.CLIENT_APPROVED && q.advancePaise > 0L) {
+                            val linkedProj = state.projects.firstOrNull { !it.deleted && (it.approvedQuoteId == q.id || (q.linkedProjectId.isNotBlank() && it.id == q.linkedProjectId)) }
+                            val advancePending = linkedProj == null || linkedProj.advanceDuePaise > 0L
+                            if (advancePending) {
+                                Surface(
+                                    onClick = onOpenPayments,
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = ButterYellow.copy(alpha = 0.7f),
+                                    border = BorderStroke(1.dp, DeepAmberInk.copy(alpha = 0.25f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(Icons.Filled.NotificationsActive, contentDescription = null, tint = DeepAmberInk, modifier = Modifier.size(16.dp))
+                                            Text(
+                                                "Advance ${MoneyFormatter.formatInr(linkedProj?.advanceDuePaise ?: q.advancePaise)} reminder",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                color = DeepAmberInk
+                                            )
+                                        }
+                                        Text("Track →", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -350,7 +389,8 @@ fun QuotationsScreen(
 fun CatalogueScreen(
     state: AgencyUiState,
     onSaveItem: (CatalogueItem) -> Unit,
-    onToggleArchive: (CatalogueItem, Boolean) -> Unit
+    onToggleArchive: (CatalogueItem, Boolean) -> Unit,
+    onSyncOfficialCatalogue: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var query by remember { mutableStateOf("") }
@@ -375,7 +415,23 @@ fun CatalogueScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Catalogue (${filtered.size})", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
                 if (canEdit) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        if (onSyncOfficialCatalogue != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    AppHapticsAndNotifier.triggerTickHaptic(context)
+                                    onSyncOfficialCatalogue()
+                                },
+                                shape = RoundedCornerShape(999.dp),
+                                border = BorderStroke(1.dp, SubtleOutline),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                modifier = Modifier
+                                    .height(40.dp)
+                                    .testTag("sync_official_catalogue_button")
+                            ) {
+                                Text("Sync PDF", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                            }
+                        }
                         FilterChip(
                             selected = showArchived,
                             onClick = { showArchived = !showArchived },
@@ -410,12 +466,9 @@ fun CatalogueScreen(
             CatalogueServiceTicketCard(
                 item = item,
                 index = index,
-                buttonLabel = if (canEdit) "Check" else "Details",
+                buttonLabel = if (canEdit) "Edit" else "Details",
+                expandable = true,
                 onButtonClick = {
-                    AppHapticsAndNotifier.triggerTickHaptic(context)
-                    if (canEdit) editing = item else viewingItem = item
-                },
-                onCardClick = {
                     AppHapticsAndNotifier.triggerTickHaptic(context)
                     if (canEdit) editing = item else viewingItem = item
                 }
@@ -517,7 +570,16 @@ fun PaymentsScreen(
     onRecordPayment: (Project, Long, Long, PaymentMethod, String, String) -> Unit
 ) {
     val context = LocalContext.current
+    val reminderSummary = remember(state.projects, state.deliverables, state.quotations) {
+        WorkDistributionEngine.computePaymentReminders(
+            projects = state.projects,
+            deliverables = state.deliverables,
+            quotations = state.quotations
+        )
+    }
     var recordTarget by remember { mutableStateOf<Project?>(null) }
+    var prefillAmountPaise by remember { mutableStateOf<Long?>(null) }
+    var prefillNote by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf("ALL") }
 
@@ -528,6 +590,11 @@ fun PaymentsScreen(
     val collectionPct = remember(totalAgreed, totalPaid) {
         if (totalAgreed <= 0L) 0 else ((totalPaid.toDouble() / totalAgreed.toDouble()) * 100.0).toInt().coerceIn(0, 100)
     }
+    val animatedCollectionProgress by animateFloatAsState(
+        targetValue = (collectionPct / 100f).coerceIn(0f, 1f),
+        animationSpec = tween(420, easing = FastOutSlowInEasing),
+        label = "collection_progress"
+    )
     val advanceDueCount = remember(activeProjects) { activeProjects.count { it.advanceDuePaise > 0L } }
     val balanceDueCount = remember(activeProjects) { activeProjects.count { it.outstandingPaise > 0L } }
     val settledCount = remember(activeProjects) { activeProjects.count { it.outstandingPaise <= 0L } }
@@ -596,7 +663,7 @@ fun PaymentsScreen(
                         )
                     }
                     LinearProgressIndicator(
-                        progress = { (collectionPct / 100f).coerceIn(0f, 1f) },
+                        progress = { animatedCollectionProgress },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(10.dp)
@@ -614,6 +681,119 @@ fun PaymentsScreen(
                         }
                         if (balanceDueCount > 0) {
                             StatusPill("Open Balances: $balanceDueCount", KpiLavenderBg, VioletPrimary)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (reminderSummary.totalCount > 0) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = PureWhite,
+                    border = BorderStroke(1.dp, DeepAmberInk.copy(alpha = 0.25f)),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("payment_reminders_section")
+                ) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Filled.NotificationsActive, contentDescription = null, tint = DeepAmberInk, modifier = Modifier.size(20.dp))
+                                Text("Payment Reminders (${reminderSummary.totalCount})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                            }
+                            StatusPill(
+                                label = "${reminderSummary.finalCount} Final • ${reminderSummary.advanceCount} Advance",
+                                containerColor = ButterYellow,
+                                contentColor = DeepAmberInk
+                            )
+                        }
+
+                        reminderSummary.projectReminders.forEach { rem ->
+                            val isFinal = rem.type != WorkDistributionEngine.PaymentReminderType.ADVANCE_DUE
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (isFinal) SoftBlush else ButterYellow.copy(alpha = 0.55f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            rem.type.label,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = if (isFinal) CrimsonBlocked else DeepAmberInk
+                                        )
+                                        Text(
+                                            MoneyFormatter.formatInr(rem.amountDuePaise),
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = ObsidianCharcoal
+                                        )
+                                    }
+                                    Text(
+                                        "${formatTitleCase(rem.project.title)} • ${formatTitleCase(rem.project.clientCompanyName)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal
+                                    )
+                                    Text(rem.detail, style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                                    if (canRecord) {
+                                        Button(
+                                            onClick = {
+                                                AppHapticsAndNotifier.triggerTickHaptic(context)
+                                                prefillAmountPaise = rem.amountDuePaise
+                                                prefillNote = if (isFinal) "Final balance settlement" else "Project advance payment"
+                                                recordTarget = rem.project
+                                            },
+                                            shape = RoundedCornerShape(999.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite),
+                                            modifier = Modifier.fillMaxWidth().height(40.dp)
+                                        ) {
+                                            Text(if (isFinal) "Record Final Payment" else "Record Advance Payment", fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        reminderSummary.quoteAdvanceReminders.forEach { qRem ->
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = KpiLavenderBg.copy(alpha = 0.7f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("Approved Quote • Advance Due", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.ExtraBold, color = VioletPrimary)
+                                        Text(MoneyFormatter.formatInr(qRem.advanceDuePaise), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.ExtraBold, color = ObsidianCharcoal)
+                                    }
+                                    Text(
+                                        "${qRem.quotation.quoteNumber} • ${formatTitleCase(qRem.quotation.projectTitle)} (${formatTitleCase(qRem.quotation.clientSnapshot.companyName)})",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = ObsidianCharcoal
+                                    )
+                                    Text("Client approved quotation — accept on Requests tab to activate project billing.", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                                }
+                            }
                         }
                     }
                 }
@@ -728,6 +908,8 @@ fun PaymentsScreen(
                             Button(
                                 onClick = {
                                     AppHapticsAndNotifier.triggerTickHaptic(context)
+                                    prefillAmountPaise = null
+                                    prefillNote = ""
                                     recordTarget = proj
                                 },
                                 shape = RoundedCornerShape(999.dp),
@@ -780,10 +962,15 @@ fun PaymentsScreen(
     }
 
     recordTarget?.let { proj ->
-        var amountRupees by remember { mutableStateOf(MoneyFormatter.paiseToEditableRupees(proj.advanceDuePaise.takeIf { proj.paidPaise == 0L && it > 0L } ?: proj.outstandingPaise)) }
+        val defaultPaise = prefillAmountPaise
+            ?: proj.advanceDuePaise.takeIf { proj.paidPaise == 0L && it > 0L }
+            ?: proj.outstandingPaise
+        var amountRupees by remember(proj.id, prefillAmountPaise) {
+            mutableStateOf(MoneyFormatter.paiseToEditableRupees(defaultPaise))
+        }
         var method by remember { mutableStateOf(PaymentMethod.UPI) }
         var ref by remember { mutableStateOf("") }
-        var note by remember { mutableStateOf("") }
+        var note by remember(proj.id, prefillNote) { mutableStateOf(prefillNote) }
 
         AlertDialog(
             onDismissRequest = { recordTarget = null },

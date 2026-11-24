@@ -282,7 +282,8 @@ class ExampleRobolectricTest {
     }
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("menu_dest_projects").assertExists()
-    composeTestRule.onNodeWithTag("menu_dest_chat").assertExists()
+    composeTestRule.onNodeWithTag("menu_tab_chat").assertExists()
+    composeTestRule.onNodeWithTag("menu_dest_chat").assertDoesNotExist()
     composeTestRule.onNodeWithTag("menu_dest_notifications").assertExists()
     composeTestRule.onNodeWithTag("menu_sign_out_button").assertExists()
 
@@ -372,17 +373,29 @@ class ExampleRobolectricTest {
       )
     )
 
+    val dmChannel = ChatChannel(
+      id = "dm_u_admin_u_staff",
+      title = "X.MAX Director & Aarav Designer",
+      topic = "Direct Message",
+      channelType = ChatChannelType.DIRECT.name,
+      participantUids = listOf("u_admin", "u_staff"),
+      lastMessagePreview = "Hey Aarav!",
+      messageCount = 1L
+    )
+    val chatStateWithDm = chatState.copy(chatChannels = listOf(generalChannel, dmChannel))
+
     composeTestRule.activityRule.scenario.onActivity { activity ->
       activity.setContent {
         XMaxTheme(darkTheme = false) {
           TeamChatScreen(
-            state = chatState,
+            state = chatStateWithDm,
             initialChannelId = null,
             observeMessages = { flowOf(SyncedData(sampleMessages, false)) },
             onEnsureGeneralChannel = {},
-            onCreateChannel = { _, _, _, _, _ -> },
+            onCreateChannel = { _, _, _, _, _, _ -> },
             onSendMessage = { _, _, _, _, _ -> },
             onReportMessage = { _, _ -> },
+            onOpenDirectChat = { _, onReady, _ -> onReady(dmChannel) },
             onCloseChat = {}
           )
         }
@@ -391,13 +404,25 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_hub_screen").assertExists()
     composeTestRule.onNodeWithText("New Chat").assertExists()
-    composeTestRule.onNodeWithTag("chat_tile_channels").assertExists()
-    composeTestRule.onNodeWithTag("chat_tile_audio").assertExists()
-    composeTestRule.onNodeWithTag("chat_tile_files").assertExists()
-    composeTestRule.onNodeWithTag("chat_tile_images").assertExists()
+    composeTestRule.onNodeWithTag("chat_tile_channels").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_tile_audio").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_tile_files").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_tile_images").assertDoesNotExist()
     composeTestRule.onNodeWithTag("dm_person_u_staff").assertExists()
     composeTestRule.onNodeWithTag("dept_chat_dept_creative").assertExists()
     composeTestRule.onNodeWithTag("chat_hub_send_button").assertExists()
+    // DIRECT channels must NOT show up inside Team Threads
+    composeTestRule.onNodeWithTag("channel_chip_dm_u_admin_u_staff").assertDoesNotExist()
+
+    // Tapping a person in Direct Messages opens personal 1:1 header (not Team Thread)
+    composeTestRule.onNodeWithTag("dm_person_u_staff").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("chat_direct_header").assertExists()
+    composeTestRule.onAllNodesWithText("Aarav Designer")[0].assertExists()
+    composeTestRule.onNodeWithText("Personal Chat • Graphic Designer").assertExists()
+    composeTestRule.onNodeWithText("Team channel & shared files").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_thread_back_button").performClick()
+    composeTestRule.waitForIdle()
 
     composeTestRule.onNodeWithTag("chat_threads_section").performScrollTo()
     composeTestRule.onNodeWithTag("channel_chip_ch_general").performScrollTo().performClick()
@@ -813,8 +838,8 @@ class ExampleRobolectricTest {
             onSaveOrIssueQuote = { _, _, _ -> },
             onCreateRevision = { _, _ -> },
             onGeneratePdf = { _, _, _ -> },
-            onMarkSent = {},
-            onMarkClientApproved = { _, _ -> }
+            onMarkSent = { _, done -> done() },
+            onMarkClientApproved = { _, _, done -> done() }
           )
         }
       }
@@ -825,7 +850,12 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("open_catalogue_picker_button").performClick()
     composeTestRule.waitForIdle()
     val firstCatItem = state.catalogue.first { !it.archived }
+    // Tapping the card expands description/details without selecting
     composeTestRule.onNodeWithTag("catalogue_item_${firstCatItem.id}").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("catalogue_desc_${firstCatItem.id}", useUnmergedTree = true).assertExists()
+    // Tapping the explicit Select button adds item with instant feedback
+    composeTestRule.onNodeWithTag("catalogue_check_button_${firstCatItem.id}").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("catalogue_added_banner").assertExists()
     composeTestRule.onNodeWithText("Added").assertExists()
@@ -1035,8 +1065,8 @@ class ExampleRobolectricTest {
             onSaveOrIssueQuote = { _, _, _ -> },
             onCreateRevision = { _, _ -> },
             onGeneratePdf = { _, _, _ -> },
-            onMarkSent = {},
-            onMarkClientApproved = { _, _ -> }
+            onMarkSent = { _, done -> done() },
+            onMarkClientApproved = { _, _, done -> done() }
           )
         }
       }
@@ -1049,11 +1079,75 @@ class ExampleRobolectricTest {
     val firstItem = richState.catalogue.first { !it.archived }
     composeTestRule.onNodeWithTag("catalogue_item_${firstItem.id}").performClick()
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("catalogue_desc_${firstItem.id}", useUnmergedTree = true).assertExists()
+    composeTestRule.onNodeWithTag("catalogue_check_button_${firstItem.id}").performClick()
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithText("Added").assertExists()
-    composeTestRule.onNodeWithTag("catalogue_item_${firstItem.id}").performClick()
+    composeTestRule.onNodeWithTag("catalogue_check_button_${firstItem.id}").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithText("Added").assertDoesNotExist()
     composeTestRule.onNodeWithText("Added (2)").assertDoesNotExist()
+
+    // 1b. Issued quotation Mark Sent shows saved feedback banner & Client Approved shows advance payment reminder
+    var markedSentInvoked = false
+    var openPaymentsInvoked = false
+    val approvedQuote = sampleQuote.copy(status = QuotationStatus.CLIENT_APPROVED.name)
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          com.example.ui.screens.QuoteBuilderScreen(
+            state = richState,
+            initialQuote = sampleQuote,
+            initialRequest = sampleReq,
+            linkedProject = null,
+            onBack = {},
+            onQuickSaveClient = { _, _ -> },
+            onCreateRequest = { _, _, _, _, _, _, _ -> },
+            onSaveOrIssueQuote = { _, _, _ -> },
+            onCreateRevision = { _, _ -> },
+            onGeneratePdf = { _, _, _ -> },
+            onMarkSent = { _, done ->
+              markedSentInvoked = true
+              done()
+            },
+            onMarkClientApproved = { _, _, done -> done() },
+            onOpenPayments = { openPaymentsInvoked = true }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("mark_quote_sent_button").performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(markedSentInvoked)
+    composeTestRule.onNodeWithTag("quote_saved_banner").assertExists()
+
+    composeTestRule.activityRule.scenario.onActivity { activity ->
+      activity.setContent {
+        XMaxTheme(darkTheme = false) {
+          com.example.ui.screens.QuoteBuilderScreen(
+            state = richState,
+            initialQuote = approvedQuote,
+            initialRequest = sampleReq,
+            linkedProject = null,
+            onBack = {},
+            onQuickSaveClient = { _, _ -> },
+            onCreateRequest = { _, _, _, _, _, _, _ -> },
+            onSaveOrIssueQuote = { _, _, _ -> },
+            onCreateRevision = { _, _ -> },
+            onGeneratePdf = { _, _, _ -> },
+            onMarkSent = { _, done -> done() },
+            onMarkClientApproved = { _, _, done -> done() },
+            onOpenPayments = { openPaymentsInvoked = true }
+          )
+        }
+      }
+    }
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("quote_advance_payment_reminder").assertExists()
+    composeTestRule.onNodeWithTag("quote_open_payments_button").performClick()
+    composeTestRule.waitForIdle()
+    assertTrue(openPaymentsInvoked)
 
     // 2. DeliverableDetailDialog renders instant saved confirmation banner inside the dialog window
     var savedStatus: DeliverableStatus? = null
@@ -1081,14 +1175,19 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     assertEquals(DeliverableStatus.IN_PROGRESS, savedStatus)
     composeTestRule.onNodeWithTag("deliverable_saved_banner").assertExists()
+    composeTestRule.onNodeWithTag("deliverable_detail_list")
+      .performScrollToNode(hasTestTag("submit_progress_button"))
     composeTestRule.onNodeWithText("Saved ✓").assertExists()
 
-    // 3. PaymentsScreen Payment Tracker overview & percentage render accurately
+    // 3. PaymentsScreen Payment Tracker overview, percentage, and advance/final payment reminders render accurately
+    val reminderState = richState.copy(
+      deliverables = listOf(staffDeliverable.copy(status = DeliverableStatus.READY_FOR_REVIEW.name))
+    )
     composeTestRule.activityRule.scenario.onActivity { activity ->
       activity.setContent {
         XMaxTheme(darkTheme = false) {
           PaymentsScreen(
-            state = richState,
+            state = reminderState,
             onRecordPayment = { _, _, _, _, _, _ -> }
           )
         }
@@ -1097,6 +1196,7 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("payment_tracker_overview").assertExists()
     composeTestRule.onNodeWithText("50% Collected").assertExists()
+    composeTestRule.onNodeWithTag("payment_reminders_section").assertExists()
     composeTestRule.onNodeWithTag("payments_lazy_list")
       .performScrollToNode(hasTestTag("record_payment_proj_100"))
     composeTestRule.onNodeWithTag("record_payment_proj_100").assertExists()

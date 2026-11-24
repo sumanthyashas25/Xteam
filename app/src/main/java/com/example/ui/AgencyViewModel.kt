@@ -133,6 +133,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
     private var focusTimerJob: Job? = null
     private var notificationsHydratedForUid: String? = null
     private val seenNotificationIds = mutableSetOf<String>()
+    private var syncedCatalogueOnceForUid: String? = null
 
     val sessionStatus: StateFlow<AuthSessionStatus> = authRepository.sessionStatusFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AuthSessionStatus.Initializing)
@@ -463,6 +464,55 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
         }
+        viewModelScope.launch {
+            combine(_approvedGate, _membersFlow, _catalogueFlow, _routingRulesFlow) { me, members, catList, ruleList ->
+                listOf(me, members, catList, ruleList)
+            }.collect { tuple ->
+                @Suppress("UNCHECKED_CAST")
+                val me = tuple[0] as? Member
+                @Suppress("UNCHECKED_CAST")
+                val members = tuple[1] as List<Member>
+                @Suppress("UNCHECKED_CAST")
+                val catList = tuple[2] as List<CatalogueItem>
+                @Suppress("UNCHECKED_CAST")
+                val ruleList = tuple[3] as List<RoutingRule>
+                if (me == null) {
+                    syncedCatalogueOnceForUid = null
+                    return@collect
+                }
+                if (syncedCatalogueOnceForUid == me.uid) return@collect
+                val membersMap = members.associateBy { it.uid }
+                val canEditCat = PermissionEngine.hasPermission(me, AppPermission.EDIT_CATALOGUE_PRICES, membersMap)
+                if (!canEditCat) {
+                    syncedCatalogueOnceForUid = me.uid
+                    return@collect
+                }
+                if (catList.isEmpty()) return@collect
+                val catOutdated = !catList.any { it.id == "srv_01" && it.name == "Social media post" && it.pricePaise == 50000L } ||
+                    !catList.any { it.id == "pkg_04" && it.name == "BUSINESS LAUNCH" && it.pricePaise == 5500000L } ||
+                    !catList.any { it.id == "add_08" && it.name == "Additional website page" && it.pricePaise == 200000L } ||
+                    catList.size < 56
+                val isSuper = me.accessLevelEnum() == AccessLevel.SUPER_ADMIN
+                val rulesOutdated = isSuper && (
+                    !ruleList.any { it.serviceCategories.contains("Video Production & Editing") } ||
+                        !ruleList.any { it.serviceCategories.contains("Website Development") }
+                    )
+                if (catOutdated || rulesOutdated) {
+                    syncedCatalogueOnceForUid = me.uid
+                    runCatching {
+                        coreRepo.syncOfficialCatalogueAndRouting(
+                            syncRouting = isSuper && rulesOutdated,
+                            syncCompanyTerms = isSuper,
+                            actor = me
+                        )
+                    }.onSuccess { count ->
+                        _statusMessage.value = "Updated $count services & packages to 2026 PDF rates."
+                    }
+                } else {
+                    syncedCatalogueOnceForUid = me.uid
+                }
+            }
+        }
     }
 
     fun retryProfileSync() {
@@ -683,6 +733,20 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         val actor = uiState.value.myMember ?: error("No active member")
         coreRepo.setCatalogueArchived(item, archived, actor)
         _statusMessage.value = if (archived) "${item.name} archived." else "${item.name} restored."
+    }
+
+    fun syncOfficialCatalogueNow() = runWrite("catalogue/sync") {
+        val actor = uiState.value.myMember ?: error("No active member")
+        if (!uiState.value.hasPerm(AppPermission.EDIT_CATALOGUE_PRICES)) {
+            error("Only managers with Catalogue Edit access can sync pricing.")
+        }
+        val isSuper = uiState.value.isSuperAdmin
+        val updatedCount = coreRepo.syncOfficialCatalogueAndRouting(
+            syncRouting = isSuper,
+            syncCompanyTerms = isSuper,
+            actor = actor
+        )
+        _statusMessage.value = "Synced $updatedCount official X.MAX 2026 PDF items."
     }
 
     fun saveRoutingRule(rule: RoutingRule) = runWrite("routing_rules") {

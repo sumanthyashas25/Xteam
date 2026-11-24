@@ -2,12 +2,18 @@ package com.example.ui.components
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
+import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -54,6 +60,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
@@ -70,6 +78,7 @@ import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -103,6 +112,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -117,6 +127,9 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import com.example.R
 import com.example.chat.ChatFileManager
 import com.example.chat.ProfilePhotoPreview
@@ -2348,29 +2361,87 @@ fun getCatalogueCategoryIcon(category: String, kind: CatalogueKind): ImageVector
 }
 
 @Composable
+fun FullScreenAgencyDialog(
+    onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismissRequest,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        val view = LocalView.current
+        SideEffect {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            if (window != null) {
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                        WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS
+                )
+                @Suppress("DEPRECATION")
+                window.statusBarColor = android.graphics.Color.TRANSPARENT
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    window.attributes = window.attributes.apply {
+                        layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    }
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    window.attributes = window.attributes.apply {
+                        layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                    }
+                }
+                WindowInsetsControllerCompat(window, view).apply {
+                    isAppearanceLightStatusBars = true
+                    isAppearanceLightNavigationBars = true
+                }
+            }
+        }
+        content()
+    }
+}
+
+@Composable
 fun CatalogueServiceTicketCard(
     item: CatalogueItem,
     index: Int,
     isSelected: Boolean = false,
     selectedCount: Int = 0,
-    buttonLabel: String = "Check",
+    buttonLabel: String = "Select",
     actionButtonText: String? = null,
+    expandable: Boolean = false,
     onButtonClick: () -> Unit,
     modifier: Modifier = Modifier,
     onCardClick: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
     val palette = remember(index) { getCatalogueTicketPalette(index) }
     val categoryIcon = remember(item.category, item.kindEnum()) { getCatalogueCategoryIcon(item.category, item.kindEnum()) }
     val shape = remember { TicketCardShape(cornerRadius = 22.dp, notchRadius = 8.dp) }
+    var isExpanded by remember(item.id) { mutableStateOf(false) }
+    val hasDetails = item.description.isNotBlank() || item.inclusions.isNotEmpty()
 
     Surface(
-        onClick = { onCardClick?.invoke() ?: onButtonClick() },
+        onClick = {
+            if (expandable) {
+                AppHapticsAndNotifier.triggerTickHaptic(context)
+                isExpanded = !isExpanded
+            } else {
+                onCardClick?.invoke() ?: onButtonClick()
+            }
+        },
         shape = shape,
         color = Color.Transparent,
         border = BorderStroke(1.2.dp, if (isSelected) VioletPrimary else palette.borderColor),
         shadowElevation = if (isSelected) 4.dp else 1.5.dp,
         modifier = modifier
             .fillMaxWidth()
+            .animateContentSize(spring(dampingRatio = 0.84f, stiffness = Spring.StiffnessMediumLow))
             .testTag("catalogue_ticket_${item.id}")
     ) {
         Row(
@@ -2422,50 +2493,116 @@ fun CatalogueServiceTicketCard(
                         Brush.horizontalGradient(
                             colors = listOf(
                                 PureWhite.copy(alpha = 0.96f),
-                                PureWhite.copy(alpha = 0.80f)
+                                PureWhite.copy(alpha = 0.82f)
                             )
                         )
                     )
                     .padding(horizontal = 15.dp, vertical = 13.dp)
             ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize(spring(dampingRatio = 0.84f, stiffness = Spring.StiffnessMediumLow)),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = item.name,
-                        style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.5.sp, lineHeight = 19.sp),
-                        fontWeight = FontWeight.Bold,
-                        color = ObsidianCharcoal,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Text(
+                            text = item.name,
+                            style = MaterialTheme.typography.titleSmall.copy(fontSize = 14.5.sp, lineHeight = 19.sp),
+                            fontWeight = FontWeight.Bold,
+                            color = ObsidianCharcoal,
+                            maxLines = if (isExpanded) Int.MAX_VALUE else 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (expandable && hasDetails) {
+                            Spacer(Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = if (isExpanded) VioletSoftBg else MutedSurface
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isExpanded) "Less" else "Details",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isExpanded) VioletPrimary else StudioTextSecondary
+                                    )
+                                    Icon(
+                                        imageVector = if (isExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                                        contentDescription = if (isExpanded) "Collapse details" else "Expand details",
+                                        tint = if (isExpanded) VioletPrimary else StudioTextSecondary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     val subline = remember(item) {
                         when (item.pricingModeEnum()) {
                             PricingMode.PERCENTAGE_SURCHARGE -> "+${item.surchargePercent}% Urgent Surcharge"
-                            PricingMode.CUSTOM_QUOTE -> "Custom Scope • ${item.category}"
-                            PricingMode.ACTUAL_COST -> "Actual Costs • ${item.category}"
-                            else -> "${MoneyFormatter.formatInr(item.pricePaise)} • ${item.kindEnum().label}"
+                            PricingMode.CUSTOM_QUOTE -> "Custom Quote • ${item.category}"
+                            PricingMode.ACTUAL_COST -> "Actual Cost • ${item.category}"
+                            PricingMode.STARTING_FROM -> "${MoneyFormatter.formatInr(item.pricePaise)} onwards • ${item.category}"
+                            PricingMode.PER_UNIT -> "${MoneyFormatter.formatInr(item.pricePaise)} / ${item.unitLabel.ifBlank { "unit" }} • ${item.category}"
+                            else -> "${MoneyFormatter.formatInr(item.pricePaise)} • ${item.category}"
                         }
                     }
                     Text(
                         text = subline,
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.SemiBold,
                         color = StudioTextSecondary,
-                        maxLines = 1,
+                        maxLines = if (isExpanded) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis
                     )
 
                     if (item.description.isNotBlank()) {
                         Text(
                             text = item.description,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                            color = StudioTextSecondary.copy(alpha = 0.85f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp, lineHeight = 16.sp),
+                            color = if (isExpanded) ObsidianCharcoal.copy(alpha = 0.88f) else StudioTextSecondary.copy(alpha = 0.88f),
+                            maxLines = if (isExpanded) Int.MAX_VALUE else 2,
+                            overflow = if (isExpanded) TextOverflow.Clip else TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("catalogue_desc_${item.id}")
                         )
+                    }
+
+                    if (isExpanded && item.inclusions.isNotEmpty()) {
+                        Spacer(Modifier.height(2.dp))
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MutedSurface.copy(alpha = 0.72f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(
+                                    text = "Included Deliverables (${item.inclusions.size})",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                                item.inclusions.forEach { inc ->
+                                    Text(
+                                        text = "• ${inc.title} (×${inc.quantity})",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = StudioTextSecondary
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     Spacer(Modifier.height(6.dp))
@@ -2473,38 +2610,51 @@ fun CatalogueServiceTicketCard(
                     val displayLabel = actionButtonText ?: when {
                         selectedCount > 1 -> "Added ($selectedCount)"
                         selectedCount == 1 -> "Added"
-                        isSelected -> "Check ✓"
+                        isSelected -> "Added"
                         else -> buttonLabel
                     }
                     val pillBg = if (isSelected || selectedCount > 0) EmeraldApproved else ObsidianCharcoal
 
-                    Surface(
-                        onClick = onButtonClick,
-                        shape = RoundedCornerShape(999.dp),
-                        color = pillBg,
-                        shadowElevation = 1.dp,
-                        modifier = Modifier
-                            .height(33.dp)
-                            .testTag("catalogue_check_button_${item.id}")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        Surface(
+                            onClick = onButtonClick,
+                            shape = RoundedCornerShape(999.dp),
+                            color = pillBg,
+                            shadowElevation = 1.dp,
+                            modifier = Modifier
+                                .heightIn(min = 36.dp)
+                                .testTag("catalogue_check_button_${item.id}")
                         ) {
-                            if (isSelected || selectedCount > 0) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = null,
-                                    tint = PureWhite,
-                                    modifier = Modifier.size(13.dp)
+                            Row(
+                                modifier = Modifier.padding(horizontal = 18.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                if (isSelected || selectedCount > 0) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Check,
+                                        contentDescription = null,
+                                        tint = PureWhite,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Text(
+                                    text = displayLabel,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
+                                    fontWeight = FontWeight.Bold,
+                                    color = PureWhite
                                 )
                             }
+                        }
+                        if (expandable && !isExpanded && hasDetails) {
                             Text(
-                                text = displayLabel,
-                                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp),
-                                fontWeight = FontWeight.Bold,
-                                color = PureWhite
+                                text = "Tap card for full info",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = StudioTextSecondary.copy(alpha = 0.72f)
                             )
                         }
                     }

@@ -215,9 +215,12 @@ private fun MemberPermissionEditorDialog(
     var scopeDeptIds by remember { mutableStateOf(target.scopeDepartmentIds.toSet().ifEmpty { setOf(selectedDept.id) }) }
     var perms by remember { mutableStateOf(target.permissions) }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
         Surface(
-            modifier = Modifier.fillMaxSize().padding(12.dp),
+            modifier = Modifier.fillMaxSize().systemBarsPadding().padding(12.dp),
             shape = RoundedCornerShape(28.dp),
             color = CrispCanvas
         ) {
@@ -863,7 +866,8 @@ fun NotificationsScreen(
     onTestSound: () -> Unit = {},
     onDeleteNotification: (String) -> Unit = {},
     onOpenChatChannel: (String) -> Unit = {},
-    onOpenDeliverableById: (String) -> Unit = {}
+    onOpenDeliverableById: (String) -> Unit = {},
+    onOpenPayments: () -> Unit = {}
 ) {
     val myUid = state.myMember?.uid.orEmpty()
     val relevant = state.myNotifications
@@ -1004,6 +1008,8 @@ fun NotificationsScreen(
                             onOpenChatChannel(notif.channelId)
                         } else if (notif.categoryEnum() == NotificationCategory.DELIVERABLE && notif.entityId.isNotBlank()) {
                             onOpenDeliverableById(notif.entityId)
+                        } else if (notif.categoryEnum() == NotificationCategory.PAYMENT) {
+                            onOpenPayments()
                         }
                     },
                     shape = RoundedCornerShape(22.dp),

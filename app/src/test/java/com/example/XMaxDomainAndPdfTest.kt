@@ -30,6 +30,15 @@ class XMaxDomainAndPdfTest {
         assertEquals(5, all.count { it.kindEnum() == CatalogueKind.PACKAGE })
         assertEquals(11, all.count { it.kindEnum() == CatalogueKind.ADDON })
         assertEquals(56, all.size)
+        assertEquals("2026_02", CatalogueSeedData.OFFICIAL_CATALOGUE_VERSION)
+        val byId = all.associateBy { it.id }
+        assertEquals(50_000L, byId["srv_01"]?.pricePaise)
+        assertEquals(2_000_000L, byId["srv_28"]?.pricePaise)
+        assertEquals("DIGITAL PRESENCE", byId["pkg_03"]?.name)
+        assertEquals(4_000_000L, byId["pkg_03"]?.pricePaise)
+        assertEquals("BUSINESS LAUNCH", byId["pkg_04"]?.name)
+        assertEquals(5_500_000L, byId["pkg_04"]?.pricePaise)
+        assertEquals(200_000L, byId["add_08"]?.pricePaise)
         assertTrue(CatalogueSeedData.isBootstrapEmail("xdotmax@gmail.com"))
         assertFalse(CatalogueSeedData.isBootstrapEmail("random@example.com"))
         assertEquals("xdotmax@gmail.com", CatalogueSeedData.defaultCompanyProfile("u1").email)
@@ -38,8 +47,8 @@ class XMaxDomainAndPdfTest {
     @Test
     fun `scenario 4 business launch plus extra page totals 57000 INR with 28500 INR advance`() {
         val catalogue = CatalogueSeedData.defaultCatalogue().associateBy { it.id }
-        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_03"]!!, "l1")
-        val extraPage = QuoteCalculator.fromCatalogueItem(catalogue["add_01"]!!, "l2")
+        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_04"]!!, "l1")
+        val extraPage = QuoteCalculator.fromCatalogueItem(catalogue["add_08"]!!, "l2")
 
         val calc = QuoteCalculator.calculate(
             rawLines = listOf(businessLaunch, extraPage),
@@ -59,7 +68,7 @@ class XMaxDomainAndPdfTest {
     @Test
     fun `custom quote and actual cost require price or separately billed flag before issuing`() {
         val catalogue = CatalogueSeedData.defaultCatalogue().associateBy { it.id }
-        val customLine = QuoteCalculator.fromCatalogueItem(catalogue["srv_21"]!!, "l_custom")
+        val customLine = QuoteCalculator.fromCatalogueItem(catalogue["add_06"]!!, "l_custom")
 
         val blocked = QuoteCalculator.calculate(listOf(customLine), urgentDeliveryEnabled = false)
         assertEquals(1, blocked.validationErrors.size)
@@ -75,11 +84,11 @@ class XMaxDomainAndPdfTest {
     @Test
     fun `urgent delivery 25 percent surcharge applies only to eligible lines and warns on overlap`() {
         val catalogue = CatalogueSeedData.defaultCatalogue().associateBy { it.id }
-        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_03"]!!, "l1")
-        val standaloneLogo = QuoteCalculator.fromCatalogueItem(catalogue["srv_01"]!!, "l2")
+        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_04"]!!, "l1")
+        val standaloneBrand = QuoteCalculator.fromCatalogueItem(catalogue["srv_13"]!!, "l2")
 
         val calc = QuoteCalculator.calculate(
-            rawLines = listOf(businessLaunch, standaloneLogo),
+            rawLines = listOf(businessLaunch, standaloneBrand),
             urgentDeliveryEnabled = true,
             urgentSurchargePercent = 25,
             urgentExcludedLineIds = setOf("l2")
@@ -138,8 +147,8 @@ class XMaxDomainAndPdfTest {
     @Test
     fun `scenario 6 work distribution resolves 1 match, queue on multiple, and needs assignment on zero`() {
         val catalogue = CatalogueSeedData.defaultCatalogue().associateBy { it.id }
-        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_03"]!!, "l1")
-        val extraPage = QuoteCalculator.fromCatalogueItem(catalogue["add_01"]!!, "l2")
+        val businessLaunch = QuoteCalculator.fromCatalogueItem(catalogue["pkg_04"]!!, "l1")
+        val extraPage = QuoteCalculator.fromCatalogueItem(catalogue["add_08"]!!, "l2")
 
         val designer = Member(
             uid = "u_des", fullName = "Aarav", accessLevel = AccessLevel.STAFF.name,
@@ -168,15 +177,15 @@ class XMaxDomainAndPdfTest {
             jobRoles = CatalogueSeedData.defaultJobRoles()
         )
 
-        val logoDraft = drafts.first { it.title.contains("Logo", ignoreCase = true) }
-        assertEquals(AssignmentStatus.ASSIGNED, logoDraft.assignmentStatus)
-        assertEquals("u_des", logoDraft.assignedToUid)
+        val brandDraft = drafts.first { it.title.contains("brand identity", ignoreCase = true) }
+        assertEquals(AssignmentStatus.ASSIGNED, brandDraft.assignmentStatus)
+        assertEquals("u_des", brandDraft.assignedToUid)
 
         val webDraft = drafts.first { it.title.contains("website", ignoreCase = true) }
         assertEquals(AssignmentStatus.DEPT_QUEUE, webDraft.assignmentStatus)
 
-        val gbpDraft = drafts.first { it.title.contains("Google Business", ignoreCase = true) }
-        assertEquals(AssignmentStatus.NEEDS_ASSIGNMENT, gbpDraft.assignmentStatus)
+        val adsDraft = drafts.first { it.title.contains("Meta Ads", ignoreCase = true) }
+        assertEquals(AssignmentStatus.NEEDS_ASSIGNMENT, adsDraft.assignmentStatus)
 
         val summary = WorkDistributionEngine.summarizeProjectProgress(
             listOf(
@@ -194,8 +203,8 @@ class XMaxDomainAndPdfTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val catalogue = CatalogueSeedData.defaultCatalogue().associateBy { it.id }
         val lines = listOf(
-            QuoteCalculator.fromCatalogueItem(catalogue["pkg_03"]!!, "l1"),
-            QuoteCalculator.fromCatalogueItem(catalogue["add_01"]!!, "l2")
+            QuoteCalculator.fromCatalogueItem(catalogue["pkg_04"]!!, "l1"),
+            QuoteCalculator.fromCatalogueItem(catalogue["add_08"]!!, "l2")
         )
         val calc = QuoteCalculator.calculate(lines, urgentDeliveryEnabled = false, advancePercent = 50)
         val quote = Quotation(
