@@ -604,6 +604,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             onNavigateTeam = { secondaryDest = SecondaryDestination.TEAM },
                                             onNavigatePayments = { secondaryDest = SecondaryDestination.PAYMENTS },
                                             onNavigateQuotations = { secondaryDest = SecondaryDestination.QUOTATIONS },
+                                            onNavigateChat = { activeTab = PrimaryTab.CHAT },
                                             onNavigateCompanySettings = { secondaryDest = SecondaryDestination.COMPANY_SETTINGS },
                                             onNavigateOrgRouting = { secondaryDest = SecondaryDestination.ORG_ROUTING },
                                             onOpenMenuPanel = { scope.launch { drawerState.open() } },

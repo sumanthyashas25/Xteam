@@ -61,6 +61,7 @@ fun HomeScreen(
     onNavigateTeam: () -> Unit,
     onNavigatePayments: () -> Unit,
     onNavigateQuotations: () -> Unit = onOpenNewQuote,
+    onNavigateChat: () -> Unit = {},
     onNavigateCompanySettings: () -> Unit = {},
     onNavigateOrgRouting: () -> Unit = {},
     onOpenMenuPanel: () -> Unit = {},
@@ -273,6 +274,152 @@ fun HomeScreen(
                             .weight(1f)
                             .testTag("kpi_overview_card_4")
                     )
+                }
+            }
+        }
+
+        // 2.5 Team Chat Quick Access Hub
+        item {
+            val latestChat = remember(state.chatChannels) {
+                state.chatChannels.maxByOrNull { it.lastMessageAtMillis }
+            }
+            val approvedColleagues = remember(state.members, member.uid) {
+                state.members.filter { it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid }
+            }
+            Surface(
+                onClick = onNavigateChat,
+                shape = RoundedCornerShape(20.dp),
+                color = PureWhite,
+                border = BorderStroke(1.dp, SubtleOutline),
+                shadowElevation = 1.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("open_team_chat_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = EmeraldApproved.copy(alpha = 0.14f),
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Chat,
+                                        contentDescription = "Team Chat",
+                                        tint = EmeraldApproved,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Column {
+                                Text(
+                                    text = "Team Chat & Channels",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                                Text(
+                                    text = "${state.chatChannels.size} active channels • WhatsApp-style",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = StudioTextSecondary
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = VioletSoftBg,
+                            border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.25f))
+                        ) {
+                            Text(
+                                text = "Open Chat →",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = VioletPrimary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+
+                    if (latestChat != null) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MutedSurface,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${latestChat.title}:",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianCharcoal
+                                )
+                                Text(
+                                    text = latestChat.lastMessagePreview.ifBlank { "Channel active" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = StudioTextSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+
+                    if (approvedColleagues.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy((-6).dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            approvedColleagues.take(5).forEach { c ->
+                                StudioAvatar(
+                                    name = c.fullName,
+                                    size = 28.dp,
+                                    borderColor = PureWhite,
+                                    photoBase64 = c.photoBase64
+                                )
+                            }
+                            if (approvedColleagues.size > 5) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color(0xFFE2E8F0),
+                                    border = BorderStroke(1.5.dp, PureWhite),
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = "+${approvedColleagues.size - 5}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ObsidianCharcoal
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Text(
+                                text = "Real-time presence & typing",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = StudioTextSecondary
+                            )
+                        }
+                    }
                 }
             }
         }

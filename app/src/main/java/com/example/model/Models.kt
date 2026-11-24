@@ -602,7 +602,9 @@ enum class ChatChannelType(val label: String) {
     GENERAL("General"),
     PROJECT("Project"),
     DEPARTMENT("Department"),
-    DIRECT("Direct")
+    DIRECT("Direct"),
+    ANNOUNCEMENT("Announcements"),
+    SAVED("Saved")
 }
 
 enum class ChatAttachmentType(val label: String) {
@@ -639,10 +641,21 @@ data class ChatChannel(
     val lastSenderName: String = "",
     val lastMessageAtMillis: Long = 0L,
     val messageCount: Long = 0L,
+    val photoUrl: String = "",
+    val adminUids: List<String> = emptyList(),
+    val pinnedUids: List<String> = emptyList(),
+    val archivedUids: List<String> = emptyList(),
+    val mutedUids: List<String> = emptyList(),
+    val favouriteUids: List<String> = emptyList(),
+    val unreadCounts: Map<String, Long> = emptyMap(),
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null
 ) {
     fun channelTypeEnum(): ChatChannelType = safeEnum(channelType, ChatChannelType.GENERAL)
+    fun isPinnedFor(uid: String): Boolean = uid in pinnedUids
+    fun isArchivedFor(uid: String): Boolean = uid in archivedUids
+    fun isMutedFor(uid: String): Boolean = uid in mutedUids
+    fun isFavouriteFor(uid: String): Boolean = uid in favouriteUids
 }
 
 @Keep
@@ -662,12 +675,37 @@ data class ChatMessage(
     val attachmentSizeBytes: Long = 0L,
     val attachmentLocalPath: String = "",
     val attachmentDataBase64: String = "",
+    val deliveryStatus: String = "SENT",
+    val isEdited: Boolean = false,
+    val editedAtMillis: Long = 0L,
+    val isDeletedForEveryone: Boolean = false,
+    val deletedForUids: List<String> = emptyList(),
+    val starredByUids: List<String> = emptyList(),
+    val pinned: Boolean = false,
+    val reactions: Map<String, String> = emptyMap(),
+    val businessRefKind: String = "",
+    val businessRefId: String = "",
+    val businessRefTitle: String = "",
+    val businessRefSubtitle: String = "",
+    val businessRefStatus: String = "",
+    val businessRefAmountPaise: Long = 0L,
+    val pollQuestion: String = "",
+    val pollOptions: List<String> = emptyList(),
+    val pollVotes: Map<String, List<String>> = emptyMap(),
+    val audioDurationMs: Long = 0L,
+    val audioWaveform: List<Int> = emptyList(),
     val createdAt: Timestamp? = null
 ) {
     fun attachmentTypeEnum(): ChatAttachmentType = safeEnum(attachmentType, ChatAttachmentType.NONE)
     val hasAttachment: Boolean
         get() = attachmentTypeEnum() != ChatAttachmentType.NONE &&
             (attachmentName.isNotBlank() || attachmentDataBase64.isNotBlank() || attachmentLocalPath.isNotBlank())
+    fun isStarredBy(uid: String): Boolean = uid in starredByUids
+    fun isDeletedFor(uid: String): Boolean = isDeletedForEveryone || uid in deletedForUids
+    val hasBusinessRef: Boolean
+        get() = businessRefKind.isNotBlank() && businessRefTitle.isNotBlank()
+    val isPoll: Boolean
+        get() = pollQuestion.isNotBlank() && pollOptions.isNotEmpty()
 }
 
 @Keep
