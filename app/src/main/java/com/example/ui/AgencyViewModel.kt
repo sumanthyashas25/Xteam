@@ -26,6 +26,8 @@ import com.example.domain.PermissionEngine
 import com.example.model.*
 import com.example.pdf.QuotationPdfGenerator
 import com.example.system.AppHapticsAndNotifier
+import com.example.system.PaymentReminderAutomator
+import com.example.system.PaymentReminderWorker
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -145,6 +147,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
     private var notificationsHydratedForUid: String? = null
     private val seenNotificationIds = mutableSetOf<String>()
     private var syncedCatalogueOnceForUid: String? = null
+    private var paymentWorkerScheduledForUid: String? = null
 
     val sessionStatus: StateFlow<AuthSessionStatus> = authRepository.sessionStatusFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AuthSessionStatus.Initializing)
@@ -568,6 +571,47 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 } else {
                     syncedCatalogueOnceForUid = me.uid
+                }
+            }
+        }
+        viewModelScope.launch {
+            combine(
+                _approvedGate,
+                _quotationsFlow,
+                _projectsFlow,
+                _deliverablesFlow,
+                _soundEnabled
+            ) { me, quotes, projects, delivSynced, sound ->
+                listOf(me, quotes, projects, delivSynced.data, sound)
+            }.collect { tuple ->
+                @Suppress("UNCHECKED_CAST")
+                val me = tuple[0] as? Member ?: run {
+                    paymentWorkerScheduledForUid = null
+                    return@collect
+                }
+                if (!PaymentReminderAutomator.canReceivePaymentReminders(me)) return@collect
+                if (paymentWorkerScheduledForUid != me.uid) {
+                    paymentWorkerScheduledForUid = me.uid
+                    PaymentReminderWorker.schedulePeriodic(getApplication())
+                }
+                @Suppress("UNCHECKED_CAST")
+                val quotes = tuple[1] as List<Quotation>
+                @Suppress("UNCHECKED_CAST")
+                val projects = tuple[2] as List<Project>
+                @Suppress("UNCHECKED_CAST")
+                val deliverables = tuple[3] as List<Deliverable>
+                val sound = tuple[4] as Boolean
+                if (quotes.isEmpty() && projects.isEmpty()) return@collect
+                runCatching {
+                    PaymentReminderAutomator.evaluateAndDispatch(
+                        context = getApplication(),
+                        coreRepo = coreRepo,
+                        actor = me,
+                        quotations = quotes,
+                        projects = projects,
+                        deliverables = deliverables,
+                        soundEnabled = sound
+                    )
                 }
             }
         }

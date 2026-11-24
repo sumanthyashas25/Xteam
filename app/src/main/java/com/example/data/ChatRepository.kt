@@ -72,28 +72,6 @@ class ChatRepository(private val core: AgencyRepository) {
     }
 
     fun observeChannels(myUid: String, isSuperAdmin: Boolean): Flow<List<ChatChannel>> {
-        if (isSuperAdmin) {
-            return callbackFlow {
-                val reg = sub("chat_channels").addSnapshotListener { snap, err ->
-                    if (err != null) {
-                        handleFirestoreError(err, OperationType.LIST, "companies/${core.companyId}/chat_channels")
-                        close(err)
-                        return@addSnapshotListener
-                    }
-                    val list = snap?.documents?.mapNotNull { doc ->
-                        doc.get("createdAt", est)
-                        doc.get("updatedAt", est)
-                        doc.toObject(ChatChannel::class.java)
-                    }.orEmpty().filter { ch ->
-                        // Super Admin sees their own Saved Notes + shared + DMs/groups they're in
-                        ch.channelTypeEnum() != ChatChannelType.SAVED || ch.createdByUid == myUid || myUid in ch.participantUids
-                    }.sortedByDescending { it.lastMessageAtMillis }
-                    trySend(list)
-                }
-                awaitClose { reg.remove() }
-            }
-        }
-
         val sharedFlow = callbackFlow<List<ChatChannel>> {
             val reg = sub("chat_channels")
                 .whereIn(
@@ -101,7 +79,6 @@ class ChatRepository(private val core: AgencyRepository) {
                     listOf(
                         ChatChannelType.GENERAL.name,
                         ChatChannelType.PROJECT.name,
-                        ChatChannelType.DEPARTMENT.name,
                         ChatChannelType.ANNOUNCEMENT.name
                     )
                 )
@@ -134,16 +111,52 @@ class ChatRepository(private val core: AgencyRepository) {
                         doc.get("createdAt", est)
                         doc.get("updatedAt", est)
                         doc.toObject(ChatChannel::class.java)
-                    }.orEmpty()
+                    }.orEmpty().filter { ch ->
+                        val type = ch.channelTypeEnum()
+                        type != ChatChannelType.DEPARTMENT && when (type) {
+                            ChatChannelType.DIRECT -> myUid in ch.participantUids
+                            ChatChannelType.SAVED -> ch.createdByUid == myUid || myUid in ch.participantUids
+                            else -> true
+                        }
+                    }
                     trySend(list)
                 }
             awaitClose { reg.remove() }
         }
 
-        return combine(sharedFlow, memberChannelsFlow) { shared, memberCh ->
-            (shared + memberCh)
-                .distinctBy { it.id }
-                .sortedByDescending { it.lastMessageAtMillis }
+        val superGroupFlow = if (isSuperAdmin) {
+            callbackFlow<List<ChatChannel>> {
+                val reg = sub("chat_channels")
+                    .whereEqualTo("channelType", ChatChannelType.GROUP.name)
+                    .addSnapshotListener { snap, err ->
+                        if (err != null) {
+                            handleFirestoreError(err, OperationType.LIST, "companies/${core.companyId}/chat_channels?groups")
+                            close(err)
+                            return@addSnapshotListener
+                        }
+                        val list = snap?.documents?.mapNotNull { doc ->
+                            doc.get("createdAt", est)
+                            doc.get("updatedAt", est)
+                            doc.toObject(ChatChannel::class.java)
+                        }.orEmpty()
+                        trySend(list)
+                    }
+                awaitClose { reg.remove() }
+            }
+        } else null
+
+        return if (superGroupFlow != null) {
+            combine(sharedFlow, memberChannelsFlow, superGroupFlow) { shared, memberCh, groups ->
+                (shared + memberCh + groups)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.lastMessageAtMillis }
+            }
+        } else {
+            combine(sharedFlow, memberChannelsFlow) { shared, memberCh ->
+                (shared + memberCh)
+                    .distinctBy { it.id }
+                    .sortedByDescending { it.lastMessageAtMillis }
+            }
         }
     }
 
@@ -369,9 +382,9 @@ class ChatRepository(private val core: AgencyRepository) {
             }
         }
 
-        val cleanTitle = title.trim().ifBlank { project?.title ?: "Team Thread" }.take(100)
+        val cleanTitle = title.trim().ifBlank { project?.title ?: "Group" }.take(100)
         val cleanTopic = topic.trim().ifBlank {
-            if (project != null) "Project files & team updates for ${project.clientCompanyName}" else "Shared team thread"
+            if (project != null) "Project group & files for ${project.clientCompanyName}" else "Shared group chat"
         }.take(240)
         val now = System.currentTimeMillis()
         val inviteCode = generateInviteCode()
@@ -1003,18 +1016,41 @@ class ChatRepository(private val core: AgencyRepository) {
     }
 
     suspend fun deleteMessageForEveryone(channelId: String, messageId: String) {
-        val msgRef = sub("chat_channels").document(channelId).collection("messages").document(messageId)
+        val chRef = sub("chat_channels").document(channelId)
+        val msgRef = chRef.collection("messages").document(messageId)
         val snap = runCatching { msgRef.get().await() }.getOrNull()
         val storagePath = snap?.getString("attachmentStoragePath").orEmpty()
+        val oldBody = snap?.getString("body").orEmpty()
+        val oldAttach = snap?.getString("attachmentName").orEmpty()
+
         msgRef.update(
             mapOf(
                 "isDeletedForEveryone" to true,
                 "body" to "",
                 "attachmentType" to ChatAttachmentType.NONE.name,
                 "attachmentDataBase64" to "",
-                "attachmentName" to ""
+                "attachmentName" to "",
+                "attachmentStoragePath" to ""
             )
         ).await()
+
+        runCatching {
+            val chSnap = chRef.get().await()
+            val curPreview = chSnap.getString("lastMessagePreview").orEmpty()
+            val matchesDeleted = curPreview.isNotBlank() && (
+                (oldBody.isNotBlank() && curPreview.contains(oldBody.take(40))) ||
+                    (oldAttach.isNotBlank() && curPreview.contains(oldAttach.take(40)))
+                )
+            if (matchesDeleted) {
+                chRef.update(
+                    mapOf(
+                        "lastMessagePreview" to "This message was deleted",
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+        }
+
         if (storagePath.isNotBlank() && WorkerBridgeClient.isConfigured()) {
             runCatching {
                 WorkerBridgeClient.deleteChatFileFromCloudflare(

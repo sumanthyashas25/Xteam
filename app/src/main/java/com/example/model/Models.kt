@@ -723,6 +723,8 @@ data class ChatMessage(
     val attachmentStoragePath: String = "",
     val attachmentSha256: String = "",
     val storageProvider: String = "",
+    @get:com.google.firebase.firestore.PropertyName("isHd")
+    @param:com.google.firebase.firestore.PropertyName("isHd")
     val isHd: Boolean = false,
     val viewOnce: Boolean = false,
     val viewedByUids: List<String> = emptyList(),
@@ -730,8 +732,12 @@ data class ChatMessage(
     val deliveryStatus: String = "SENT",
     val deliveredToUids: List<String> = emptyList(),
     val readByUids: List<String> = emptyList(),
+    @get:com.google.firebase.firestore.PropertyName("isEdited")
+    @param:com.google.firebase.firestore.PropertyName("isEdited")
     val isEdited: Boolean = false,
     val editedAtMillis: Long = 0L,
+    @get:com.google.firebase.firestore.PropertyName("isDeletedForEveryone")
+    @param:com.google.firebase.firestore.PropertyName("isDeletedForEveryone")
     val isDeletedForEveryone: Boolean = false,
     val deletedForUids: List<String> = emptyList(),
     val starredByUids: List<String> = emptyList(),
@@ -762,6 +768,8 @@ data class ChatMessage(
     val eventLocation: String = "",
     val eventTimeMillis: Long = 0L,
     val eventRsvps: Map<String, String> = emptyMap(),
+    @get:com.google.firebase.firestore.PropertyName("isFailed")
+    @param:com.google.firebase.firestore.PropertyName("isFailed")
     val isFailed: Boolean = false,
     val failureReason: String = "",
     val createdAt: Timestamp? = null
@@ -769,9 +777,9 @@ data class ChatMessage(
     fun attachmentTypeEnum(): ChatAttachmentType = safeEnum(attachmentType, ChatAttachmentType.NONE)
     fun kindEnum(): ChatMessageKind = safeEnum(kind, ChatMessageKind.TEXT)
     val isCloudflareStored: Boolean
-        get() = storageProvider == "CLOUDFLARE_R2" && attachmentStoragePath.isNotBlank()
+        get() = !isDeletedForEveryone && storageProvider == "CLOUDFLARE_R2" && attachmentStoragePath.isNotBlank()
     val hasAttachment: Boolean
-        get() = attachmentTypeEnum() != ChatAttachmentType.NONE &&
+        get() = !isDeletedForEveryone && attachmentTypeEnum() != ChatAttachmentType.NONE &&
             (attachmentName.isNotBlank() || attachmentDataBase64.isNotBlank() || attachmentLocalPath.isNotBlank() || attachmentStoragePath.isNotBlank())
     fun isStarredBy(uid: String): Boolean = uid in starredByUids
     fun isDeletedFor(uid: String): Boolean = uid in deletedForUids
@@ -856,10 +864,20 @@ data class WorkspaceNotification(
     fun isUnreadFor(uid: String): Boolean = uid.isNotBlank() && uid !in readByUids
     fun appliesTo(member: Member?): Boolean {
         val m = member ?: return false
+        val hasFinanceAccess = category == NotificationCategory.PAYMENT.name && (
+            m.permissions[AppPermission.VIEW_PAYMENTS.name]?.allowed == true ||
+                m.permissions[AppPermission.RECORD_PAYMENTS.name]?.allowed == true ||
+                m.delegatedGrants[AppPermission.VIEW_PAYMENTS.name]?.allowed == true ||
+                m.delegatedGrants[AppPermission.RECORD_PAYMENTS.name]?.allowed == true
+            )
         return targetUid == "ALL" ||
             targetUid == m.uid ||
             (targetDepartmentId.isNotBlank() && targetDepartmentId == m.departmentId) ||
-            (targetUid == "MANAGERS" && (m.accessLevelEnum() == AccessLevel.SUPER_ADMIN || m.accessLevelEnum() == AccessLevel.ADMIN))
+            (targetUid == "MANAGERS" && (
+                m.accessLevelEnum() == AccessLevel.SUPER_ADMIN ||
+                    m.accessLevelEnum() == AccessLevel.ADMIN ||
+                    hasFinanceAccess
+                ))
     }
 }
 

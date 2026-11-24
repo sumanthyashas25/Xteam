@@ -715,6 +715,32 @@ class CommercialWorkflowRepository(private val core: AgencyRepository) {
                 entityId = deliverable.id
             )
         }
+        if (newStatus == DeliverableStatus.READY_FOR_REVIEW && deliverable.projectId.isNotBlank()) {
+            runCatching {
+                val allDelivs = sub("deliverables").whereEqualTo("projectId", deliverable.projectId).get().await()
+                val docs = allDelivs.documents
+                val allReadyOrApproved = docs.isNotEmpty() && docs.all { doc ->
+                    val st = doc.getString("status").orEmpty()
+                    st == DeliverableStatus.READY_FOR_REVIEW.name || st == DeliverableStatus.APPROVED.name
+                }
+                if (allReadyOrApproved) {
+                    val projSnap = sub("projects").document(deliverable.projectId).get().await()
+                    val agreed = projSnap.getLong("agreedValuePaise") ?: 0L
+                    val paid = projSnap.getLong("paidPaise") ?: 0L
+                    val outstanding = (agreed - paid).coerceAtLeast(0L)
+                    if (outstanding > 0L) {
+                        core.createNotification(
+                            category = NotificationCategory.PAYMENT,
+                            title = "FINAL PAYMENT REMINDER: ${deliverable.projectTitle}".take(160),
+                            body = "All deliverables submitted for ${deliverable.projectTitle}. Collect remaining balance of ${MoneyFormatter.formatInr(outstanding)} in Payment Tracker.".take(600),
+                            actor = actor,
+                            targetUid = "MANAGERS",
+                            entityId = deliverable.projectId
+                        )
+                    }
+                }
+            }
+        }
     }
 
     suspend fun reviewDeliverable(

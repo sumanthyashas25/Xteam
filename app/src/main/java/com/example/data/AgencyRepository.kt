@@ -932,6 +932,45 @@ class AgencyRepository(context: Context) {
         }
     }
 
+    suspend fun createNotificationIfAbsent(
+        notificationId: String,
+        category: NotificationCategory,
+        title: String,
+        body: String,
+        actor: Member,
+        targetUid: String = "MANAGERS",
+        targetDepartmentId: String = "",
+        entityId: String = "",
+        channelId: String = ""
+    ): Boolean {
+        val safeId = notificationId.replace(Regex("[^a-zA-Z0-9_-]"), "_").take(120)
+        if (safeId.isBlank()) return false
+        return try {
+            val ref = sub("notifications").document(safeId)
+            val snap = ref.get().await()
+            if (snap.exists()) return false
+            ref.set(
+                mapOf(
+                    "category" to category.name,
+                    "title" to title.trim().take(150).ifBlank { "NOTIFICATION" },
+                    "body" to body.trim().take(580),
+                    "targetUid" to targetUid.take(120),
+                    "targetDepartmentId" to targetDepartmentId.take(120),
+                    "actorUid" to actor.uid,
+                    "actorName" to actor.fullName.ifBlank { "Member" }.take(120),
+                    "entityId" to entityId.take(120),
+                    "channelId" to channelId.take(120),
+                    "readByUids" to emptyList<String>(),
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            true
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "companies/$companyId/notifications/$safeId")
+            false
+        }
+    }
+
     suspend fun markNotificationRead(notification: WorkspaceNotification, uid: String) {
         if (uid.isBlank() || uid in notification.readByUids) return
         val updated = (notification.readByUids + uid).distinct().takeLast(100)

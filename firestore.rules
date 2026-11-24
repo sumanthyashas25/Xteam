@@ -792,9 +792,10 @@ service cloud.firestore {
                                  'locationLat', 'locationLng', 'locationLabel', 'liveLocationUntilMillis'
                                ])
                              ) || (
-                               (existing().senderUid == request.auth.uid || isSuper(fetchMe(companyId))) &&
+                               (existing().senderUid == request.auth.uid || isSuper(fetchMe(companyId)) ||
+                                 request.auth.uid in get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data.adminUids) &&
                                incoming().diff(existing()).affectedKeys().hasOnly([
-                                 'isDeletedForEveryone', 'body', 'attachmentType', 'attachmentDataBase64', 'attachmentName'
+                                 'isDeletedForEveryone', 'body', 'attachmentType', 'attachmentDataBase64', 'attachmentName', 'attachmentStoragePath'
                                ])
                              ) || (
                                incoming().diff(existing()).affectedKeys().hasOnly([
