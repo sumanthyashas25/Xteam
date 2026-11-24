@@ -14,6 +14,11 @@ import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.core.content.FileProvider
+import com.example.chat.local.MediaCacheEntity
+import com.example.chat.local.XMaxChatDatabase
+import com.example.chat.remote.WorkerBridgeClient
+import com.example.chat.remote.WorkerResult
+import com.example.domain.CatalogueSeedData
 import com.example.model.ChatAttachmentType
 import com.example.model.ChatMessage
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +26,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
@@ -40,19 +46,97 @@ data class StagedChatAttachment(
     val mimeType: String,
     val sizeBytes: Long,
     val localCachePath: String,
-    val base64Payload: String
+    val base64Payload: String,
+    val sha256: String = "",
+    val bucket: String = WorkerBridgeClient.bucketForAttachmentType(type),
+    val isHd: Boolean = false,
+    val durationMs: Long = 0L,
+    val waveform: List<Int> = emptyList(),
+    val transcript: String = ""
+)
+
+data class PickedContactInfo(
+    val name: String,
+    val phone: String
 )
 
 object ChatFileManager {
 
-    private const val MAX_INLINE_RAW_BYTES = 520_000 // ~693 KB Base64, safely under Firestore 1 MiB doc limit
-    private const val TARGET_IMAGE_BYTES = 320_000
-    private const val MAX_IMAGE_EDGE_PX = 1280
+    const val MAX_INLINE_RAW_BYTES = 520_000 // ~693 KB Base64 fallback under Firestore 1 MiB doc limit
+    private const val MAX_CLOUDFLARE_IMAGE_BYTES = 5 * 1024 * 1024
+    private const val MAX_CLOUDFLARE_VIDEO_BYTES = 15 * 1024 * 1024
+    private const val MAX_CLOUDFLARE_AUDIO_BYTES = 3 * 1024 * 1024
+    private const val MAX_CLOUDFLARE_DOC_BYTES = 10 * 1024 * 1024
+    private const val TARGET_IMAGE_BYTES = 680_000
+    private const val TARGET_HD_IMAGE_BYTES = 2_400_000
+    private const val MAX_IMAGE_EDGE_PX = 1600
+    private const val MAX_HD_IMAGE_EDGE_PX = 2560
+
+    fun createCameraTempUri(context: Context): Uri {
+        val dir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
+        val file = File(dir, "cam_${System.currentTimeMillis()}.jpg")
+        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
+    fun extractHttpsUrls(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        val regex = Regex("""https://[^\s<>"'\)]+""", RegexOption.IGNORE_CASE)
+        return regex.findAll(text).map { it.value.trimEnd('.', ',', ';', '!', '?') }.distinct().take(3).toList()
+    }
+
+    fun extractPickedContact(context: Context, uri: Uri): PickedContactInfo? {
+        return runCatching {
+            val projection = arrayOf(
+                android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            context.contentResolver.query(uri, projection, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val nameIdx = c.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numIdx = c.getColumnIndex(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val name = if (nameIdx >= 0) c.getString(nameIdx).orEmpty().trim() else ""
+                    val num = if (numIdx >= 0) c.getString(numIdx).orEmpty().trim() else ""
+                    if (name.isNotBlank() || num.isNotBlank()) PickedContactInfo(name.ifBlank { num }, num) else null
+                } else null
+            }
+        }.getOrNull()
+    }
+
+    suspend fun prepareVoiceAttachmentFromFile(
+        file: File,
+        durationMs: Long,
+        waveform: List<Int>,
+        transcript: String
+    ): Result<StagedChatAttachment> = withContext(Dispatchers.IO) {
+        runCatching {
+            require(file.exists() && file.length() > 0L) { "Voice recording file is empty." }
+            val bytes = file.readBytes()
+            val cloudflareReady = WorkerBridgeClient.isConfigured()
+            val maxAllowed = if (cloudflareReady) MAX_CLOUDFLARE_AUDIO_BYTES else MAX_INLINE_RAW_BYTES
+            if (bytes.size > maxAllowed) {
+                error("Voice note too large (${formatFileSize(bytes.size.toLong())}). Maximum is ${formatFileSize(maxAllowed.toLong())}.")
+            }
+            StagedChatAttachment(
+                type = ChatAttachmentType.AUDIO,
+                fileName = file.name,
+                mimeType = "audio/mp4",
+                sizeBytes = bytes.size.toLong(),
+                localCachePath = file.absolutePath,
+                base64Payload = if (bytes.size <= MAX_INLINE_RAW_BYTES) Base64.encodeToString(bytes, Base64.NO_WRAP) else "",
+                sha256 = sha256Hex(bytes),
+                bucket = WorkerBridgeClient.bucketForAttachmentType(ChatAttachmentType.AUDIO),
+                durationMs = durationMs,
+                waveform = waveform,
+                transcript = transcript
+            )
+        }
+    }
 
     suspend fun prepareAttachmentFromUri(
         context: Context,
         uri: Uri,
-        preferredType: ChatAttachmentType? = null
+        preferredType: ChatAttachmentType? = null,
+        hdMode: Boolean = false
     ): Result<StagedChatAttachment> = withContext(Dispatchers.IO) {
         runCatching {
             val resolver = context.contentResolver
@@ -61,6 +145,7 @@ object ChatFileManager {
                 ?: inferFallbackName(preferredType, detectedMime)
 
             val resolvedType = when {
+                preferredType == ChatAttachmentType.VIDEO || detectedMime.startsWith("video/") -> ChatAttachmentType.VIDEO
                 preferredType == ChatAttachmentType.IMAGE || detectedMime.startsWith("image/") -> ChatAttachmentType.IMAGE
                 preferredType == ChatAttachmentType.AUDIO || detectedMime.startsWith("audio/") -> ChatAttachmentType.AUDIO
                 else -> ChatAttachmentType.FILE
@@ -75,17 +160,19 @@ object ChatFileManager {
 
             val uploadsDir = File(context.filesDir, "chat_uploads").apply { mkdirs() }
             val safeFileName = sanitizeFileName(resolvedName)
+            val cloudflareReady = WorkerBridgeClient.isConfigured()
 
             if (resolvedType == ChatAttachmentType.IMAGE) {
-                val compressed = compressImageForChat(rawBytes)
+                val compressed = compressImageForChat(rawBytes, hdMode)
                 val finalBytes = compressed ?: rawBytes
-                if (finalBytes.size > MAX_INLINE_RAW_BYTES) {
-                    error("Image is too large even after compression (${formatFileSize(finalBytes.size.toLong())}). Choose a smaller image.")
+                val maxAllowed = if (cloudflareReady) MAX_CLOUDFLARE_IMAGE_BYTES else MAX_INLINE_RAW_BYTES
+                if (finalBytes.size > maxAllowed) {
+                    error("Image is too large even after compression (${formatFileSize(finalBytes.size.toLong())}). Maximum is ${formatFileSize(maxAllowed.toLong())}.")
                 }
                 val finalName = if (compressed != null && !safeFileName.endsWith(".jpg", ignoreCase = true) && !safeFileName.endsWith(".jpeg", ignoreCase = true)) {
                     safeFileName.substringBeforeLast('.') + ".jpg"
                 } else safeFileName
-                val finalMime = if (compressed != null) "image/jpeg" else detectedMime.ifBlank { "image/*" }
+                val finalMime = if (compressed != null) "image/jpeg" else detectedMime.ifBlank { "image/jpeg" }
 
                 val cachedFile = File(uploadsDir, "${UUID.randomUUID().toString().take(8)}_$finalName")
                 cachedFile.writeBytes(finalBytes)
@@ -96,15 +183,25 @@ object ChatFileManager {
                     mimeType = finalMime,
                     sizeBytes = finalBytes.size.toLong(),
                     localCachePath = cachedFile.absolutePath,
-                    base64Payload = Base64.encodeToString(finalBytes, Base64.NO_WRAP)
+                    base64Payload = if (finalBytes.size <= MAX_INLINE_RAW_BYTES) Base64.encodeToString(finalBytes, Base64.NO_WRAP) else "",
+                    sha256 = sha256Hex(finalBytes),
+                    bucket = WorkerBridgeClient.bucketForAttachmentType(ChatAttachmentType.IMAGE),
+                    isHd = hdMode
                 )
             } else {
-                if (rawBytes.size > MAX_INLINE_RAW_BYTES) {
-                    error("File is too large (${formatFileSize(rawBytes.size.toLong())}). Maximum upload size is ${formatFileSize(MAX_INLINE_RAW_BYTES.toLong())}.")
+                val maxAllowed = when {
+                    !cloudflareReady -> MAX_INLINE_RAW_BYTES
+                    resolvedType == ChatAttachmentType.VIDEO -> MAX_CLOUDFLARE_VIDEO_BYTES
+                    resolvedType == ChatAttachmentType.AUDIO -> MAX_CLOUDFLARE_AUDIO_BYTES
+                    else -> MAX_CLOUDFLARE_DOC_BYTES
+                }
+                if (rawBytes.size > maxAllowed) {
+                    error("File is too large (${formatFileSize(rawBytes.size.toLong())}). Maximum free-tier upload size is ${formatFileSize(maxAllowed.toLong())}.")
                 }
                 val finalMime = detectedMime.ifBlank {
                     when (resolvedType) {
-                        ChatAttachmentType.AUDIO -> "audio/*"
+                        ChatAttachmentType.VIDEO -> "video/mp4"
+                        ChatAttachmentType.AUDIO -> "audio/mp4"
                         else -> inferMimeFromExtension(safeFileName)
                     }
                 }
@@ -117,7 +214,10 @@ object ChatFileManager {
                     mimeType = finalMime,
                     sizeBytes = rawBytes.size.toLong(),
                     localCachePath = cachedFile.absolutePath,
-                    base64Payload = Base64.encodeToString(rawBytes, Base64.NO_WRAP)
+                    base64Payload = if (rawBytes.size <= MAX_INLINE_RAW_BYTES) Base64.encodeToString(rawBytes, Base64.NO_WRAP) else "",
+                    sha256 = sha256Hex(rawBytes),
+                    bucket = WorkerBridgeClient.bucketForAttachmentType(resolvedType),
+                    isHd = hdMode
                 )
             }
         }
@@ -130,18 +230,108 @@ object ChatFileManager {
                 return@withContext local
             }
         }
+        val uploadsDir = File(context.filesDir, "chat_uploads").apply { mkdirs() }
+        val safeName = sanitizeFileName(message.attachmentName.ifBlank { "attachment_${message.id}" })
+        val deterministicCache = File(uploadsDir, "${message.id.ifBlank { message.attachmentSha256.take(12) }}_$safeName")
+        if (deterministicCache.exists() && deterministicCache.length() > 0L) {
+            return@withContext deterministicCache
+        }
+        if (message.attachmentStoragePath.isNotBlank()) {
+            val cachedRecord = runCatching {
+                XMaxChatDatabase.getInstance(context).chatDao().getMediaCache(message.attachmentStoragePath)
+            }.getOrNull()
+            val cachedFile = cachedRecord?.localFilePath?.takeIf { it.isNotBlank() }?.let(::File)
+            if (cachedFile != null && cachedFile.exists() && cachedFile.length() > 0L) {
+                return@withContext cachedFile
+            }
+        }
         if (message.attachmentDataBase64.isBlank()) return@withContext null
 
         runCatching {
             val bytes = Base64.decode(message.attachmentDataBase64, Base64.DEFAULT)
             if (bytes.isEmpty()) return@runCatching null
-            val uploadsDir = File(context.filesDir, "chat_uploads").apply { mkdirs() }
-            val safeName = sanitizeFileName(message.attachmentName.ifBlank { "attachment_${message.id}" })
-            val target = File(uploadsDir, "${message.id}_$safeName")
-            if (!target.exists() || target.length() == 0L) {
-                target.writeBytes(bytes)
+            if (!deterministicCache.exists() || deterministicCache.length() == 0L) {
+                deterministicCache.writeBytes(bytes)
             }
-            target
+            deterministicCache
+        }.getOrNull()
+    }
+
+    suspend fun resolveOrDownloadAttachment(
+        context: Context,
+        message: ChatMessage,
+        companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID
+    ): Result<File> = withContext(Dispatchers.IO) {
+        resolveLocalFile(context, message)?.let { return@withContext Result.success(it) }
+
+        if (message.attachmentStoragePath.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Attachment bytes are unavailable offline."))
+        }
+        if (!WorkerBridgeClient.isConfigured()) {
+            return@withContext Result.failure(IllegalStateException("Cloudflare Worker URL is not configured to download remote files."))
+        }
+
+        val uploadsDir = File(context.filesDir, "chat_uploads").apply { mkdirs() }
+        val safeName = sanitizeFileName(message.attachmentName.ifBlank { "attachment_${message.id}" })
+        val keyPrefix = message.id.ifBlank { message.attachmentSha256.take(12).ifBlank { "r2" } }
+        val target = File(uploadsDir, "${keyPrefix}_$safeName")
+
+        when (
+            val dl = WorkerBridgeClient.downloadChatFileFromCloudflare(
+                companyId = companyId,
+                chatId = message.channelId,
+                storagePath = message.attachmentStoragePath,
+                destination = target
+            )
+        ) {
+            is WorkerResult.Success -> {
+                runCatching {
+                    XMaxChatDatabase.getInstance(context).chatDao().upsertMediaCache(
+                        MediaCacheEntity(
+                            storagePath = message.attachmentStoragePath,
+                            localFilePath = dl.data.absolutePath,
+                            mimeType = message.attachmentMimeType,
+                            byteSize = dl.data.length(),
+                            lastAccessedMillis = System.currentTimeMillis()
+                        )
+                    )
+                }
+                Result.success(dl.data)
+            }
+            is WorkerResult.RateLimited ->
+                Result.failure(IllegalStateException("Cloudflare rate limit reached. Retry in ${dl.retryAfterSeconds}s."))
+            is WorkerResult.NotConfigured ->
+                Result.failure(IllegalStateException("Cloudflare Worker URL is not configured."))
+            is WorkerResult.Error ->
+                Result.failure(IllegalStateException(dl.message))
+        }
+    }
+
+    suspend fun loadOrDownloadMessageBitmap(
+        context: Context,
+        message: ChatMessage,
+        companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID,
+        maxEdgePx: Int = 900
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        decodeMessageBitmap(message, maxEdgePx)?.let { return@withContext it }
+        val file = resolveOrDownloadAttachment(context, message, companyId).getOrNull() ?: return@withContext null
+        decodeBitmapFileSampled(file, maxEdgePx)
+    }
+
+    private fun decodeBitmapFileSampled(file: File, maxEdgePx: Int): Bitmap? {
+        return runCatching {
+            if (!file.exists() || file.length() == 0L) return null
+            val bytes = file.readBytes()
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val largest = max(bounds.outWidth, bounds.outHeight)
+            if (largest <= 0) return null
+            var sample = 1
+            while (largest / sample > maxEdgePx) {
+                sample *= 2
+            }
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
         }.getOrNull()
     }
 
@@ -401,41 +591,43 @@ object ChatFileManager {
 
     suspend fun downloadAttachmentToDevice(
         context: Context,
-        message: ChatMessage
+        message: ChatMessage,
+        companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID,
+        showInGallery: Boolean = ChatSettingsStore.ensureLoaded(context).mediaVisibleInGallery
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val bytes = when {
-                message.attachmentLocalPath.isNotBlank() -> {
-                    val local = File(message.attachmentLocalPath)
-                    if (local.exists() && local.length() > 0L) local.readBytes() else null
-                }
-                else -> null
-            } ?: message.attachmentDataBase64
-                .takeIf { it.isNotBlank() }
-                ?.let { Base64.decode(it, Base64.DEFAULT) }
+            val resolvedFile = resolveOrDownloadAttachment(context, message, companyId).getOrNull()
+            val bytes = resolvedFile?.takeIf { it.exists() && it.length() > 0L }?.readBytes()
+                ?: message.attachmentDataBase64
+                    .takeIf { it.isNotBlank() }
+                    ?.let { Base64.decode(it, Base64.DEFAULT) }
                 ?: error("Attachment bytes are unavailable offline.")
 
             if (bytes.isEmpty()) error("Attachment file is empty.")
 
             val isImage = message.attachmentTypeEnum() == ChatAttachmentType.IMAGE
+            val isVideo = message.attachmentTypeEnum() == ChatAttachmentType.VIDEO
             val rawName = message.attachmentName.ifBlank {
-                if (isImage) "xmax_image_${message.id.ifBlank { "photo" }}.jpg"
-                else "xmax_file_${message.id.ifBlank { "doc" }}"
+                when {
+                    isImage -> "xmax_image_${message.id.ifBlank { "photo" }}.jpg"
+                    isVideo -> "xmax_video_${message.id.ifBlank { "clip" }}.mp4"
+                    else -> "xmax_file_${message.id.ifBlank { "doc" }}"
+                }
             }
             val safeName = sanitizeFileName(rawName)
             val mime = message.attachmentMimeType.ifBlank { inferMimeFromExtension(safeName) }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && (showInGallery || (!isImage && !isVideo))) {
                 val resolver = context.contentResolver
-                val collection = if (isImage) {
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                } else {
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI
+                val collection = when {
+                    isImage -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    else -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
                 }
-                val relDir = if (isImage) {
-                    "${Environment.DIRECTORY_PICTURES}/X.MAX"
-                } else {
-                    "${Environment.DIRECTORY_DOWNLOADS}/X.MAX"
+                val relDir = when {
+                    isImage -> "${Environment.DIRECTORY_PICTURES}/X.MAX"
+                    isVideo -> "${Environment.DIRECTORY_MOVIES}/X.MAX"
+                    else -> "${Environment.DIRECTORY_DOWNLOADS}/X.MAX"
                 }
                 val values = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
@@ -466,9 +658,12 @@ object ChatFileManager {
 
             val fallbackDir = (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 ?: File(context.filesDir, "chat_downloads")).apply { mkdirs() }
+            if (!showInGallery) {
+                runCatching { File(fallbackDir, ".nomedia").createNewFile() }
+            }
             val outFile = File(fallbackDir, safeName)
             outFile.writeBytes(bytes)
-            "Downloads/$safeName"
+            "App Private/$safeName"
         }
     }
 
@@ -482,23 +677,26 @@ object ChatFileManager {
         }
     }
 
-    private fun compressImageForChat(rawBytes: ByteArray): ByteArray? {
+    private fun compressImageForChat(rawBytes: ByteArray, hdMode: Boolean = false): ByteArray? {
         return runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
+            val maxEdge = if (hdMode) MAX_HD_IMAGE_EDGE_PX else MAX_IMAGE_EDGE_PX
+            val targetBytes = if (hdMode) TARGET_HD_IMAGE_BYTES else TARGET_IMAGE_BYTES
+
             var sample = 1
             val maxDim = max(bounds.outWidth, bounds.outHeight)
-            while (maxDim / sample > MAX_IMAGE_EDGE_PX) {
+            while (maxDim / sample > maxEdge) {
                 sample *= 2
             }
             val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sample.coerceAtLeast(1) }
             val rawDecoded = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size, decodeOpts) ?: return null
             val decoded = applyExifOrientation(rawDecoded, rawBytes)
 
-            val scaled = if (max(decoded.width, decoded.height) > MAX_IMAGE_EDGE_PX) {
-                val ratio = MAX_IMAGE_EDGE_PX.toFloat() / max(decoded.width, decoded.height).toFloat()
+            val scaled = if (max(decoded.width, decoded.height) > maxEdge) {
+                val ratio = maxEdge.toFloat() / max(decoded.width, decoded.height).toFloat()
                 Bitmap.createScaledBitmap(
                     decoded,
                     (decoded.width * ratio).toInt().coerceAtLeast(1),
@@ -509,19 +707,24 @@ object ChatFileManager {
                 decoded
             }
 
-            var quality = 85
+            var quality = if (hdMode) 94 else 88
             var result: ByteArray
             do {
                 val baos = ByteArrayOutputStream()
                 scaled.compress(Bitmap.CompressFormat.JPEG, quality, baos)
                 result = baos.toByteArray()
-                quality -= 12
-            } while (result.size > TARGET_IMAGE_BYTES && quality >= 36)
+                quality -= 10
+            } while (result.size > targetBytes && quality >= 48)
 
             if (scaled !== decoded) scaled.recycle()
             decoded.recycle()
             result
         }.getOrNull()
+    }
+
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
     }
 
     private fun queryDisplayName(context: Context, uri: Uri): String? {
@@ -579,11 +782,13 @@ object ChatFileManager {
             lower.endsWith(".wav") -> "audio/wav"
             lower.endsWith(".m4a") -> "audio/mp4"
             lower.endsWith(".txt") -> "text/plain"
+            lower.endsWith(".csv") -> "text/csv"
             lower.endsWith(".doc") -> "application/msword"
             lower.endsWith(".docx") -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             lower.endsWith(".xls") -> "application/vnd.ms-excel"
             lower.endsWith(".xlsx") -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            else -> "*/*"
+            lower.endsWith(".zip") -> "application/zip"
+            else -> "application/octet-stream"
         }
     }
 

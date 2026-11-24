@@ -1,39 +1,55 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.chat.ChatAudioManager
+import com.example.chat.ChatFileManager
+import com.example.chat.ChatLocationManager
+import com.example.chat.ChatSettingsStore
+import com.example.chat.RecordedVoiceDraft
 import com.example.chat.StagedChatAttachment
-import com.example.chat.local.ChatDraftEntity
-import com.example.chat.local.XMaxChatDatabase
 import com.example.chat.realtime.EphemeralChatActivity
+import com.example.chat.realtime.MemberPresenceState
 import com.example.chat.realtime.RtdbPresenceManager
 import com.example.data.AgencyRepository
 import com.example.data.ChatRepository
+import com.example.data.SendMessageOptions
 import com.example.model.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class ChatFilterTab(val label: String) {
     ALL("All"),
     UNREAD("Unread"),
     GROUPS("Groups"),
-    FAVOURITES("Favourites")
+    FAVOURITES("Favourites"),
+    ARCHIVED("Archived"),
+    LOCKED("Locked")
 }
+
+data class FailedOutgoingMessage(
+    val id: String,
+    val channelId: String,
+    val body: String,
+    val options: SendMessageOptions,
+    val reason: String,
+    val createdAtMillis: Long = System.currentTimeMillis()
+)
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val coreRepo = AgencyRepository(application)
     val chatRepo = ChatRepository(coreRepo)
-    private val localDb = XMaxChatDatabase.getInstance(application)
     private val rtdb = RtdbPresenceManager
 
     private val _activeChannel = MutableStateFlow<ChatChannel?>(null)
@@ -51,6 +67,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _filterTab = MutableStateFlow(ChatFilterTab.ALL)
     val filterTab: StateFlow<ChatFilterTab> = _filterTab.asStateFlow()
 
+    private val _selectedCustomList = MutableStateFlow<String?>(null)
+    val selectedCustomList: StateFlow<String?> = _selectedCustomList.asStateFlow()
+
     private val _ephemeralActivity = MutableStateFlow(EphemeralChatActivity())
     val ephemeralActivity: StateFlow<EphemeralChatActivity> = _ephemeralActivity.asStateFlow()
 
@@ -60,8 +79,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
     val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
 
-    private val _stagedAttachment = MutableStateFlow<StagedChatAttachment?>(null)
-    val stagedAttachment: StateFlow<StagedChatAttachment?> = _stagedAttachment.asStateFlow()
+    private val _stagedAttachments = MutableStateFlow<List<StagedChatAttachment>>(emptyList())
+    val stagedAttachments: StateFlow<List<StagedChatAttachment>> = _stagedAttachments.asStateFlow()
 
     private val _isRecordingAudio = MutableStateFlow(false)
     val isRecordingAudio: StateFlow<Boolean> = _isRecordingAudio.asStateFlow()
@@ -69,8 +88,20 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _recordingDurationSec = MutableStateFlow(0)
     val recordingDurationSec: StateFlow<Int> = _recordingDurationSec.asStateFlow()
 
+    private val _voicePreview = MutableStateFlow<RecordedVoiceDraft?>(null)
+    val voicePreview: StateFlow<RecordedVoiceDraft?> = _voicePreview.asStateFlow()
+
+    private val _isTranscribing = MutableStateFlow(false)
+    val isTranscribing: StateFlow<Boolean> = _isTranscribing.asStateFlow()
+
     private val _isUploading = MutableStateFlow(false)
     val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
+
+    private val _failedMessages = MutableStateFlow<List<FailedOutgoingMessage>>(emptyList())
+    val failedMessages: StateFlow<List<FailedOutgoingMessage>> = _failedMessages.asStateFlow()
+
+    private val _activeLiveLocationMessageId = MutableStateFlow<Pair<String, String>?>(null)
+    val activeLiveLocationMessageId: StateFlow<Pair<String, String>?> = _activeLiveLocationMessageId.asStateFlow()
 
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
@@ -79,17 +110,24 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var activityJob: Job? = null
     private var currentMyUid: String = ""
     private var recordingTimerJob: Job? = null
+    private var liveLocationJob: Job? = null
+
+    init {
+        ChatSettingsStore.ensureLoaded(application)
+    }
+
+    fun observeMemberPresence(uid: String): Flow<MemberPresenceState> =
+        rtdb.observeMemberPresence(coreRepo.companyId, uid)
 
     fun selectChannel(channel: ChatChannel, myUid: String) {
         currentMyUid = myUid
         _activeChannel.value = channel
         _replyTarget.value = null
         _editingMessage.value = null
-        _stagedAttachment.value = null
+        _stagedAttachments.value = emptyList()
         _isRecordingAudio.value = false
         _recordingDurationSec.value = 0
 
-        // Observe Realtime Activity (typing & recording)
         activityJob?.cancel()
         activityJob = viewModelScope.launch {
             rtdb.observeChatActivity(coreRepo.companyId, channel.id, myUid)
@@ -99,7 +137,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
         }
 
-        // Observe Messages
         messagesJob?.cancel()
         messagesJob = viewModelScope.launch {
             chatRepo.observeMessages(channel.id)
@@ -107,7 +144,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 .collectLatest { synced ->
                     _messages.value = synced.data
                     _hasPendingWrites.value = synced.hasPendingWrites
+                    if (synced.data.isNotEmpty() && myUid.isNotBlank()) {
+                        chatRepo.markMessagesDeliveredAndRead(channel.id, synced.data, myUid)
+                    }
                 }
+        }
+    }
+
+    fun markThreadMessagesRead(channelId: String, messages: List<ChatMessage>, myUid: String) {
+        if (channelId.isBlank() || myUid.isBlank()) return
+        viewModelScope.launch {
+            chatRepo.markMessagesDeliveredAndRead(channelId, messages, myUid)
         }
     }
 
@@ -117,6 +164,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setFilterTab(tab: ChatFilterTab) {
         _filterTab.value = tab
+        _selectedCustomList.value = null
+    }
+
+    fun selectCustomList(listName: String?) {
+        _selectedCustomList.value = listName
     }
 
     fun setReply(message: ChatMessage?) {
@@ -129,55 +181,119 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (message != null) _replyTarget.value = null
     }
 
-    fun setStagedAttachment(attachment: StagedChatAttachment?) {
-        _stagedAttachment.value = attachment
+    fun stageAttachments(attachments: List<StagedChatAttachment>) {
+        _stagedAttachments.value = (_stagedAttachments.value + attachments).take(10)
     }
 
-    fun notifyTyping(channelId: String, senderName: String) {
-        rtdb.setTyping(coreRepo.companyId, channelId, currentMyUid, senderName, true)
+    fun removeStagedAttachment(id: String) {
+        _stagedAttachments.value = _stagedAttachments.value.filterNot { it.id == id }
     }
 
-    fun startRecording(channelId: String, senderName: String) {
-        _isRecordingAudio.value = true
-        _recordingDurationSec.value = 0
-        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, true)
-        recordingTimerJob?.cancel()
-        recordingTimerJob = viewModelScope.launch {
-            while (_isRecordingAudio.value) {
-                delay(1000)
-                _recordingDurationSec.value += 1
+    fun clearStagedAttachments() {
+        _stagedAttachments.value = emptyList()
+    }
+
+    fun notifyTyping(channelId: String, myUid: String, senderName: String) {
+        val uid = myUid.ifBlank { currentMyUid }
+        if (uid.isBlank() || channelId.isBlank()) return
+        rtdb.setTyping(coreRepo.companyId, channelId, uid, senderName, true)
+    }
+
+    fun startVoiceRecording(context: Context, channelId: String, myUid: String, senderName: String) {
+        val res = ChatAudioManager.startRecording(context)
+        res.onSuccess {
+            _voicePreview.value = null
+            _isRecordingAudio.value = true
+            _recordingDurationSec.value = 0
+            rtdb.setRecording(coreRepo.companyId, channelId, myUid, senderName, true)
+            recordingTimerJob?.cancel()
+            recordingTimerJob = viewModelScope.launch {
+                while (_isRecordingAudio.value) {
+                    delay(1000)
+                    _recordingDurationSec.value += 1
+                }
             }
+        }.onFailure { err ->
+            _statusBanner.value = err.message ?: "Unable to access microphone."
         }
     }
 
-    fun cancelRecording(channelId: String, senderName: String) {
+    fun stopRecordingForPreview(channelId: String, myUid: String, senderName: String) {
         _isRecordingAudio.value = false
-        _recordingDurationSec.value = 0
         recordingTimerJob?.cancel()
-        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, false)
+        rtdb.setRecording(coreRepo.companyId, channelId, myUid, senderName, false)
+        val draft = ChatAudioManager.stopRecording()
+        if (draft == null) {
+            _statusBanner.value = "Recording too short."
+        } else {
+            _voicePreview.value = draft
+        }
     }
 
-    fun stopAndSendRecording(channelId: String, senderName: String, actor: Member) {
-        val durationSec = _recordingDurationSec.value
-        _isRecordingAudio.value = false
-        recordingTimerJob?.cancel()
-        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, false)
+    fun discardVoicePreview() {
+        ChatAudioManager.stopPlayback()
+        runCatching { _voicePreview.value?.file?.delete() }
+        _voicePreview.value = null
+    }
 
-        if (durationSec <= 0) return
+    fun transcribeVoiceIntoDraft(context: Context) {
+        _isTranscribing.value = true
+        ChatAudioManager.startOnDeviceSpeechToText(
+            context = context,
+            onResult = { spoken ->
+                _isTranscribing.value = false
+                val cur = _voicePreview.value
+                if (cur != null) {
+                    _voicePreview.value = cur.copy(transcript = spoken)
+                }
+                _statusBanner.value = "Transcribed: $spoken"
+            },
+            onError = { err ->
+                _isTranscribing.value = false
+                _statusBanner.value = err
+            }
+        )
+    }
 
+    fun sendVoicePreview(
+        channelId: String,
+        actor: Member,
+        viewOnce: Boolean = false,
+        onSent: () -> Unit = {}
+    ) {
+        val draft = _voicePreview.value ?: return
+        ChatAudioManager.stopPlayback()
         viewModelScope.launch {
+            _isUploading.value = true
+            val staged = ChatFileManager.prepareVoiceAttachmentFromFile(
+                file = draft.file,
+                durationMs = draft.durationMs,
+                waveform = draft.waveform,
+                transcript = draft.transcript
+            ).getOrNull()
+            if (staged == null) {
+                _isUploading.value = false
+                _statusBanner.value = "Failed to prepare voice recording."
+                return@launch
+            }
+            val sec = (draft.durationMs / 1000L).coerceAtLeast(1L)
+            val options = SendMessageOptions(
+                kind = ChatMessageKind.VOICE,
+                parentMessage = _replyTarget.value,
+                attachment = staged,
+                viewOnce = viewOnce
+            )
             runCatching {
-                val voiceMeta = "Voice message (${durationSec}s)"
-                chatRepo.sendMessage(
-                    channelId = channelId,
-                    body = voiceMeta,
-                    parentMessage = _replyTarget.value,
-                    attachment = null,
-                    actor = actor
-                )
+                chatRepo.sendRichMessage(channelId, "Voice message (${sec}s)", actor, options)
+                _voicePreview.value = null
                 _replyTarget.value = null
+                _isUploading.value = false
+                onSent()
             }.onFailure { err ->
-                _statusBanner.value = "Failed to send voice note: ${err.message}"
+                _isUploading.value = false
+                queueFailed(channelId, "Voice message (${sec}s)", options, err.message ?: "Send failed")
+                _voicePreview.value = null
+                _statusBanner.value = "Voice note failed to send (tap Retry): ${err.message}"
             }
         }
     }
@@ -186,14 +302,15 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         channelId: String,
         body: String,
         actor: Member,
+        viewOnce: Boolean = false,
+        mentions: List<String> = emptyList(),
         onSuccess: () -> Unit = {}
     ) {
         val clean = body.trim()
-        val attachment = _stagedAttachment.value
+        val attachments = _stagedAttachments.value
         val editing = _editingMessage.value
 
         if (editing != null) {
-            // Edit flow
             viewModelScope.launch {
                 runCatching {
                     chatRepo.editMessage(channelId, editing.id, clean)
@@ -206,36 +323,188 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        if (clean.isEmpty() && attachment == null) return
+        if (clean.isEmpty() && attachments.isEmpty()) return
 
         viewModelScope.launch {
-            _isUploading.value = attachment != null
-            runCatching {
-                chatRepo.sendMessage(
-                    channelId = channelId,
-                    body = clean,
+            _isUploading.value = attachments.isNotEmpty()
+            var anyError: String? = null
+            if (attachments.isEmpty()) {
+                val opts = SendMessageOptions(
+                    kind = ChatMessageKind.TEXT,
                     parentMessage = _replyTarget.value,
-                    attachment = attachment,
-                    actor = actor
+                    viewOnce = viewOnce,
+                    mentions = mentions
                 )
-                _replyTarget.value = null
-                _stagedAttachment.value = null
-                _isUploading.value = false
+                runCatching {
+                    chatRepo.sendRichMessage(channelId, clean, actor, opts)
+                }.onFailure { err ->
+                    anyError = err.message ?: "Network error"
+                    queueFailed(channelId, clean, opts, anyError!!)
+                }
+            } else {
+                attachments.forEachIndexed { idx, att ->
+                    val caption = if (idx == 0) clean else ""
+                    val kind = when {
+                        att.type == ChatAttachmentType.IMAGE && att.isHd -> ChatMessageKind.HD_IMAGE
+                        att.type == ChatAttachmentType.IMAGE -> ChatMessageKind.IMAGE
+                        att.type == ChatAttachmentType.VIDEO && att.isHd -> ChatMessageKind.HD_VIDEO
+                        att.type == ChatAttachmentType.VIDEO -> ChatMessageKind.VIDEO
+                        att.type == ChatAttachmentType.AUDIO -> ChatMessageKind.AUDIO
+                        else -> ChatMessageKind.DOCUMENT
+                    }
+                    val opts = SendMessageOptions(
+                        kind = kind,
+                        parentMessage = if (idx == 0) _replyTarget.value else null,
+                        attachment = att,
+                        viewOnce = viewOnce,
+                        mentions = if (idx == 0) mentions else emptyList()
+                    )
+                    runCatching {
+                        chatRepo.sendRichMessage(channelId, caption, actor, opts)
+                    }.onFailure { err ->
+                        anyError = err.message ?: "Upload failed"
+                        queueFailed(channelId, caption, opts, anyError!!)
+                    }
+                }
+            }
+            _isUploading.value = false
+            _replyTarget.value = null
+            _stagedAttachments.value = emptyList()
+            if (anyError == null) {
                 onSuccess()
+            } else {
+                _statusBanner.value = "Failed to send (tap Retry in thread): $anyError"
+            }
+        }
+    }
+
+    fun sendRichOptions(
+        channelId: String,
+        body: String,
+        actor: Member,
+        options: SendMessageOptions,
+        onSent: (ChatMessage) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                val sent = chatRepo.sendRichMessage(channelId, body, actor, options)
+                onSent(sent)
             }.onFailure { err ->
-                _isUploading.value = false
+                queueFailed(channelId, body, options, err.message ?: "Failed")
                 _statusBanner.value = "Failed to send: ${err.message}"
             }
         }
     }
 
-    fun sendPoll(
+    fun startLiveLocationSharing(
+        context: Context,
         channelId: String,
-        question: String,
-        options: List<String>,
-        actor: Member,
-        onSuccess: () -> Unit = {}
+        durationMinutes: Int,
+        actor: Member
     ) {
+        viewModelScope.launch {
+            val initial = ChatLocationManager.fetchCurrentLocation(context).getOrElse { err ->
+                _statusBanner.value = err.message ?: "Unable to fetch location."
+                return@launch
+            }
+            val untilMillis = System.currentTimeMillis() + (durationMinutes * 60_000L)
+            val opts = SendMessageOptions(
+                kind = ChatMessageKind.LIVE_LOCATION,
+                locationLat = initial.latitude,
+                locationLng = initial.longitude,
+                locationLabel = initial.label,
+                liveLocationUntilMillis = untilMillis
+            )
+            runCatching {
+                val sent = chatRepo.sendRichMessage(
+                    channelId,
+                    "Sharing live location for ${durationMinutes}m",
+                    actor,
+                    opts
+                )
+                _activeLiveLocationMessageId.value = channelId to sent.id
+                liveLocationJob?.cancel()
+                liveLocationJob = viewModelScope.launch {
+                    while (System.currentTimeMillis() < untilMillis && _activeLiveLocationMessageId.value == (channelId to sent.id)) {
+                        delay(20_000L)
+                        val loc = ChatLocationManager.fetchCurrentLocation(context).getOrNull() ?: continue
+                        runCatching {
+                            chatRepo.updateLiveLocation(channelId, sent.id, loc.latitude, loc.longitude, loc.label)
+                        }
+                    }
+                    if (_activeLiveLocationMessageId.value == (channelId to sent.id)) {
+                        _activeLiveLocationMessageId.value = null
+                    }
+                }
+            }.onFailure { err ->
+                _statusBanner.value = "Failed to share live location: ${err.message}"
+            }
+        }
+    }
+
+    fun stopLiveLocation(channelId: String, messageId: String) {
+        if (_activeLiveLocationMessageId.value == (channelId to messageId)) {
+            liveLocationJob?.cancel()
+            _activeLiveLocationMessageId.value = null
+        }
+        viewModelScope.launch {
+            runCatching { chatRepo.stopLiveLocation(channelId, messageId) }
+        }
+    }
+
+    private fun queueFailed(channelId: String, body: String, options: SendMessageOptions, reason: String) {
+        val item = FailedOutgoingMessage(
+            id = "fail_" + java.util.UUID.randomUUID().toString().take(8),
+            channelId = channelId,
+            body = body,
+            options = options,
+            reason = reason
+        )
+        _failedMessages.value = _failedMessages.value + item
+    }
+
+    fun retryFailedMessage(failed: FailedOutgoingMessage, actor: Member) {
+        _failedMessages.value = _failedMessages.value.filterNot { it.id == failed.id }
+        viewModelScope.launch {
+            runCatching {
+                chatRepo.sendRichMessage(failed.channelId, failed.body, actor, failed.options)
+            }.onFailure { err ->
+                queueFailed(failed.channelId, failed.body, failed.options, err.message ?: "Retry failed")
+                _statusBanner.value = "Retry failed: ${err.message}"
+            }
+        }
+    }
+
+    fun dismissFailedMessage(id: String) {
+        _failedMessages.value = _failedMessages.value.filterNot { it.id == id }
+    }
+
+    fun forwardMessage(message: ChatMessage, targetChannel: ChatChannel, actor: Member, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching {
+                val opts = SendMessageOptions(
+                    kind = message.kindEnum(),
+                    forwardedFromName = message.senderName,
+                    stickerId = message.stickerId,
+                    gifId = message.gifId,
+                    gifTitle = message.gifTitle,
+                    contactName = message.contactName,
+                    contactPhone = message.contactPhone,
+                    locationLat = message.locationLat,
+                    locationLng = message.locationLng,
+                    locationLabel = message.locationLabel
+                )
+                val body = message.body.ifBlank { message.attachmentName.ifBlank { message.kindEnum().label } }
+                chatRepo.sendRichMessage(targetChannel.id, body, actor, opts)
+                _statusBanner.value = "Forwarded to ${targetChannel.title}"
+                onDone()
+            }.onFailure { err ->
+                _statusBanner.value = "Forward failed: ${err.message}"
+            }
+        }
+    }
+
+    fun sendPoll(channelId: String, question: String, options: List<String>, actor: Member, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching {
                 chatRepo.sendPollMessage(channelId, question, options, actor)
@@ -247,51 +516,35 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun votePoll(channelId: String, messageId: String, optionIndex: Int, myUid: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.votePoll(channelId, messageId, optionIndex, myUid)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.votePoll(channelId, messageId, optionIndex, myUid) } }
+    }
+
+    fun rsvpEvent(channelId: String, messageId: String, myUid: String, rsvp: String) {
+        viewModelScope.launch { runCatching { chatRepo.rsvpEvent(channelId, messageId, myUid, rsvp) } }
     }
 
     fun reactToMessage(channelId: String, messageId: String, emoji: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.reactToMessage(channelId, messageId, myUid, emoji)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.reactToMessage(channelId, messageId, myUid, emoji) } }
     }
 
     fun deleteForEveryone(channelId: String, messageId: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.deleteMessageForEveryone(channelId, messageId)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.deleteMessageForEveryone(channelId, messageId) } }
     }
 
     fun deleteForMe(channelId: String, messageId: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.deleteMessageForMe(channelId, messageId, myUid)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.deleteMessageForMe(channelId, messageId, myUid) } }
     }
 
     fun toggleStar(channelId: String, messageId: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.toggleStarMessage(channelId, messageId, myUid)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.toggleStarMessage(channelId, messageId, myUid) } }
     }
 
     fun togglePin(channelId: String, messageId: String) {
-        viewModelScope.launch {
-            runCatching {
-                chatRepo.togglePinMessage(channelId, messageId)
-            }
-        }
+        viewModelScope.launch { runCatching { chatRepo.togglePinMessage(channelId, messageId) } }
+    }
+
+    fun markViewedOnce(channelId: String, messageId: String, myUid: String) {
+        viewModelScope.launch { runCatching { chatRepo.markMessageViewedOnce(channelId, messageId, myUid) } }
     }
 
     fun sendBusinessCard(
@@ -307,16 +560,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         viewModelScope.launch {
             runCatching {
-                chatRepo.sendBusinessCardMessage(
-                    channelId = channelId,
-                    kind = kind,
-                    refId = refId,
-                    title = title,
-                    subtitle = subtitle,
-                    status = status,
-                    amountPaise = amountPaise,
-                    actor = actor
-                )
+                chatRepo.sendBusinessCardMessage(channelId, kind, refId, title, subtitle, status, amountPaise, actor)
                 onSuccess()
             }.onFailure { err ->
                 _statusBanner.value = "Failed to share business card: ${err.message}"
@@ -325,51 +569,150 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleChannelPin(channelId: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching { chatRepo.togglePinChannel(channelId, myUid) }
-        }
+        viewModelScope.launch { runCatching { chatRepo.togglePinChannel(channelId, myUid) } }
     }
 
     fun toggleChannelMute(channelId: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching { chatRepo.toggleMuteChannel(channelId, myUid) }
-        }
+        viewModelScope.launch { runCatching { chatRepo.toggleMuteChannel(channelId, myUid) } }
     }
 
     fun toggleChannelArchive(channelId: String, myUid: String) {
-        viewModelScope.launch {
-            runCatching { chatRepo.toggleArchiveChannel(channelId, myUid) }
-        }
+        viewModelScope.launch { runCatching { chatRepo.toggleArchiveChannel(channelId, myUid) } }
     }
 
     fun toggleChannelFavourite(channelId: String, myUid: String) {
+        viewModelScope.launch { runCatching { chatRepo.toggleFavouriteChannel(channelId, myUid) } }
+    }
+
+    fun markChannelReadUnread(channelId: String, myUid: String, markAsUnread: Boolean) {
         viewModelScope.launch {
-            runCatching { chatRepo.toggleFavouriteChannel(channelId, myUid) }
+            runCatching {
+                if (markAsUnread) chatRepo.markChannelUnread(channelId, myUid)
+                else chatRepo.markChannelRead(channelId, myUid)
+            }
         }
     }
 
-    fun updateChannelInfo(channelId: String, title: String, topic: String, photoUrl: String = "") {
+    fun updateChannelInfo(channelId: String, title: String, topic: String, photoBase64: String? = null) {
         viewModelScope.launch {
-            runCatching { chatRepo.updateChannelInfo(channelId, title, topic, photoUrl) }
+            runCatching { chatRepo.updateChannelInfo(channelId, title, topic, photoBase64) }
+                .onSuccess { _statusBanner.value = "Group details updated" }
+                .onFailure { _statusBanner.value = it.message ?: "Unable to update group" }
         }
+    }
+
+    fun updateGroupPermissions(
+        channelId: String,
+        onlyAdminsCanMessage: Boolean,
+        onlyAdminsCanEditInfo: Boolean,
+        requireAdminApproval: Boolean
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                chatRepo.updateGroupPermissions(channelId, onlyAdminsCanMessage, onlyAdminsCanEditInfo, requireAdminApproval)
+            }
+        }
+    }
+
+    fun updateDisappearingTimer(channelId: String, seconds: Long) {
+        viewModelScope.launch {
+            runCatching { chatRepo.updateDisappearingTimer(channelId, seconds) }
+                .onSuccess {
+                    val label = when (seconds) {
+                        86_400L -> "24 hours"
+                        604_800L -> "7 days"
+                        7_776_000L -> "90 days"
+                        else -> "Off"
+                    }
+                    _statusBanner.value = "Disappearing messages: $label"
+                }
+        }
+    }
+
+    fun resetInviteLink(channelId: String) {
+        viewModelScope.launch {
+            runCatching { chatRepo.resetInviteCode(channelId) }
+                .onSuccess { _statusBanner.value = "Invite link reset" }
+        }
+    }
+
+    fun joinByInviteCode(code: String, actor: Member, onJoined: (ChatChannel) -> Unit) {
+        viewModelScope.launch {
+            chatRepo.joinByInviteCode(code, actor)
+                .onSuccess { (ch, immediate) ->
+                    if (immediate) {
+                        _statusBanner.value = "Joined ${ch.title}"
+                        onJoined(ch)
+                    } else {
+                        _statusBanner.value = "Join request sent to ${ch.title} admins"
+                    }
+                }
+                .onFailure { _statusBanner.value = it.message ?: "Invalid invite link" }
+        }
+    }
+
+    fun approvePendingMember(channelId: String, uid: String) {
+        viewModelScope.launch { runCatching { chatRepo.approvePendingMember(channelId, uid) } }
+    }
+
+    fun declinePendingMember(channelId: String, uid: String) {
+        viewModelScope.launch { runCatching { chatRepo.declinePendingMember(channelId, uid) } }
     }
 
     fun addChannelMember(channelId: String, memberUid: String) {
-        viewModelScope.launch {
-            runCatching { chatRepo.addChannelMember(channelId, memberUid) }
-        }
+        viewModelScope.launch { runCatching { chatRepo.addChannelMember(channelId, memberUid) } }
     }
 
     fun removeChannelMember(channelId: String, memberUid: String) {
+        viewModelScope.launch { runCatching { chatRepo.removeChannelMember(channelId, memberUid) } }
+    }
+
+    fun exitGroup(channelId: String, myUid: String, onExited: () -> Unit) {
         viewModelScope.launch {
-            runCatching { chatRepo.removeChannelMember(channelId, memberUid) }
+            runCatching { chatRepo.exitGroup(channelId, myUid) }
+                .onSuccess {
+                    _statusBanner.value = "Exited group"
+                    onExited()
+                }
         }
     }
 
     fun toggleChannelAdmin(channelId: String, memberUid: String) {
+        viewModelScope.launch { runCatching { chatRepo.toggleChannelAdmin(channelId, memberUid) } }
+    }
+
+    fun clearChatHistory(channelId: String, myUid: String) {
         viewModelScope.launch {
-            runCatching { chatRepo.toggleChannelAdmin(channelId, memberUid) }
+            runCatching { chatRepo.clearChatHistory(channelId, myUid) }
+                .onSuccess { _statusBanner.value = "Chat history cleared" }
         }
+    }
+
+    fun reportContent(channel: ChatChannel, message: ChatMessage?, reason: String, actor: Member) {
+        viewModelScope.launch {
+            runCatching { chatRepo.reportMessageOrChannel(channel, message, reason, actor) }
+                .onSuccess { _statusBanner.value = "Report submitted to workspace admin" }
+                .onFailure { _statusBanner.value = it.message ?: "Failed to report" }
+        }
+    }
+
+    fun postStatus(text: String, backgroundPreset: Int, imageBase64: String, actor: Member, onDone: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { chatRepo.postStatus(text, backgroundPreset, imageBase64, actor) }
+                .onSuccess {
+                    _statusBanner.value = "Status posted for 24h"
+                    onDone()
+                }
+                .onFailure { _statusBanner.value = it.message ?: "Unable to post status" }
+        }
+    }
+
+    fun markStatusViewed(statusId: String, myUid: String) {
+        viewModelScope.launch { runCatching { chatRepo.markStatusViewed(statusId, myUid) } }
+    }
+
+    fun deleteStatus(statusId: String) {
+        viewModelScope.launch { runCatching { chatRepo.deleteStatus(statusId) } }
     }
 
     fun clearBanner() {

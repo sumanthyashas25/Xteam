@@ -603,6 +603,7 @@ enum class ChatChannelType(val label: String) {
     PROJECT("Project"),
     DEPARTMENT("Department"),
     DIRECT("Direct"),
+    GROUP("Group"),
     ANNOUNCEMENT("Announcements"),
     SAVED("Saved")
 }
@@ -610,8 +611,29 @@ enum class ChatChannelType(val label: String) {
 enum class ChatAttachmentType(val label: String) {
     NONE("None"),
     IMAGE("Image"),
+    VIDEO("Video"),
     FILE("Document"),
     AUDIO("Audio")
+}
+
+enum class ChatMessageKind(val label: String) {
+    TEXT("Text"),
+    IMAGE("Photo"),
+    HD_IMAGE("HD Photo"),
+    VIDEO("Video"),
+    HD_VIDEO("HD Video"),
+    VOICE("Voice"),
+    AUDIO("Audio"),
+    DOCUMENT("Document"),
+    STICKER("Sticker"),
+    GIF("GIF"),
+    CONTACT("Contact"),
+    LOCATION("Location"),
+    LIVE_LOCATION("Live Location"),
+    POLL("Poll"),
+    EVENT("Event"),
+    ANNOUNCEMENT("Announcement"),
+    SYSTEM("System")
 }
 
 enum class NotificationCategory(val label: String) {
@@ -629,19 +651,31 @@ data class ChatChannel(
     @DocumentId val id: String = "",
     val title: String = "",
     val topic: String = "",
+    val description: String = "",
     val channelType: String = ChatChannelType.GENERAL.name,
     val projectId: String = "",
     val projectTitle: String = "",
     val departmentId: String = "",
     val departmentName: String = "",
     val participantUids: List<String> = emptyList(),
+    val pendingMemberUids: List<String> = emptyList(),
     val createdByUid: String = "",
     val createdByName: String = "",
     val lastMessagePreview: String = "",
     val lastSenderName: String = "",
+    val lastSenderUid: String = "",
+    val lastMessageStatus: String = "SENT",
     val lastMessageAtMillis: Long = 0L,
     val messageCount: Long = 0L,
     val photoUrl: String = "",
+    val photoBase64: String = "",
+    val inviteCode: String = "",
+    val requireAdminApproval: Boolean = false,
+    val onlyAdminsCanMessage: Boolean = false,
+    val onlyAdminsCanEditInfo: Boolean = false,
+    val disappearingSeconds: Long = 0L,
+    val pinnedMessageId: String = "",
+    val pinnedMessagePreview: String = "",
     val adminUids: List<String> = emptyList(),
     val pinnedUids: List<String> = emptyList(),
     val archivedUids: List<String> = emptyList(),
@@ -656,6 +690,12 @@ data class ChatChannel(
     fun isArchivedFor(uid: String): Boolean = uid in archivedUids
     fun isMutedFor(uid: String): Boolean = uid in mutedUids
     fun isFavouriteFor(uid: String): Boolean = uid in favouriteUids
+    fun unreadCountFor(uid: String): Int = (unreadCounts[uid] ?: 0L).toInt().coerceAtLeast(0)
+    fun isChannelAdmin(uid: String, isSuperAdmin: Boolean): Boolean =
+        isSuperAdmin || uid == createdByUid || uid in adminUids
+    fun isSelfNotes(myUid: String): Boolean =
+        channelTypeEnum() == ChatChannelType.SAVED ||
+            (channelTypeEnum() == ChatChannelType.DIRECT && participantUids == listOf(myUid))
 }
 
 @Keep
@@ -663,19 +703,33 @@ data class ChatChannel(
 data class ChatMessage(
     @DocumentId val id: String = "",
     val channelId: String = "",
+    val kind: String = ChatMessageKind.TEXT.name,
     val parentMessageId: String = "",
     val parentPreview: String = "",
+    val forwardedFromName: String = "",
     val senderUid: String = "",
     val senderName: String = "",
     val senderRole: String = "",
     val body: String = "",
+    val linkUrl: String = "",
+    val mentions: List<String> = emptyList(),
     val attachmentType: String = ChatAttachmentType.NONE.name,
     val attachmentName: String = "",
     val attachmentMimeType: String = "",
     val attachmentSizeBytes: Long = 0L,
     val attachmentLocalPath: String = "",
     val attachmentDataBase64: String = "",
+    val attachmentBucket: String = "",
+    val attachmentStoragePath: String = "",
+    val attachmentSha256: String = "",
+    val storageProvider: String = "",
+    val isHd: Boolean = false,
+    val viewOnce: Boolean = false,
+    val viewedByUids: List<String> = emptyList(),
+    val expiresAtMillis: Long = 0L,
     val deliveryStatus: String = "SENT",
+    val deliveredToUids: List<String> = emptyList(),
+    val readByUids: List<String> = emptyList(),
     val isEdited: Boolean = false,
     val editedAtMillis: Long = 0L,
     val isDeletedForEveryone: Boolean = false,
@@ -694,19 +748,93 @@ data class ChatMessage(
     val pollVotes: Map<String, List<String>> = emptyMap(),
     val audioDurationMs: Long = 0L,
     val audioWaveform: List<Int> = emptyList(),
+    val transcript: String = "",
+    val stickerId: String = "",
+    val gifId: String = "",
+    val gifTitle: String = "",
+    val contactName: String = "",
+    val contactPhone: String = "",
+    val locationLat: Double = 0.0,
+    val locationLng: Double = 0.0,
+    val locationLabel: String = "",
+    val liveLocationUntilMillis: Long = 0L,
+    val eventTitle: String = "",
+    val eventLocation: String = "",
+    val eventTimeMillis: Long = 0L,
+    val eventRsvps: Map<String, String> = emptyMap(),
+    val isFailed: Boolean = false,
+    val failureReason: String = "",
     val createdAt: Timestamp? = null
 ) {
     fun attachmentTypeEnum(): ChatAttachmentType = safeEnum(attachmentType, ChatAttachmentType.NONE)
+    fun kindEnum(): ChatMessageKind = safeEnum(kind, ChatMessageKind.TEXT)
+    val isCloudflareStored: Boolean
+        get() = storageProvider == "CLOUDFLARE_R2" && attachmentStoragePath.isNotBlank()
     val hasAttachment: Boolean
         get() = attachmentTypeEnum() != ChatAttachmentType.NONE &&
-            (attachmentName.isNotBlank() || attachmentDataBase64.isNotBlank() || attachmentLocalPath.isNotBlank())
+            (attachmentName.isNotBlank() || attachmentDataBase64.isNotBlank() || attachmentLocalPath.isNotBlank() || attachmentStoragePath.isNotBlank())
     fun isStarredBy(uid: String): Boolean = uid in starredByUids
-    fun isDeletedFor(uid: String): Boolean = isDeletedForEveryone || uid in deletedForUids
+    fun isDeletedFor(uid: String): Boolean = uid in deletedForUids
+    fun isExpired(nowMillis: Long = System.currentTimeMillis()): Boolean =
+        expiresAtMillis > 0L && nowMillis >= expiresAtMillis
     val hasBusinessRef: Boolean
         get() = businessRefKind.isNotBlank() && businessRefTitle.isNotBlank()
     val isPoll: Boolean
         get() = pollQuestion.isNotBlank() && pollOptions.isNotEmpty()
+    val isEvent: Boolean
+        get() = eventTitle.isNotBlank() && eventTimeMillis > 0L
+    val hasLocation: Boolean
+        get() = kindEnum() == ChatMessageKind.LOCATION || kindEnum() == ChatMessageKind.LIVE_LOCATION
+    val isContactCard: Boolean
+        get() = contactName.isNotBlank()
+    fun effectiveStatusForSender(otherParticipantCount: Int): String = when {
+        isFailed -> "FAILED"
+        deliveryStatus == "PENDING" -> "PENDING"
+        readByUids.isNotEmpty() -> "READ"
+        deliveredToUids.isNotEmpty() -> "DELIVERED"
+        otherParticipantCount >= 0 && deliveryStatus == "READ" -> "READ"
+        else -> deliveryStatus.ifBlank { "SENT" }
+    }
 }
+
+@Keep
+@IgnoreExtraProperties
+data class ChatStatus(
+    @DocumentId val id: String = "",
+    val ownerUid: String = "",
+    val ownerName: String = "",
+    val ownerRole: String = "",
+    val ownerPhotoBase64: String = "",
+    val kind: String = "TEXT",
+    val text: String = "",
+    val backgroundPreset: Int = 0,
+    val imageDataBase64: String = "",
+    val imageStoragePath: String = "",
+    val imageBucket: String = "",
+    val viewerUids: List<String> = emptyList(),
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val expiresAtMillis: Long = System.currentTimeMillis() + 86_400_000L,
+    val createdAt: Timestamp? = null
+) {
+    fun isActive(nowMillis: Long = System.currentTimeMillis()): Boolean = expiresAtMillis > nowMillis
+}
+
+@Keep
+@IgnoreExtraProperties
+data class ChannelModerationReport(
+    @DocumentId val id: String = "",
+    val channelId: String = "",
+    val channelTitle: String = "",
+    val messageId: String = "",
+    val snapshotMessages: List<String> = emptyList(),
+    val reportedUid: String = "",
+    val reporterUid: String = "",
+    val reporterName: String = "",
+    val reason: String = "",
+    val status: String = "OPEN",
+    val createdAtMillis: Long = System.currentTimeMillis(),
+    val createdAt: Timestamp? = null
+)
 
 @Keep
 @IgnoreExtraProperties

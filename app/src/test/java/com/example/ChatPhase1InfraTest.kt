@@ -146,4 +146,72 @@ class ChatPhase1InfraTest {
         )
         assertEquals(InvoiceStatus.ISSUED, invoice.statusEnum())
     }
+
+    @Test
+    fun `cloudflare r2 urls, upload response parsing, and ChatMessage metadata behave cleanly`() {
+        assertEquals("chat-media", WorkerBridgeClient.bucketForAttachmentType(com.example.model.ChatAttachmentType.IMAGE))
+        assertEquals("chat-voice", WorkerBridgeClient.bucketForAttachmentType(com.example.model.ChatAttachmentType.AUDIO))
+        assertEquals("chat-docs", WorkerBridgeClient.bucketForAttachmentType(com.example.model.ChatAttachmentType.FILE))
+
+        val uploadUrl = WorkerBridgeClient.buildUploadUrl(
+            base = "https://xmax-chat-backend.example.workers.dev/",
+            companyId = "xmax",
+            chatId = "ch_general",
+            bucket = "chat-docs",
+            fileName = "Client Brief v2.pdf",
+            sha256 = "abc123"
+        )
+        assertNotNull(uploadUrl)
+        assertTrue(uploadUrl!!.contains("/v1/storage/upload?"))
+        assertTrue(uploadUrl.contains("companyId=xmax"))
+        assertTrue(uploadUrl.contains("chatId=ch_general"))
+        assertTrue(uploadUrl.contains("bucket=chat-docs"))
+
+        val downloadUrl = WorkerBridgeClient.buildDownloadUrl(
+            base = "https://xmax-chat-backend.example.workers.dev",
+            companyId = "xmax",
+            chatId = "ch_general",
+            storagePath = "companies/xmax/chats/ch_general/id_brief.pdf"
+        )
+        assertNotNull(downloadUrl)
+        assertTrue(downloadUrl!!.contains("/v1/storage/download?"))
+        assertTrue(downloadUrl.contains("storagePath=companies%2Fxmax%2Fchats%2Fch_general%2Fid_brief.pdf"))
+
+        val parsed = WorkerBridgeClient.parseUploadResponse(
+            org.json.JSONObject(
+                """
+                {
+                  "ok": true,
+                  "provider": "CLOUDFLARE_R2",
+                  "bucket": "chat-docs",
+                  "storagePath": "companies/xmax/chats/ch_general/u1_brief.pdf",
+                  "byteSize": 2048000,
+                  "mimeType": "application/pdf",
+                  "sha256": "deadbeef"
+                }
+                """.trimIndent()
+            ),
+            fallbackBucket = "chat-docs"
+        )
+        assertEquals("CLOUDFLARE_R2", parsed.provider)
+        assertEquals("companies/xmax/chats/ch_general/u1_brief.pdf", parsed.storagePath)
+        assertEquals(2048000L, parsed.byteSize)
+
+        val r2Message = com.example.model.ChatMessage(
+            id = "msg_r2_1",
+            channelId = "ch_general",
+            senderUid = "u1",
+            attachmentType = com.example.model.ChatAttachmentType.FILE.name,
+            attachmentName = "Client_Brief_v2.pdf",
+            attachmentMimeType = "application/pdf",
+            attachmentSizeBytes = 2_048_000L,
+            attachmentDataBase64 = "",
+            attachmentBucket = "chat-docs",
+            attachmentStoragePath = "companies/xmax/chats/ch_general/u1_brief.pdf",
+            attachmentSha256 = "deadbeef",
+            storageProvider = "CLOUDFLARE_R2"
+        )
+        assertTrue(r2Message.isCloudflareStored)
+        assertTrue(r2Message.hasAttachment)
+    }
 }

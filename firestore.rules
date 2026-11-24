@@ -395,12 +395,14 @@ service cloud.firestore {
     function isValidChatChannel(data) {
       return data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
              data.topic is string && data.topic.size() <= 240 &&
-             data.channelType in ['GENERAL', 'PROJECT', 'DEPARTMENT', 'DIRECT'] &&
+             data.channelType in ['GENERAL', 'PROJECT', 'DEPARTMENT', 'DIRECT', 'GROUP', 'ANNOUNCEMENT', 'SAVED'] &&
              data.projectId is string && data.projectId.size() <= 128 &&
              data.projectTitle is string && data.projectTitle.size() <= 160 &&
              (!('departmentId' in data) || (data.departmentId is string && data.departmentId.size() <= 128)) &&
              (!('departmentName' in data) || (data.departmentName is string && data.departmentName.size() <= 80)) &&
              (!('participantUids' in data) || (data.participantUids is list && data.participantUids.size() <= 50)) &&
+             (!('pendingMemberUids' in data) || (data.pendingMemberUids is list && data.pendingMemberUids.size() <= 50)) &&
+             (!('photoBase64' in data) || (data.photoBase64 is string && data.photoBase64.size() <= 450000)) &&
              data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128 &&
              data.createdByName is string && data.createdByName.size() >= 1 && data.createdByName.size() <= 120 &&
              data.lastMessagePreview is string && data.lastMessagePreview.size() <= 240 &&
@@ -419,13 +421,27 @@ service cloud.firestore {
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 120 &&
              data.senderRole is string && data.senderRole.size() <= 80 &&
              data.body is string && data.body.size() <= 4000 &&
-             data.attachmentType in ['NONE', 'IMAGE', 'FILE', 'AUDIO'] &&
+             data.attachmentType in ['NONE', 'IMAGE', 'VIDEO', 'FILE', 'AUDIO'] &&
              data.attachmentName is string && data.attachmentName.size() <= 200 &&
              data.attachmentMimeType is string && data.attachmentMimeType.size() <= 120 &&
-             data.attachmentSizeBytes is int && data.attachmentSizeBytes >= 0 && data.attachmentSizeBytes <= 2000000 &&
+             data.attachmentSizeBytes is int && data.attachmentSizeBytes >= 0 && data.attachmentSizeBytes <= 15000000 &&
              data.attachmentLocalPath is string && data.attachmentLocalPath.size() <= 500 &&
              data.attachmentDataBase64 is string && data.attachmentDataBase64.size() <= 750000 &&
-             (data.body.size() >= 1 || data.attachmentType != 'NONE') &&
+             (!('attachmentBucket' in data) || (data.attachmentBucket is string && data.attachmentBucket.size() <= 64)) &&
+             (!('attachmentStoragePath' in data) || (data.attachmentStoragePath is string && data.attachmentStoragePath.size() <= 500)) &&
+             (!('attachmentSha256' in data) || (data.attachmentSha256 is string && data.attachmentSha256.size() <= 128)) &&
+             (!('storageProvider' in data) || (data.storageProvider in ['', 'FIRESTORE_INLINE', 'CLOUDFLARE_R2'])) &&
+             (
+               data.body.size() >= 1 ||
+               data.attachmentType != 'NONE' ||
+               ('pollQuestion' in data && data.pollQuestion is string && data.pollQuestion.size() >= 1) ||
+               ('eventTitle' in data && data.eventTitle is string && data.eventTitle.size() >= 1) ||
+               ('stickerId' in data && data.stickerId is string && data.stickerId.size() >= 1) ||
+               ('gifId' in data && data.gifId is string && data.gifId.size() >= 1) ||
+               ('contactName' in data && data.contactName is string && data.contactName.size() >= 1) ||
+               ('locationLabel' in data && data.locationLabel is string && data.locationLabel.size() >= 1) ||
+               ('businessRefTitle' in data && data.businessRefTitle is string && data.businessRefTitle.size() >= 1)
+             ) &&
              isValidTimestamp(data.createdAt);
     }
 
@@ -711,24 +727,44 @@ service cloud.firestore {
 
       match /chat_channels/{channelId} {
         allow get: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && (resource == null || canReadChatChannel(companyId, existing()));
-        allow list: if isValidId(companyId) && meExists(companyId) && canReadChatChannel(companyId, resource.data);
+        allow list: if isValidId(companyId) && meExists(companyId) && (
+          canReadChatChannel(companyId, resource.data) ||
+          (resource.data.channelType in ['GROUP', 'ANNOUNCEMENT'] && 'inviteCode' in resource.data && resource.data.inviteCode.size() >= 4)
+        );
         allow create: if isValidId(companyId) && isValidId(channelId) &&
                          meExists(companyId) &&
                          isApproved(fetchMe(companyId)) &&
                          isValidChatChannel(incoming()) &&
                          incoming().createdByUid == request.auth.uid &&
-                         (incoming().channelType != 'DIRECT' || ('participantUids' in incoming() && request.auth.uid in incoming().participantUids));
+                         (incoming().channelType != 'DIRECT' || ('participantUids' in incoming() && request.auth.uid in incoming().participantUids)) &&
+                         (incoming().channelType != 'SAVED' || incoming().createdByUid == request.auth.uid);
         allow update: if isValidId(companyId) && isValidId(channelId) &&
                          meExists(companyId) &&
-                         canReadChatChannel(companyId, existing()) &&
-                         isValidChatChannel(incoming()) &&
+                         isApproved(fetchMe(companyId)) &&
                          incoming().createdByUid == existing().createdByUid &&
-                         incoming().createdAt == existing().createdAt &&
-                         incoming().diff(existing()).affectedKeys().hasOnly([
-                           'title', 'topic', 'lastMessagePreview', 'lastSenderName',
-                           'lastMessageAtMillis', 'messageCount', 'updatedAt'
-                         ]);
-        allow delete: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && isSuper(fetchMe(companyId));
+                         incoming().createdAt == existing().createdAt && (
+                           (
+                             canReadChatChannel(companyId, existing()) &&
+                             isValidChatChannel(incoming()) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly([
+                               'title', 'topic', 'description', 'photoBase64', 'lastMessagePreview',
+                               'lastSenderName', 'lastSenderUid', 'lastMessageStatus', 'lastMessageAtMillis',
+                               'messageCount', 'pinnedMessageId', 'pinnedMessagePreview', 'unreadCounts',
+                               'pinnedUids', 'archivedUids', 'mutedUids', 'favouriteUids', 'adminUids',
+                               'participantUids', 'pendingMemberUids', 'onlyAdminsCanMessage',
+                               'onlyAdminsCanEditInfo', 'requireAdminApproval', 'disappearingSeconds',
+                               'inviteCode', 'updatedAt'
+                             ])
+                           ) || (
+                             existing().channelType in ['GROUP', 'ANNOUNCEMENT'] &&
+                             'inviteCode' in existing() && existing().inviteCode.size() >= 4 &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['participantUids', 'pendingMemberUids'])
+                           )
+                         );
+        allow delete: if isValidId(companyId) && isValidId(channelId) && meExists(companyId) && (
+          isSuper(fetchMe(companyId)) ||
+          (existing().channelType == 'SAVED' && existing().createdByUid == request.auth.uid)
+        );
 
         match /messages/{messageId} {
           allow get: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) &&
@@ -745,8 +781,45 @@ service cloud.firestore {
                            (!exists(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)) ||
                             canReadChatChannel(companyId, get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data)) &&
                            existsAfter(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId));
+          allow update: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) &&
+                           meExists(companyId) &&
+                           isApproved(fetchMe(companyId)) &&
+                           canReadChatChannel(companyId, get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data) && (
+                             (
+                               existing().senderUid == request.auth.uid &&
+                               incoming().diff(existing()).affectedKeys().hasOnly([
+                                 'body', 'linkUrl', 'isEdited', 'editedAtMillis',
+                                 'locationLat', 'locationLng', 'locationLabel', 'liveLocationUntilMillis'
+                               ])
+                             ) || (
+                               (existing().senderUid == request.auth.uid || isSuper(fetchMe(companyId))) &&
+                               incoming().diff(existing()).affectedKeys().hasOnly([
+                                 'isDeletedForEveryone', 'body', 'attachmentType', 'attachmentDataBase64', 'attachmentName'
+                               ])
+                             ) || (
+                               incoming().diff(existing()).affectedKeys().hasOnly([
+                                 'deletedForUids', 'starredByUids', 'pinned', 'reactions',
+                                 'pollVotes', 'eventRsvps', 'deliveredToUids', 'readByUids',
+                                 'viewedByUids', 'deliveryStatus'
+                               ])
+                             )
+                           );
           allow delete: if isValidId(companyId) && isValidId(channelId) && isValidId(messageId) && meExists(companyId) && isSuper(fetchMe(companyId));
         }
+      }
+
+      match /chat_statuses/{statusId} {
+        allow get, list: if isValidId(companyId) && isApproved(fetchMe(companyId));
+        allow create: if isValidId(companyId) && isValidId(statusId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                         incoming().ownerUid == request.auth.uid &&
+                         (!('imageDataBase64' in incoming()) || (incoming().imageDataBase64 is string && incoming().imageDataBase64.size() <= 450000));
+        allow update: if isValidId(companyId) && isValidId(statusId) &&
+                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['viewerUids']);
+        allow delete: if isValidId(companyId) && isValidId(statusId) && meExists(companyId) && (
+          existing().ownerUid == request.auth.uid || isSuper(fetchMe(companyId))
+        );
       }
 
       match /chats/{chatId} {
@@ -1046,8 +1119,10 @@ service cloud.firestore {
     function canReadChatChannel(companyId, ch) {
       let m = fetchMe(companyId);
       return isApproved(m) && (
-        ch.channelType != 'DIRECT' ||
-        (request.auth.uid in ch.participantUids)
+        (ch.channelType == 'DIRECT' && request.auth.uid in ch.participantUids) ||
+        (ch.channelType == 'SAVED' && (ch.createdByUid == request.auth.uid || request.auth.uid in ch.participantUids)) ||
+        (ch.channelType == 'GROUP' && (request.auth.uid in ch.participantUids || isSuper(m))) ||
+        !(ch.channelType in ['DIRECT', 'SAVED', 'GROUP'])
       );
     }
 

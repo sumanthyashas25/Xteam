@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chat.ChatFileManager
 import com.example.chat.StagedChatAttachment
+import com.example.chat.realtime.RtdbPresenceManager
 import com.example.data.AgencyRepository
 import com.example.data.AuthSessionStatus
 import com.example.data.AuthenticationRepository
@@ -64,6 +65,7 @@ data class AgencyUiState(
     val payments: List<PaymentRecord> = emptyList(),
     val activityLog: List<ActivityLog> = emptyList(),
     val chatChannels: List<ChatChannel> = emptyList(),
+    val chatStatuses: List<ChatStatus> = emptyList(),
     val notifications: List<WorkspaceNotification> = emptyList(),
     val staffPlanItems: List<StaffPlanItem> = emptyList(),
     val soundEnabled: Boolean = true,
@@ -339,6 +341,11 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         ).catch { emit(emptyList()) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val _chatStatusesFlow = _approvedGate.flatMapLatest { approved ->
+        if (approved == null) flowOf(emptyList())
+        else chatRepo.observeStatuses().catch { emit(emptyList()) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _notificationsFlow = _approvedGate.flatMapLatest { approved ->
         if (approved == null) flowOf(emptyList())
         else coreRepo.observeNotifications().catch { emit(emptyList()) }
@@ -383,7 +390,8 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         _syncFeedback,
         _statusMessage,
         _errorMessage,
-        _autoBootstrapInProgress
+        _autoBootstrapInProgress,
+        _chatStatusesFlow
     ) { values ->
         val authStatus = values[0] as AuthSessionStatus
         val delivSynced = values[17] as SyncedData<List<Deliverable>>
@@ -415,6 +423,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
             payments = (values[18] as List<PaymentRecord>).sortedByDescending { it.paymentDateMillis },
             activityLog = values[19] as List<ActivityLog>,
             chatChannels = values[20] as List<ChatChannel>,
+            chatStatuses = values[33] as List<ChatStatus>,
             notifications = values[21] as List<WorkspaceNotification>,
             staffPlanItems = values[22] as List<StaffPlanItem>,
             soundEnabled = values[23] as Boolean,
@@ -432,6 +441,15 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
 
     init {
         AppHapticsAndNotifier.ensureNotificationChannel(application)
+        viewModelScope.launch {
+            _approvedGate.collect { me ->
+                if (me != null) {
+                    RtdbPresenceManager.bindUserSession(getApplication(), coreRepo.companyId, me.uid)
+                } else {
+                    RtdbPresenceManager.unbindUserSession(getApplication(), coreRepo.companyId)
+                }
+            }
+        }
         viewModelScope.launch {
             combine(_approvedGate, _notificationsFlow, _soundEnabled) { me, list, sound ->
                 Triple(me, list, sound)
@@ -659,6 +677,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
     fun signOut(context: Context) {
         viewModelScope.launch {
             _phoneSession.value = PhoneVerificationSession()
+            RtdbPresenceManager.unbindUserSession(getApplication(), coreRepo.companyId)
             authRepository.signOut(context)
         }
     }

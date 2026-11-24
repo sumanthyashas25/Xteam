@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -9,24 +11,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -34,15 +27,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Chat
-import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
@@ -53,20 +45,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -75,15 +57,26 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chat.ChatAudioManager
 import com.example.chat.ChatFileManager
+import com.example.chat.ChatLocationManager
+import com.example.chat.ChatSettingsStore
 import com.example.chat.StagedChatAttachment
+import com.example.chat.realtime.MemberPresenceState
 import com.example.data.ChatRepository
+import com.example.data.SendMessageOptions
 import com.example.data.SyncedData
+import com.example.domain.CatalogueSeedData
 import com.example.model.*
 import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
+import com.example.ui.ChatViewModel
+import com.example.ui.chat.*
 import com.example.ui.components.StatusPill
 import com.example.ui.components.StudioAvatar
 import com.example.ui.components.formatTitleCase
@@ -93,11 +86,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
 
 private enum class ChatScreenMode {
     HUB,
@@ -118,12 +109,15 @@ fun TeamChatScreen(
     onOpenDepartmentChat: (Department, onReady: (ChatChannel) -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _ -> },
     onDeleteChannel: (String, () -> Unit) -> Unit = { _, _ -> },
     onDeleteMessage: (String, String) -> Unit = { _, _ -> },
-    onCloseChat: () -> Unit
+    onCloseChat: () -> Unit,
+    chatViewModel: ChatViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val member = state.myMember ?: return
-    val memberPhotoByUid = remember(state.members) { state.members.associate { it.uid to it.photoBase64 } }
+    val companyId = state.company?.id?.ifBlank { CatalogueSeedData.DEFAULT_COMPANY_ID }
+        ?: CatalogueSeedData.DEFAULT_COMPANY_ID
+    val prefs by ChatSettingsStore.prefsFlow.collectAsStateWithLifecycle()
 
     LaunchedEffect(member.uid) {
         onEnsureGeneralChannel()
@@ -136,12 +130,15 @@ fun TeamChatScreen(
         mutableStateOf(initialChannelId ?: ChatRepository.GENERAL_CHANNEL_ID)
     }
     var composerText by remember { mutableStateOf("") }
-    var stagedAttachment by remember { mutableStateOf<StagedChatAttachment?>(null) }
+    var hubStagedAttachment by remember { mutableStateOf<StagedChatAttachment?>(null) }
     var isProcessingFile by remember { mutableStateOf(false) }
     var openingThreadLabel by remember { mutableStateOf<String?>(null) }
-    var replyTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var showChannelPicker by remember { mutableStateOf(false) }
     var showNewChannelDialog by remember { mutableStateOf(false) }
+    var showCreateGroupDialog by remember { mutableStateOf(false) }
+    var showJoinInviteDialog by remember { mutableStateOf(false) }
+    var showCreateStatusDialog by remember { mutableStateOf(false) }
+    var viewingStatuses by remember { mutableStateOf<List<ChatStatus>?>(null) }
     var previewImageMessage by remember { mutableStateOf<Pair<ChatMessage, ImageBitmap>?>(null) }
 
     val activeChannel = remember(state.chatChannels, activeChannelId) {
@@ -155,17 +152,47 @@ fun TeamChatScreen(
             )
     }
 
+    LaunchedEffect(activeChannel.id, member.uid, mode) {
+        if (mode == ChatScreenMode.THREAD) {
+            chatViewModel.selectChannel(activeChannel, member.uid)
+        }
+    }
+
+    val statusBanner by chatViewModel.statusBanner.collectAsStateWithLifecycle()
+    LaunchedEffect(statusBanner) {
+        statusBanner?.let { banner ->
+            onReportMessage(banner, banner.contains("fail", ignoreCase = true) || banner.contains("error", ignoreCase = true))
+            chatViewModel.clearBanner()
+        }
+    }
+
     val messagesFlow = remember(activeChannel.id) { observeMessages(activeChannel.id) }
     val syncedMessages by messagesFlow.collectAsStateWithLifecycle(initialValue = SyncedData(emptyList(), false))
+    val searchQuery by chatViewModel.searchQuery.collectAsStateWithLifecycle()
+    val filterTab by chatViewModel.filterTab.collectAsStateWithLifecycle()
+    val selectedCustomList by chatViewModel.selectedCustomList.collectAsStateWithLifecycle()
 
-    fun processPickedUri(uri: Uri?, preferredType: ChatAttachmentType?) {
+    LaunchedEffect(syncedMessages.data.size, mode, activeChannel.id) {
+        if (mode == ChatScreenMode.THREAD && syncedMessages.data.isNotEmpty()) {
+            chatViewModel.markThreadMessagesRead(activeChannel.id, syncedMessages.data, member.uid)
+        }
+    }
+
+    var hdMediaMode by remember { mutableStateOf(false) }
+    var pendingCameraUri by remember { mutableStateOf<Uri?>(null) }
+
+    fun stageSingleUri(uri: Uri?, preferredType: ChatAttachmentType?, isHub: Boolean) {
         if (uri == null) return
         scope.launch {
             isProcessingFile = true
-            val res = ChatFileManager.prepareAttachmentFromUri(context, uri, preferredType)
+            val res = ChatFileManager.prepareAttachmentFromUri(context, uri, preferredType, hdMode = hdMediaMode)
             isProcessingFile = false
             res.onSuccess { staged ->
-                stagedAttachment = staged
+                if (isHub) {
+                    hubStagedAttachment = staged
+                } else {
+                    chatViewModel.stageAttachments(listOf(staged))
+                }
                 onReportMessage("Attached ${staged.fileName} (${ChatFileManager.formatFileSize(staged.sizeBytes)})", false)
             }.onFailure { err ->
                 onReportMessage(err.message ?: "Failed to attach file.", true)
@@ -173,30 +200,60 @@ fun TeamChatScreen(
         }
     }
 
-    val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        processPickedUri(uri, ChatAttachmentType.IMAGE)
+    val singleImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        stageSingleUri(uri, ChatAttachmentType.IMAGE, isHub = (mode == ChatScreenMode.HUB))
+    }
+    val multiImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(maxItems = 8)) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        scope.launch {
+            isProcessingFile = true
+            val list = uris.mapNotNull { u ->
+                ChatFileManager.prepareAttachmentFromUri(context, u, ChatAttachmentType.IMAGE, hdMode = hdMediaMode).getOrNull()
+            }
+            isProcessingFile = false
+            if (list.isNotEmpty()) {
+                chatViewModel.stageAttachments(list)
+                onReportMessage("Attached ${list.size} photo(s)", false)
+            }
+        }
+    }
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        stageSingleUri(uri, ChatAttachmentType.VIDEO, isHub = false)
+    }
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        stageSingleUri(uri, ChatAttachmentType.FILE, isHub = (mode == ChatScreenMode.HUB))
+    }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        stageSingleUri(uri, ChatAttachmentType.AUDIO, isHub = (mode == ChatScreenMode.HUB))
+    }
+    val cameraCaptureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        if (ok) {
+            stageSingleUri(pendingCameraUri, ChatAttachmentType.IMAGE, isHub = false)
+        }
+        pendingCameraUri = null
+    }
+    val cameraPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            val uri = ChatFileManager.createCameraTempUri(context)
+            pendingCameraUri = uri
+            cameraCaptureLauncher.launch(uri)
+        } else {
+            onReportMessage("Camera permission is needed to take photos.", true)
+        }
     }
 
-    val documentPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        processPickedUri(uri, ChatAttachmentType.FILE)
+    fun launchCamera() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            val uri = ChatFileManager.createCameraTempUri(context)
+            pendingCameraUri = uri
+            cameraCaptureLauncher.launch(uri)
+        } else {
+            cameraPermLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
-    val audioPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        processPickedUri(uri, ChatAttachmentType.AUDIO)
-    }
-
-    fun launchImagePicker() {
-        imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-    }
-
-    fun launchDocumentPicker() {
-        documentPickerLauncher.launch(
+    fun launchDocs() {
+        documentPicker.launch(
             arrayOf(
                 "application/pdf",
                 "application/msword",
@@ -210,29 +267,9 @@ fun TeamChatScreen(
         )
     }
 
-    fun launchAudioPicker() {
-        audioPickerLauncher.launch(arrayOf("audio/*"))
-    }
-
-    fun sendCurrentMessage(openThreadAfter: Boolean) {
-        val clean = composerText.trim()
-        val attachment = stagedAttachment
-        if (clean.isEmpty() && attachment == null) return
-        val targetId = activeChannel.id
-        onSendMessage(targetId, clean, replyTarget, attachment) {
-            AppHapticsAndNotifier.triggerCompletionVibration(context)
-            composerText = ""
-            stagedAttachment = null
-            replyTarget = null
-            if (openThreadAfter) {
-                activeChannelId = targetId
-                mode = ChatScreenMode.THREAD
-            }
-        }
-    }
-
     BackHandler {
         if (mode == ChatScreenMode.THREAD) {
+            ChatAudioManager.stopPlayback()
             mode = ChatScreenMode.HUB
         } else {
             onCloseChat()
@@ -243,38 +280,42 @@ fun TeamChatScreen(
         targetState = mode,
         transitionSpec = {
             if (targetState == ChatScreenMode.THREAD) {
-                (fadeIn(tween(260, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it / 4 })
-                    .togetherWith(fadeOut(tween(180)) + slideOutHorizontally(tween(180)) { -it / 6 })
+                (fadeIn(tween(240, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { it / 4 })
+                    .togetherWith(fadeOut(tween(170)) + slideOutHorizontally(tween(170)) { -it / 6 })
             } else {
-                (fadeIn(tween(260, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 4 })
-                    .togetherWith(fadeOut(tween(180)) + slideOutHorizontally(tween(180)) { it / 6 })
+                (fadeIn(tween(240, easing = FastOutSlowInEasing)) + slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 4 })
+                    .togetherWith(fadeOut(tween(170)) + slideOutHorizontally(tween(170)) { it / 6 })
             }
         },
         label = "chat_screen_mode_transition"
     ) { currentMode ->
         if (currentMode == ChatScreenMode.HUB) {
-            ChatHubView(
+            ChatHubScreen(
                 member = member,
                 isSuperAdmin = state.isSuperAdmin,
                 channels = state.chatChannels,
+                statuses = state.chatStatuses,
                 colleagues = state.members.filter {
                     it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid
                 },
                 departments = state.departments.filter { it.active },
                 activeChannel = activeChannel,
+                searchQuery = searchQuery,
+                filterTab = filterTab,
+                selectedCustomList = selectedCustomList,
                 composerText = composerText,
-                onComposerTextChange = { composerText = it },
-                stagedAttachment = stagedAttachment,
+                stagedAttachment = hubStagedAttachment,
                 isProcessingFile = isProcessingFile,
                 openingThreadLabel = openingThreadLabel,
-                onClearAttachment = { stagedAttachment = null },
-                onOpenChannelsSheet = {
-                    AppHapticsAndNotifier.triggerTickHaptic(context)
-                    showChannelPicker = true
-                },
-                onPickAudio = ::launchAudioPicker,
-                onPickFiles = ::launchDocumentPicker,
-                onPickImages = ::launchImagePicker,
+                onSearchQueryChange = chatViewModel::updateSearch,
+                onSelectFilterTab = chatViewModel::setFilterTab,
+                onSelectCustomList = chatViewModel::selectCustomList,
+                onComposerTextChange = { composerText = it },
+                onClearAttachment = { hubStagedAttachment = null },
+                onOpenChannelsSheet = { showChannelPicker = true },
+                onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
+                onPickFiles = ::launchDocs,
+                onPickImages = { singleImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                 onSelectChannel = { ch ->
                     AppHapticsAndNotifier.triggerTickHaptic(context)
                     activeChannelId = ch.id
@@ -312,79 +353,94 @@ fun TeamChatScreen(
                         }
                     )
                 },
+                onOpenSavedNotes = {
+                    scope.launch {
+                        runCatching { chatViewModel.chatRepo.createOrGetSavedNotesChannel(member) }
+                            .onSuccess { ch ->
+                                activeChannelId = ch.id
+                                mode = ChatScreenMode.THREAD
+                            }
+                            .onFailure { err -> onReportMessage(err.message ?: "Unable to open Saved Notes.", true) }
+                    }
+                },
+                onOpenCreateGroup = { showCreateGroupDialog = true },
+                onOpenJoinByInvite = { showJoinInviteDialog = true },
+                onOpenCreateStatus = { showCreateStatusDialog = true },
+                onOpenStatusViewer = { _, list -> viewingStatuses = list },
+                onTogglePinChannel = { ch -> chatViewModel.toggleChannelPin(ch.id, member.uid) },
+                onToggleMuteChannel = { ch -> chatViewModel.toggleChannelMute(ch.id, member.uid) },
+                onToggleArchiveChannel = { ch -> chatViewModel.toggleChannelArchive(ch.id, member.uid) },
+                onToggleFavouriteChannel = { ch -> chatViewModel.toggleChannelFavourite(ch.id, member.uid) },
+                onMarkReadUnread = { ch, markUnread -> chatViewModel.markChannelReadUnread(ch.id, member.uid, markUnread) },
                 onDeleteChannel = { chId ->
                     onDeleteChannel(chId) {
-                        if (activeChannelId == chId) {
-                            activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
-                        }
+                        if (activeChannelId == chId) activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
                     }
                 },
                 onCreateNewChannelClick = { showNewChannelDialog = true },
-                onSend = { sendCurrentMessage(openThreadAfter = true) },
+                onSendQuickCompose = {
+                    val clean = composerText.trim()
+                    val att = hubStagedAttachment
+                    if (clean.isNotEmpty() || att != null) {
+                        val targetId = activeChannel.id
+                        onSendMessage(targetId, clean, null, att) {
+                            AppHapticsAndNotifier.triggerCompletionVibration(context)
+                            composerText = ""
+                            hubStagedAttachment = null
+                            activeChannelId = targetId
+                            mode = ChatScreenMode.THREAD
+                        }
+                    }
+                },
                 onBack = onCloseChat,
                 onClose = onCloseChat
             )
         } else {
-            ChatThreadView(
+            EnhancedChatThreadView(
+                state = state,
+                companyId = companyId,
                 member = member,
-                isSuperAdmin = state.isSuperAdmin,
-                memberPhotoByUid = memberPhotoByUid,
                 channel = activeChannel,
                 messages = syncedMessages.data,
                 hasPendingWrites = syncedMessages.hasPendingWrites,
-                composerText = composerText,
-                onComposerTextChange = { composerText = it },
-                stagedAttachment = stagedAttachment,
+                chatViewModel = chatViewModel,
+                hdMediaMode = hdMediaMode,
                 isProcessingFile = isProcessingFile,
-                replyTarget = replyTarget,
-                onClearReply = { replyTarget = null },
-                onSetReply = { replyTarget = it },
-                onClearAttachment = { stagedAttachment = null },
-                onPickFiles = ::launchDocumentPicker,
-                onPickImages = ::launchImagePicker,
-                onPickAudio = ::launchAudioPicker,
+                onToggleHdMedia = { hdMediaMode = it },
+                onCamera = ::launchCamera,
+                onPickSinglePhoto = { singleImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onPickMultiPhoto = { multiImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onPickVideo = { videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)) },
+                onPickDocs = ::launchDocs,
+                onPickAudio = { audioPicker.launch(arrayOf("audio/*")) },
                 onOpenChannelsSheet = { showChannelPicker = true },
                 onOpenMessageAttachment = { msg ->
                     if (msg.attachmentTypeEnum() == ChatAttachmentType.IMAGE) {
                         scope.launch {
-                            val bmp = withContext(Dispatchers.IO) {
-                                ChatFileManager.decodeMessageBitmap(msg, maxEdgePx = 1400)
-                            }
+                            val bmp = ChatFileManager.loadOrDownloadMessageBitmap(context, msg, companyId, maxEdgePx = 1400)
                             if (bmp != null) {
                                 previewImageMessage = msg to bmp.asImageBitmap()
                             } else {
-                                val file = ChatFileManager.resolveLocalFile(context, msg)
-                                if (file != null) {
-                                    ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, msg.attachmentName)
-                                } else {
-                                    onReportMessage("Unable to open image preview.", true)
-                                }
+                                ChatFileManager.resolveOrDownloadAttachment(context, msg, companyId)
+                                    .onSuccess { file -> ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, msg.attachmentName) }
+                                    .onFailure { err -> onReportMessage(err.message ?: "Unable to open image.", true) }
                             }
                         }
                     } else {
                         scope.launch {
-                            val file = ChatFileManager.resolveLocalFile(context, msg)
-                            if (file != null) {
-                                ChatFileManager.openOrShareAttachment(
-                                    context,
-                                    file,
-                                    msg.attachmentMimeType,
-                                    msg.attachmentName.ifBlank { file.name }
-                                )
-                            } else {
-                                onReportMessage("Attachment file is unavailable offline.", true)
-                            }
+                            ChatFileManager.resolveOrDownloadAttachment(context, msg, companyId)
+                                .onSuccess { file ->
+                                    ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, msg.attachmentName.ifBlank { file.name })
+                                }
+                                .onFailure { err -> onReportMessage(err.message ?: "Attachment unavailable.", true) }
                         }
                     }
                 },
                 onDownloadAttachment = { msg ->
                     scope.launch {
-                        val res = ChatFileManager.downloadAttachmentToDevice(context, msg)
-                        res.onSuccess { savedPath ->
-                            onReportMessage("Saved ${msg.attachmentName.ifBlank { "file" }} to $savedPath", false)
-                        }.onFailure { err ->
-                            onReportMessage(err.message ?: "Failed to save attachment.", true)
-                        }
+                        ChatFileManager.downloadAttachmentToDevice(context, msg, companyId)
+                            .onSuccess { savedPath -> onReportMessage("Saved ${msg.attachmentName.ifBlank { "file" }} to $savedPath", false) }
+                            .onFailure { err -> onReportMessage(err.message ?: "Download failed.", true) }
                     }
                 },
                 onDeleteChannel = {
@@ -393,14 +449,14 @@ fun TeamChatScreen(
                         mode = ChatScreenMode.HUB
                     }
                 },
-                onDeleteMessage = { msg -> onDeleteMessage(activeChannel.id, msg.id) },
-                onSend = { sendCurrentMessage(openThreadAfter = false) },
-                onBackToHub = { mode = ChatScreenMode.HUB },
+                onBackToHub = {
+                    ChatAudioManager.stopPlayback()
+                    mode = ChatScreenMode.HUB
+                },
                 onClose = onCloseChat
             )
         }
     }
-
 
     if (showChannelPicker) {
         ChannelPickerBottomSheet(
@@ -414,9 +470,7 @@ fun TeamChatScreen(
             },
             onDeleteChannel = { chId ->
                 onDeleteChannel(chId) {
-                    if (activeChannelId == chId) {
-                        activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
-                    }
+                    if (activeChannelId == chId) activeChannelId = ChatRepository.GENERAL_CHANNEL_ID
                 }
             },
             onNewChannel = {
@@ -452,39 +506,100 @@ fun TeamChatScreen(
         )
     }
 
+    if (showCreateGroupDialog) {
+        CreateGroupSheet(
+            colleagues = state.members.filter { it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid },
+            onCreateGroup = { title, desc, memberUids, photoB64, announcementOnly, requireApproval ->
+                scope.launch {
+                    runCatching {
+                        chatViewModel.chatRepo.createGroupChannel(
+                            title = title,
+                            description = desc,
+                            memberUids = memberUids,
+                            photoBase64 = photoB64,
+                            isAnnouncement = announcementOnly,
+                            actor = member,
+                            requireAdminApproval = requireApproval
+                        )
+                    }.onSuccess { group ->
+                        showCreateGroupDialog = false
+                        activeChannelId = group.id
+                        mode = ChatScreenMode.THREAD
+                    }.onFailure { err ->
+                        onReportMessage(err.message ?: "Unable to create group.", true)
+                    }
+                }
+            },
+            onDismiss = { showCreateGroupDialog = false }
+        )
+    }
+
+    if (showJoinInviteDialog) {
+        JoinInviteLinkDialog(
+            onJoin = { code ->
+                chatViewModel.joinByInviteCode(code, member) { joined ->
+                    showJoinInviteDialog = false
+                    activeChannelId = joined.id
+                    mode = ChatScreenMode.THREAD
+                }
+            },
+            onDismiss = { showJoinInviteDialog = false }
+        )
+    }
+
+    if (showCreateStatusDialog) {
+        CreateStatusDialog(
+            onPost = { text, preset, imageB64 ->
+                chatViewModel.postStatus(text, preset, imageB64, member) {
+                    showCreateStatusDialog = false
+                }
+            },
+            onDismiss = { showCreateStatusDialog = false }
+        )
+    }
+
+    viewingStatuses?.let { list ->
+        FullScreenStatusViewer(
+            statuses = list,
+            myUid = member.uid,
+            allMembers = state.members,
+            onMarkViewed = { sId -> chatViewModel.markStatusViewed(sId, member.uid) },
+            onDeleteStatus = { sId -> chatViewModel.deleteStatus(sId) },
+            onReplyDm = { ownerUid, replyMsg ->
+                val target = state.members.firstOrNull { it.uid == ownerUid }
+                if (target != null) {
+                    onOpenDirectChat(
+                        target,
+                        { ch ->
+                            activeChannelId = ch.id
+                            mode = ChatScreenMode.THREAD
+                            chatViewModel.sendMessage(ch.id, replyMsg, member)
+                        },
+                        { err -> onReportMessage(err, true) }
+                    )
+                }
+            },
+            onDismiss = { viewingStatuses = null }
+        )
+    }
+
     previewImageMessage?.let { (msg, img) ->
         val title = msg.attachmentName.ifBlank { "Image" }
         Dialog(onDismissRequest = { previewImageMessage = null }) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = ObsidianCharcoal,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Surface(shape = RoundedCornerShape(24.dp), color = ObsidianCharcoal, modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = PureWhite,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                        Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = PureWhite, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                         IconButton(
                             onClick = {
                                 scope.launch {
-                                    ChatFileManager.downloadAttachmentToDevice(context, msg)
-                                        .onSuccess { savedPath ->
-                                            onReportMessage("Saved $title to $savedPath", false)
-                                        }
-                                        .onFailure { err ->
-                                            onReportMessage(err.message ?: "Failed to save image.", true)
-                                        }
+                                    ChatFileManager.downloadAttachmentToDevice(context, msg, companyId)
+                                        .onSuccess { savedPath -> onReportMessage("Saved $title to $savedPath", false) }
+                                        .onFailure { err -> onReportMessage(err.message ?: "Failed to save image.", true) }
                                 }
                             },
                             modifier = Modifier
@@ -496,12 +611,9 @@ fun TeamChatScreen(
                         IconButton(
                             onClick = {
                                 scope.launch {
-                                    val file = ChatFileManager.resolveLocalFile(context, msg)
-                                    if (file != null) {
-                                        ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, title)
-                                    } else {
-                                        onReportMessage("File unavailable to share.", true)
-                                    }
+                                    ChatFileManager.resolveOrDownloadAttachment(context, msg, companyId)
+                                        .onSuccess { file -> ChatFileManager.openOrShareAttachment(context, file, msg.attachmentMimeType, title) }
+                                        .onFailure { err -> onReportMessage(err.message ?: "File unavailable.", true) }
                                 }
                             },
                             modifier = Modifier.size(40.dp)
@@ -528,953 +640,211 @@ fun TeamChatScreen(
 }
 
 @Composable
-private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
-    val transition = rememberInfiniteTransition(label = "chat_ambient_glow_motion")
-    val primaryOrbit by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2.0 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 12000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "glow_primary_orbit"
-    )
-    val secondaryOrbit by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2.0 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 17500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "glow_secondary_orbit"
-    )
-    val driftOrbit by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2.0 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 22000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "glow_drift_orbit"
-    )
-
-    return this.drawBehind {
-        // Rotating directional ambient wash across full screen
-        val sweepStart = Offset(
-            x = size.width * (0.5f + 0.5f * cos(primaryOrbit)),
-            y = size.height * (0.5f + 0.5f * sin(primaryOrbit))
-        )
-        val sweepEnd = Offset(
-            x = size.width - sweepStart.x,
-            y = size.height - sweepStart.y
-        )
-        drawRect(
-            brush = Brush.linearGradient(
-                colors = if (isThread) {
-                    listOf(
-                        Color(0xFFFFE4DA).copy(alpha = 0.95f),
-                        Color(0xFFF3E8FF).copy(alpha = 0.95f),
-                        Color(0xFFE0F4FF).copy(alpha = 0.95f)
-                    )
-                } else {
-                    listOf(
-                        Color(0xFFD6FFF0).copy(alpha = 0.95f),
-                        Color(0xFFECE4FF).copy(alpha = 0.95f),
-                        Color(0xFFFFE5D9).copy(alpha = 0.95f)
-                    )
-                },
-                start = sweepStart,
-                end = sweepEnd
-            )
-        )
-
-        val c1 = Offset(
-            x = size.width * (0.50f + 0.30f * cos(primaryOrbit)),
-            y = size.height * (0.42f + 0.24f * sin(primaryOrbit))
-        )
-        val c2 = Offset(
-            x = size.width * (0.24f + 0.30f * sin(secondaryOrbit)),
-            y = size.height * (0.28f + 0.24f * cos(secondaryOrbit))
-        )
-        val c3 = Offset(
-            x = size.width * (0.76f - 0.28f * cos(driftOrbit)),
-            y = size.height * (0.64f + 0.24f * sin(driftOrbit))
-        )
-        val c4 = Offset(
-            x = size.width * (0.54f - 0.26f * sin(primaryOrbit)),
-            y = size.height * (0.78f - 0.20f * cos(secondaryOrbit))
-        )
-
-        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.33f) else Color(0xFF10B981).copy(alpha = 0.37f)
-        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.35f) else Color(0xFF8B5CF6).copy(alpha = 0.33f)
-        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.31f) else Color(0xFFFB923C).copy(alpha = 0.35f)
-        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.31f) else Color(0xFF38BDF8).copy(alpha = 0.29f)
-
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(primaryColor, primaryColor.copy(alpha = 0.09f), Color.Transparent),
-                center = c1,
-                radius = size.width * 0.90f
-            ),
-            radius = size.width * 0.90f,
-            center = c1
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(secondColor, secondColor.copy(alpha = 0.07f), Color.Transparent),
-                center = c2,
-                radius = size.width * 0.78f
-            ),
-            radius = size.width * 0.78f,
-            center = c2
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(thirdColor, thirdColor.copy(alpha = 0.07f), Color.Transparent),
-                center = c3,
-                radius = size.width * 0.74f
-            ),
-            radius = size.width * 0.74f,
-            center = c3
-        )
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(fourthColor, Color.Transparent),
-                center = c4,
-                radius = size.width * 0.68f
-            ),
-            radius = size.width * 0.68f,
-            center = c4
-        )
-    }
-}
-
-@Composable
-private fun ChatHubView(
+private fun EnhancedChatThreadView(
+    state: AgencyUiState,
+    companyId: String,
     member: Member,
-    isSuperAdmin: Boolean,
-    channels: List<ChatChannel>,
-    colleagues: List<Member>,
-    departments: List<Department>,
-    activeChannel: ChatChannel,
-    composerText: String,
-    onComposerTextChange: (String) -> Unit,
-    stagedAttachment: StagedChatAttachment?,
-    isProcessingFile: Boolean,
-    openingThreadLabel: String?,
-    onClearAttachment: () -> Unit,
-    onOpenChannelsSheet: () -> Unit,
-    onPickAudio: () -> Unit,
-    onPickFiles: () -> Unit,
-    onPickImages: () -> Unit,
-    onSelectChannel: (ChatChannel) -> Unit,
-    onOpenDirectChat: (Member) -> Unit,
-    onOpenDepartmentChat: (Department) -> Unit,
-    onDeleteChannel: (String) -> Unit,
-    onCreateNewChannelClick: () -> Unit,
-    onSend: () -> Unit,
-    onBack: () -> Unit,
-    onClose: () -> Unit
-) {
-    val firstName = member.fullName.trim().substringBefore(" ").ifBlank { "Member" }
-    var deleteChannelTarget by remember { mutableStateOf<ChatChannel?>(null) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(PureWhite)
-            .animatedChatGlowBackdrop(isThread = false)
-            .testTag("chat_hub_screen")
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.statusBars)
-                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .widthIn(max = 620.dp)
-                .align(Alignment.Center)
-        ) {
-            // Top Bar: <-  New Chat  X
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_hub_back_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        tint = ObsidianCharcoal
-                    )
-                }
-                Text(
-                    text = "New Chat",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = ObsidianCharcoal
-                )
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .testTag("chat_hub_close_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Close,
-                        contentDescription = "Close Chat",
-                        tint = ObsidianCharcoal
-                    )
-                }
-            }
-
-            AnimatedVisibility(
-                visible = !openingThreadLabel.isNullOrBlank(),
-                enter = fadeIn(tween(220, easing = FastOutSlowInEasing)) + expandVertically(tween(240, easing = FastOutSlowInEasing)),
-                exit = fadeOut(tween(180, easing = FastOutSlowInEasing)) + shrinkVertically(tween(200, easing = FastOutSlowInEasing))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(999.dp),
-                        color = ObsidianCharcoal,
-                        shadowElevation = 4.dp,
-                        modifier = Modifier.testTag("chat_opening_indicator")
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 2.dp,
-                                color = PureWhite
-                            )
-                            Text(
-                                text = openingThreadLabel.orEmpty(),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = PureWhite,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-                    }
-                }
-            }
-
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    StudioAvatar(
-                        name = member.fullName,
-                        size = 56.dp,
-                        borderColor = PureWhite,
-                        photoBase64 = member.photoBase64
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = "Hi, ${formatTitleCase(firstName)}!",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Text(
-                            text = "Share updates & files",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = ObsidianCharcoal
-                        )
-                    }
-                }
-
-                // 1:1 Direct Message Section for Everyone
-                if (colleagues.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.testTag("chat_dm_section"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Direct Messages (1:1)",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            colleagues.forEach { person ->
-                                Surface(
-                                    onClick = { onOpenDirectChat(person) },
-                                    shape = RoundedCornerShape(18.dp),
-                                    color = PureWhite.copy(alpha = 0.88f),
-                                    border = BorderStroke(1.dp, SubtleOutline),
-                                    modifier = Modifier
-                                        .widthIn(min = 132.dp, max = 186.dp)
-                                        .testTag("dm_person_${person.uid}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        StudioAvatar(
-                                            name = person.fullName,
-                                            size = 34.dp,
-                                            borderColor = PureWhite,
-                                            photoBase64 = person.photoBase64
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = formatTitleCase(person.fullName.ifBlank { "Member" }),
-                                                style = MaterialTheme.typography.labelLarge,
-                                                fontWeight = FontWeight.Bold,
-                                                color = ObsidianCharcoal,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = formatTitleCase(person.jobRoleName.ifBlank { person.departmentName }),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = StudioTextSecondary,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Department Chat Section for Everyone
-                if (departments.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier.testTag("chat_departments_section"),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "Department Chats",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            departments.forEach { dept ->
-                                Surface(
-                                    onClick = { onOpenDepartmentChat(dept) },
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = KpiLavenderBg.copy(alpha = 0.92f),
-                                    border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.28f)),
-                                    modifier = Modifier
-                                        .height(40.dp)
-                                        .testTag("dept_chat_${dept.id}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(Icons.Filled.Groups, contentDescription = null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
-                                        Text(
-                                            text = formatTitleCase(dept.name),
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ObsidianCharcoal
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Recent Channels Strip for 1-Tap Thread Switching
-                Column(
-                    modifier = Modifier.testTag("chat_threads_section"),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Team Threads",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = StudioTextSecondary
-                        )
-                        TextButton(
-                            onClick = onCreateNewChannelClick,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                            modifier = Modifier.testTag("create_channel_button")
-                        ) {
-                            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(16.dp), tint = ObsidianCharcoal)
-                            Spacer(Modifier.width(4.dp))
-                            Text("New Channel", color = ObsidianCharcoal, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    val displayChannels = remember(channels, activeChannel) {
-                        val filtered = channels.filter { it.channelTypeEnum() != ChatChannelType.DIRECT }
-                        if (filtered.isEmpty()) listOf(activeChannel) else filtered
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        displayChannels.forEach { ch ->
-                            val isSelected = ch.id == activeChannel.id
-                            val prefix = when (ch.channelTypeEnum()) {
-                                ChatChannelType.DIRECT -> "@"
-                                ChatChannelType.DEPARTMENT -> "Dept:"
-                                else -> "#"
-                            }
-                            Surface(
-                                onClick = { onSelectChannel(ch) },
-                                shape = RoundedCornerShape(18.dp),
-                                color = if (isSelected) PureWhite.copy(alpha = 0.96f) else PureWhite.copy(alpha = 0.78f),
-                                border = BorderStroke(
-                                    width = if (isSelected) 1.5.dp else 1.dp,
-                                    color = if (isSelected) ObsidianCharcoal else SubtleOutline
-                                ),
-                                modifier = Modifier
-                                    .widthIn(min = 148.dp, max = 230.dp)
-                                    .testTag("channel_chip_${ch.id}")
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Text(
-                                            text = "$prefix ${formatTitleCase(ch.title)}",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = ObsidianCharcoal,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f, fill = false)
-                                        )
-                                        if (ch.messageCount > 0) {
-                                            StatusPill(
-                                                label = "${ch.messageCount}",
-                                                containerColor = MutedSurface,
-                                                contentColor = ObsidianCharcoal
-                                            )
-                                        }
-                                        if (isSuperAdmin && ch.id != ChatRepository.GENERAL_CHANNEL_ID) {
-                                            IconButton(
-                                                onClick = { deleteChannelTarget = ch },
-                                                modifier = Modifier
-                                                    .size(24.dp)
-                                                    .testTag("delete_channel_${ch.id}")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.DeleteOutline,
-                                                    contentDescription = "Delete Channel",
-                                                    tint = CrimsonBlocked,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Text(
-                                        text = ch.lastMessagePreview.ifBlank { ch.topic },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = StudioTextSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Bottom Staged File Preview + Target Pill + Frosted Pill Composer
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (isProcessingFile) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(999.dp)),
-                        color = ObsidianCharcoal,
-                        trackColor = MutedSurface
-                    )
-                }
-
-                stagedAttachment?.let { att ->
-                    StagedAttachmentBanner(attachment = att, onRemove = onClearAttachment)
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(horizontal = 4.dp)
-                ) {
-                    Surface(
-                        onClick = onOpenChannelsSheet,
-                        shape = RoundedCornerShape(999.dp),
-                        color = PureWhite.copy(alpha = 0.85f),
-                        border = BorderStroke(1.dp, SubtleOutline)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "Sending to #${activeChannel.title}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                color = ObsidianCharcoal
-                            )
-                            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(14.dp), tint = StudioTextSecondary)
-                        }
-                    }
-                }
-
-                val canSend = composerText.isNotBlank() || stagedAttachment != null
-                Surface(
-                    shape = RoundedCornerShape(28.dp),
-                    color = Color(0xFFE7E8EC).copy(alpha = 0.92f),
-                    border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.85f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 56.dp)
-                            .padding(start = 20.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.weight(1f),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            if (composerText.isEmpty()) {
-                                Text(
-                                    text = "Write a message…",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = StudioTextSecondary
-                                )
-                            }
-                            BasicTextField(
-                                value = composerText,
-                                onValueChange = onComposerTextChange,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
-                                cursorBrush = SolidColor(ObsidianCharcoal),
-                                maxLines = 4,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("chat_hub_input")
-                            )
-                        }
-                        Surface(
-                            onClick = onSend,
-                            enabled = canSend && !isProcessingFile,
-                            shape = CircleShape,
-                            color = if (canSend) ObsidianCharcoal else PureWhite.copy(alpha = 0.85f),
-                            modifier = Modifier
-                                .size(44.dp)
-                                .testTag("chat_hub_send_button")
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Filled.ArrowUpward,
-                                    contentDescription = "Send Message",
-                                    tint = if (canSend) PureWhite else ObsidianCharcoal,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    deleteChannelTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteChannelTarget = null },
-            containerColor = PureWhite,
-            title = { Text("Delete chat thread?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
-            text = { Text("Permanently delete ${formatTitleCase(target.title)} and all its messages?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onDeleteChannel(target.id)
-                        deleteChannelTarget = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("Delete", fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteChannelTarget = null }) { Text("Cancel") }
-            }
-        )
-    }
-}
-
-@Composable
-private fun FrostedChatBentoTile(
-    label: String,
-    icon: ImageVector,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-    artwork: @Composable BoxScope.() -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(22.dp),
-        color = PureWhite.copy(alpha = 0.72f),
-        border = BorderStroke(1.dp, PureWhite.copy(alpha = 0.92f)),
-        modifier = modifier.height(134.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                artwork()
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(30.dp)
-                        .clip(CircleShape)
-                        .background(ObsidianCharcoal),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = PureWhite,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ObsidianCharcoal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChannelsBentoArtwork() {
-    Box(modifier = Modifier.size(width = 88.dp, height = 66.dp), contentAlignment = Alignment.Center) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFFDDE3EB),
-            modifier = Modifier
-                .size(46.dp)
-                .offset(x = 14.dp, y = 4.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = "PM",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = StudioTextSecondary
-                )
-            }
-        }
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF3E7BF6),
-            shadowElevation = 3.dp,
-            modifier = Modifier
-                .size(48.dp)
-                .offset(x = (-12).dp, y = (-4).dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    text = "#",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = PureWhite
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun AudioWaveformArtwork() {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = PureWhite.copy(alpha = 0.92f),
-        shadowElevation = 1.dp,
-        modifier = Modifier.size(width = 86.dp, height = 56.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val heights = listOf(8.dp, 18.dp, 12.dp, 26.dp, 14.dp, 22.dp, 10.dp, 16.dp, 8.dp)
-            heights.forEachIndexed { idx, h ->
-                Box(
-                    modifier = Modifier
-                        .width(3.dp)
-                        .height(h)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(if (idx in 2..5) ObsidianCharcoal else Color(0xFFA0A5B1))
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChatFilesBentoArtwork() {
-    Box(modifier = Modifier.size(width = 96.dp, height = 68.dp), contentAlignment = Alignment.Center) {
-        // Blue DOC card behind on right
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF4285F4),
-            shadowElevation = 2.dp,
-            modifier = Modifier
-                .size(width = 46.dp, height = 56.dp)
-                .offset(x = 16.dp, y = 2.dp)
-                .rotate(8f)
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                repeat(4) { i ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(if (i == 3) 0.65f else 1f)
-                            .height(3.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(PureWhite.copy(alpha = 0.88f))
-                    )
-                }
-            }
-        }
-        // White PDF card in front on left
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = PureWhite,
-            border = BorderStroke(1.dp, SubtleOutline),
-            shadowElevation = 4.dp,
-            modifier = Modifier
-                .size(width = 48.dp, height = 58.dp)
-                .offset(x = (-14).dp, y = (-2).dp)
-                .rotate(-8f)
-        ) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Canvas(modifier = Modifier.size(22.dp)) {
-                    val p = Path().apply {
-                        moveTo(size.width * 0.5f, size.height * 0.14f)
-                        lineTo(size.width * 0.22f, size.height * 0.78f)
-                        cubicTo(
-                            size.width * 0.16f, size.height * 0.90f,
-                            size.width * 0.84f, size.height * 0.50f,
-                            size.width * 0.82f, size.height * 0.72f
-                        )
-                        cubicTo(
-                            size.width * 0.80f, size.height * 0.88f,
-                            size.width * 0.24f, size.height * 0.52f,
-                            size.width * 0.5f, size.height * 0.14f
-                        )
-                    }
-                    drawPath(
-                        path = p,
-                        color = Color(0xFFE53935),
-                        style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
-                    )
-                }
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "PDF",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFE53935)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ImagesBentoArtwork() {
-    Box(modifier = Modifier.size(width = 98.dp, height = 68.dp), contentAlignment = Alignment.Center) {
-        // Right warm sand card
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFFEED3B5),
-            border = BorderStroke(1.5.dp, PureWhite),
-            shadowElevation = 2.dp,
-            modifier = Modifier
-                .size(width = 48.dp, height = 54.dp)
-                .offset(x = 16.dp, y = (-2).dp)
-                .rotate(10f)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(Color(0xFFF6C6A5), Color(0xFFE1B18E))
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFFC58C64))
-                )
-            }
-        }
-        // Left vivid landscape card
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF9ED5F0),
-            border = BorderStroke(1.5.dp, PureWhite),
-            shadowElevation = 4.dp,
-            modifier = Modifier
-                .size(width = 50.dp, height = 56.dp)
-                .offset(x = (-14).dp, y = 2.dp)
-                .rotate(-8f)
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                drawRect(
-                    brush = Brush.verticalGradient(
-                        colors = listOf(Color(0xFF81D4FA), Color(0xFFE1F5FE))
-                    )
-                )
-                drawCircle(
-                    color = Color(0xFFFF8A65),
-                    radius = size.minDimension * 0.20f,
-                    center = Offset(size.width * 0.34f, size.height * 0.36f)
-                )
-                val hill = Path().apply {
-                    moveTo(0f, size.height)
-                    lineTo(0f, size.height * 0.65f)
-                    lineTo(size.width * 0.42f, size.height * 0.45f)
-                    lineTo(size.width * 0.72f, size.height * 0.62f)
-                    lineTo(size.width, size.height * 0.50f)
-                    lineTo(size.width, size.height)
-                    close()
-                }
-                drawPath(hill, color = Color(0xFF4CAF50))
-            }
-        }
-    }
-}
-
-@Composable
-private fun ChatThreadView(
-    member: Member,
-    isSuperAdmin: Boolean,
-    memberPhotoByUid: Map<String, String>,
     channel: ChatChannel,
     messages: List<ChatMessage>,
     hasPendingWrites: Boolean,
-    composerText: String,
-    onComposerTextChange: (String) -> Unit,
-    stagedAttachment: StagedChatAttachment?,
+    chatViewModel: ChatViewModel,
+    hdMediaMode: Boolean,
     isProcessingFile: Boolean,
-    replyTarget: ChatMessage?,
-    onClearReply: () -> Unit,
-    onSetReply: (ChatMessage) -> Unit,
-    onClearAttachment: () -> Unit,
-    onPickFiles: () -> Unit,
-    onPickImages: () -> Unit,
+    onToggleHdMedia: (Boolean) -> Unit,
+    onCamera: () -> Unit,
+    onPickSinglePhoto: () -> Unit,
+    onPickMultiPhoto: () -> Unit,
+    onPickVideo: () -> Unit,
+    onPickDocs: () -> Unit,
     onPickAudio: () -> Unit,
     onOpenChannelsSheet: () -> Unit,
     onOpenMessageAttachment: (ChatMessage) -> Unit,
     onDownloadAttachment: (ChatMessage) -> Unit,
     onDeleteChannel: () -> Unit,
-    onDeleteMessage: (ChatMessage) -> Unit,
-    onSend: () -> Unit,
     onBackToHub: () -> Unit,
     onClose: () -> Unit
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs by ChatSettingsStore.prefsFlow.collectAsStateWithLifecycle()
+
+    val ephemeral by chatViewModel.ephemeralActivity.collectAsStateWithLifecycle()
+    val replyTarget by chatViewModel.replyTarget.collectAsStateWithLifecycle()
+    val editingMsg by chatViewModel.editingMessage.collectAsStateWithLifecycle()
+    val stagedAttachments by chatViewModel.stagedAttachments.collectAsStateWithLifecycle()
+    val isRecordingAudio by chatViewModel.isRecordingAudio.collectAsStateWithLifecycle()
+    val recordingSec by chatViewModel.recordingDurationSec.collectAsStateWithLifecycle()
+    val voicePreview by chatViewModel.voicePreview.collectAsStateWithLifecycle()
+    val isTranscribing by chatViewModel.isTranscribing.collectAsStateWithLifecycle()
+    val isUploading by chatViewModel.isUploading.collectAsStateWithLifecycle()
+    val failedMessages by chatViewModel.failedMessages.collectAsStateWithLifecycle()
+
+    var composerText by remember(channel.id) { mutableStateOf("") }
+    LaunchedEffect(editingMsg?.id) {
+        editingMsg?.let { composerText = it.body }
+    }
+
+    var viewOnceMode by remember { mutableStateOf(false) }
+    var showInThreadSearch by remember { mutableStateOf(false) }
+    var threadSearchQuery by remember { mutableStateOf("") }
+    var dateFilterIndex by remember { mutableStateOf(0) } // 0=All, 1=Today, 2=Yesterday, 3=Week
+    var showInfoSheet by remember { mutableStateOf(false) }
+    var showAttachmentMenu by remember { mutableStateOf(false) }
+    var showEmojiStickerSheet by remember { mutableStateOf(false) }
+    var emojiPickerTargetMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var showCreatePoll by remember { mutableStateOf(false) }
+    var showCreateEvent by remember { mutableStateOf(false) }
+    var showBusinessPicker by remember { mutableStateOf(false) }
+    var showStarredSheet by remember { mutableStateOf(false) }
+    var forwardTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var messageInfoTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var reportTargetPair by remember { mutableStateOf<Pair<ChatChannel, ChatMessage?>?>(null) }
+    var showPinSetupDialog by remember { mutableStateOf(false) }
     var showDeleteThreadConfirm by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.lastIndex)
+    var pendingLocationAction by remember { mutableStateOf<Int?>(null) } // null=none, 0=current, 15/60=live
+
+    val audioPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            chatViewModel.startVoiceRecording(context, channel.id, member.uid, member.fullName)
         }
+    }
+
+    val locationPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        val ok = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true || grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        val modeMinutes = pendingLocationAction
+        pendingLocationAction = null
+        if (ok && modeMinutes != null) {
+            if (modeMinutes == 0) {
+                scope.launch {
+                    ChatLocationManager.fetchCurrentLocation(context).onSuccess { loc ->
+                        chatViewModel.sendRichOptions(
+                            channel.id,
+                            "Location: ${loc.label}",
+                            member,
+                            SendMessageOptions(
+                                kind = ChatMessageKind.LOCATION,
+                                locationLat = loc.latitude,
+                                locationLng = loc.longitude,
+                                locationLabel = loc.label
+                            )
+                        )
+                    }
+                }
+            } else {
+                chatViewModel.startLiveLocationSharing(context, channel.id, modeMinutes, member)
+            }
+        }
+    }
+
+    val contactPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickContact()) { uri ->
+        if (uri != null) {
+            val picked = ChatFileManager.extractPickedContact(context, uri)
+            if (picked != null) {
+                chatViewModel.sendRichOptions(
+                    channel.id,
+                    "Contact: ${picked.name}",
+                    member,
+                    SendMessageOptions(
+                        kind = ChatMessageKind.CONTACT,
+                        contactName = picked.name,
+                        contactPhone = picked.phone
+                    )
+                )
+            }
+        }
+    }
+
+    fun requestOrRunLocation(durationMinutes: Int) {
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (fine || coarse) {
+            if (durationMinutes == 0) {
+                scope.launch {
+                    ChatLocationManager.fetchCurrentLocation(context).onSuccess { loc ->
+                        chatViewModel.sendRichOptions(
+                            channel.id,
+                            "Location: ${loc.label}",
+                            member,
+                            SendMessageOptions(
+                                kind = ChatMessageKind.LOCATION,
+                                locationLat = loc.latitude,
+                                locationLng = loc.longitude,
+                                locationLabel = loc.label
+                            )
+                        )
+                    }
+                }
+            } else {
+                chatViewModel.startLiveLocationSharing(context, channel.id, durationMinutes, member)
+            }
+        } else {
+            pendingLocationAction = durationMinutes
+            locationPermLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+    // Peer online & last-seen presence for 1:1 DMs
+    val peerUid = remember(channel.participantUids, member.uid, channel.channelType) {
+        if (channel.channelTypeEnum() == ChatChannelType.DIRECT && !channel.isSelfNotes(member.uid)) {
+            channel.participantUids.firstOrNull { it != member.uid }.orEmpty()
+        } else ""
+    }
+    val peerPresence by remember(peerUid) {
+        chatViewModel.observeMemberPresence(peerUid)
+    }.collectAsStateWithLifecycle(initialValue = MemberPresenceState())
+
+    val filteredMessages = remember(messages, threadSearchQuery, dateFilterIndex) {
+        val q = threadSearchQuery.trim().lowercase()
+        val calStartToday = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val startYesterday = calStartToday - 86_400_000L
+        val startWeek = calStartToday - 6 * 86_400_000L
+        messages.filter { m ->
+            val ms = m.createdAt?.toDate()?.time ?: System.currentTimeMillis()
+            val matchQ = q.isBlank() ||
+                m.body.lowercase().contains(q) ||
+                m.senderName.lowercase().contains(q) ||
+                m.attachmentName.lowercase().contains(q)
+            val matchDate = when (dateFilterIndex) {
+                1 -> ms >= calStartToday
+                2 -> ms in startYesterday until calStartToday
+                3 -> ms >= startWeek
+                else -> true
+            }
+            matchQ && matchDate
+        }
+    }
+
+    val channelFailed = remember(failedMessages, channel.id) {
+        failedMessages.filter { it.channelId == channel.id }
+    }
+    val pinnedMessages = remember(messages) { messages.filter { it.pinned && !it.isDeletedForEveryone } }
+
+    val listState = rememberLazyListState()
+    LaunchedEffect(filteredMessages.size) {
+        if (filteredMessages.isNotEmpty()) {
+            listState.animateScrollToItem(filteredMessages.lastIndex)
+        }
+    }
+
+    val threadWallpaper = prefs.channelWallpapers[channel.id] ?: prefs.globalWallpaperId
+    val otherParticipantsCount = (channel.participantUids.size - 1).coerceAtLeast(0)
+    val canPostInChannel = !channel.onlyAdminsCanMessage || channel.isChannelAdmin(member.uid, state.isSuperAdmin)
+    val mentionCandidates = remember(composerText, state.members) {
+        val afterAt = composerText.substringAfterLast("@", "")
+        if (composerText.contains("@") && !afterAt.contains(" ") && afterAt.length <= 16) {
+            state.members.filter {
+                it.uid != member.uid && it.active && it.fullName.contains(afterAt, ignoreCase = true)
+            }.take(5)
+        } else emptyList()
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(PureWhite)
-            .animatedChatGlowBackdrop(isThread = true)
+            .animatedChatGlowBackdrop(isThread = true, wallpaperId = threadWallpaper)
             .testTag("chat_thread_screen")
     ) {
         Column(
@@ -1482,14 +852,14 @@ private fun ChatThreadView(
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .widthIn(max = 620.dp)
+                .widthIn(max = 640.dp)
                 .align(Alignment.Center)
         ) {
-            // Clean Thread Top Bar
+            // Top Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -1502,24 +872,39 @@ private fun ChatThreadView(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = ObsidianCharcoal)
                 }
 
-                Column(
+                val otherPeer = remember(channel, state.members, member.uid) {
+                    if (channel.channelTypeEnum() == ChatChannelType.DIRECT && !channel.isSelfNotes(member.uid)) {
+                        state.members.firstOrNull { it.uid != member.uid && it.uid in channel.participantUids }
+                    } else null
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(14.dp))
-                        .clickable(onClick = onOpenChannelsSheet)
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .testTag(if (channel.channelTypeEnum() == ChatChannelType.DIRECT) "chat_direct_header" else "chat_thread_header"),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .clickable { showInfoSheet = true }
+                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                        .testTag(if (channel.channelTypeEnum() == ChatChannelType.DIRECT) "chat_direct_header" else "chat_thread_header")
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
+                    StudioAvatar(
+                        name = when {
+                            channel.isSelfNotes(member.uid) -> "Saved"
+                            otherPeer != null -> otherPeer.fullName
+                            else -> channel.title
+                        },
+                        size = 38.dp,
+                        borderColor = PureWhite,
+                        photoBase64 = otherPeer?.photoBase64?.ifBlank { channel.photoBase64 } ?: channel.photoBase64
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = when (channel.channelTypeEnum()) {
-                                ChatChannelType.DIRECT -> "@ ${formatTitleCase(channel.title)}"
-                                ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
-                                else -> "# ${formatTitleCase(channel.title)}"
+                            text = when {
+                                channel.isSelfNotes(member.uid) -> "Message Yourself (Saved)"
+                                otherPeer != null -> formatTitleCase(otherPeer.fullName)
+                                channel.channelTypeEnum() == ChatChannelType.DIRECT -> formatTitleCase(channel.title)
+                                channel.channelTypeEnum() == ChatChannelType.DEPARTMENT -> "Dept: ${formatTitleCase(channel.title)}"
+                                else -> formatTitleCase(channel.title)
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
@@ -1527,72 +912,147 @@ private fun ChatThreadView(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Switch Channel", modifier = Modifier.size(16.dp), tint = StudioTextSecondary)
+                        val subtitleText = when {
+                            ephemeral.recordingNames.isNotEmpty() -> "${ephemeral.recordingNames.first().substringBefore(" ")} recording audio…"
+                            ephemeral.typingNames.isNotEmpty() -> "${ephemeral.typingNames.first().substringBefore(" ")} typing…"
+                            hasPendingWrites -> "Syncing updates…"
+                            peerPresence.online -> "Online"
+                            peerPresence.lastSeenMillis > 0L -> {
+                                val ls = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(peerPresence.lastSeenMillis))
+                                "Last seen $ls"
+                            }
+                            else -> channel.topic.ifBlank { "Tap for group & media info" }
+                        }
+                        Text(
+                            text = subtitleText,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (ephemeral.typingNames.isNotEmpty() || ephemeral.recordingNames.isNotEmpty() || peerPresence.online) EmeraldApproved else StudioTextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
-                    Text(
-                        text = if (hasPendingWrites) "Syncing updates…" else channel.topic.ifBlank { "Team channel & shared files" },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isSuperAdmin && channel.id != ChatRepository.GENERAL_CHANNEL_ID) {
-                        IconButton(
-                            onClick = { showDeleteThreadConfirm = true },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .testTag("thread_delete_channel_button")
-                        ) {
-                            Icon(Icons.Filled.DeleteOutline, contentDescription = "Delete Thread", tint = CrimsonBlocked)
-                        }
+                    IconButton(onClick = { showInThreadSearch = !showInThreadSearch }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Search, contentDescription = "Search thread", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
-                    IconButton(
-                        onClick = onPickFiles,
-                        modifier = Modifier
-                            .size(48.dp)
-                            .testTag("chat_thread_attach_button")
-                    ) {
-                        Icon(Icons.Filled.AttachFile, contentDescription = "Attach File", tint = ObsidianCharcoal)
+                    IconButton(onClick = { showStarredSheet = true }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.StarBorder, contentDescription = "Starred messages", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = { showInfoSheet = true }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Info, contentDescription = "Chat info", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                     IconButton(
                         onClick = onClose,
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(40.dp)
                             .testTag("chat_thread_close_button")
                     ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close Chat", tint = ObsidianCharcoal)
+                        Icon(Icons.Filled.Close, contentDescription = "Close Chat", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
                     }
                 }
             }
 
-            // Messages Stream or Centered Empty Prompt
+            // Search-within-conversation + Search-by-Date bar
+            AnimatedVisibility(visible = showInThreadSearch) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OutlinedTextField(
+                        value = threadSearchQuery,
+                        onValueChange = { threadSearchQuery = it },
+                        placeholder = { Text("Find message or attachment…") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = PureWhite, unfocusedContainerColor = PureWhite),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("All Dates", "Today", "Yesterday", "7 Days").forEachIndexed { idx, lbl ->
+                            FilterChip(
+                                selected = dateFilterIndex == idx,
+                                onClick = { dateFilterIndex = idx },
+                                label = { Text(lbl, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Pinned Message Banner
+            if (pinnedMessages.isNotEmpty()) {
+                val topPinned = pinnedMessages.last()
+                Surface(
+                    onClick = {
+                        val idx = filteredMessages.indexOfFirst { it.id == topPinned.id }
+                        if (idx >= 0) scope.launch { listState.animateScrollToItem(idx) }
+                    },
+                    color = PureWhite.copy(alpha = 0.88f),
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.PushPin, null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
+                        Text(
+                            text = topPinned.body.ifBlank { topPinned.attachmentName.ifBlank { topPinned.kindEnum().label } },
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(onClick = { chatViewModel.togglePin(channel.id, topPinned.id) }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Unpin", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+
+            // Disappearing Messages Indicator
+            if (channel.disappearingSeconds > 0L) {
+                val timerText = when (channel.disappearingSeconds) {
+                    86_400L -> "24 hours"
+                    604_800L -> "7 days"
+                    else -> "90 days"
+                }
+                Surface(color = Color(0xFFFFFBEB), modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(Icons.Default.Timer, null, tint = Color(0xFFD97706), modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Disappearing messages active ($timerText)", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB45309))
+                    }
+                }
+            }
+
+            // Messages Stream
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                if (messages.isEmpty()) {
+                if (filteredMessages.isEmpty()) {
                     Column(
                         modifier = Modifier
                             .align(Alignment.Center)
-                            .padding(horizontal = 36.dp),
+                            .padding(horizontal = 32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Share project files, briefs, or quick updates with your team.",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Normal,
+                            text = if (messages.isEmpty()) "No messages yet. Say hello or share media below!" else "No messages match your search filter.",
+                            style = MaterialTheme.typography.titleMedium,
                             color = ObsidianCharcoal.copy(alpha = 0.85f),
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = "Tap Attach File, Photo, or Audio below to upload.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = StudioTextSecondary,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -1602,193 +1062,583 @@ private fun ChatThreadView(
                         modifier = Modifier
                             .fillMaxSize()
                             .testTag("chat_messages_list"),
-                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        itemsIndexed(messages, key = { _, m -> m.id }) { idx, msg ->
-                            val prev = messages.getOrNull(idx - 1)
-                            val showSenderHeader = prev == null || prev.senderUid != msg.senderUid
-                            val isThreadedFollowUp = msg.parentMessageId.isNotBlank() ||
-                                (prev != null && prev.senderUid == msg.senderUid)
-                            val isReplyBranch = msg.parentMessageId.isNotBlank()
-
-                            ThreadedMessageRow(
+                        itemsIndexed(filteredMessages, key = { _, m -> m.id }) { idx, msg ->
+                            val prev = filteredMessages.getOrNull(idx - 1)
+                            val curDay = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(msg.createdAt?.toDate()?.time ?: System.currentTimeMillis()))
+                            val prevDay = prev?.let { SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(it.createdAt?.toDate()?.time ?: System.currentTimeMillis())) }
+                            if (prev == null || curDay != prevDay) {
+                                DateSeparatorPill(label = curDay)
+                            }
+                            RichChatMessageBubble(
                                 message = msg,
+                                companyId = companyId,
                                 isMe = msg.senderUid == member.uid,
-                                isSuperAdmin = isSuperAdmin,
-                                senderPhotoBase64 = memberPhotoByUid[msg.senderUid].orEmpty(),
-                                showSenderHeader = showSenderHeader,
-                                isThreadedFollowUp = isThreadedFollowUp,
-                                isReplyBranch = isReplyBranch,
-                                onReply = { onSetReply(msg) },
-                                onDelete = { onDeleteMessage(msg) },
+                                myUid = member.uid,
+                                bubbleThemeId = prefs.bubbleThemeId,
+                                showSenderHeader = (prev == null || prev.senderUid != msg.senderUid) && channel.channelTypeEnum() != ChatChannelType.DIRECT,
+                                otherParticipantCount = otherParticipantsCount,
+                                onReply = { chatViewModel.setReply(msg) },
+                                onForward = { forwardTarget = msg },
+                                onEdit = { chatViewModel.setEditing(msg) },
+                                onDeleteForMe = { chatViewModel.deleteForMe(channel.id, msg.id, member.uid) },
+                                onDeleteForEveryone = { chatViewModel.deleteForEveryone(channel.id, msg.id) },
+                                onToggleStar = { chatViewModel.toggleStar(channel.id, msg.id, member.uid) },
+                                onTogglePin = { chatViewModel.togglePin(channel.id, msg.id) },
+                                onReact = { emoji -> chatViewModel.reactToMessage(channel.id, msg.id, emoji, member.uid) },
+                                onOpenEmojiPickerForReaction = {
+                                    emojiPickerTargetMessage = msg
+                                    showEmojiStickerSheet = true
+                                },
+                                onVotePoll = { optIdx -> chatViewModel.votePoll(channel.id, msg.id, optIdx, member.uid) },
+                                onRsvpEvent = { rsvp -> chatViewModel.rsvpEvent(channel.id, msg.id, member.uid, rsvp) },
+                                onRevealViewOnce = { chatViewModel.markViewedOnce(channel.id, msg.id, member.uid) },
+                                onStopLiveLocation = { chatViewModel.stopLiveLocation(channel.id, msg.id) },
                                 onOpenAttachment = { onOpenMessageAttachment(msg) },
-                                onDownloadAttachment = { onDownloadAttachment(msg) }
+                                onDownloadAttachment = { onDownloadAttachment(msg) },
+                                onShowMessageInfo = { messageInfoTarget = msg },
+                                onReportMessage = { reportTargetPair = channel to msg },
+                                onReportStatusError = {}
                             )
                         }
                     }
                 }
             }
 
-            // Bottom Composer Box + Pill Quick-Attach Row (matching right screen of chat_page_ui_6bb989de.jpg)
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (isProcessingFile) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(999.dp)),
-                        color = ObsidianCharcoal,
-                        trackColor = MutedSurface
+            // Failed Outgoing Retry Banner
+            channelFailed.forEach { failItem ->
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = SoftBlush,
+                    border = BorderStroke(1.dp, CrimsonBlocked.copy(alpha = 0.4f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.ErrorOutline, null, tint = CrimsonBlocked, modifier = Modifier.size(18.dp))
+                        Text("Failed: ${failItem.body.ifBlank { failItem.reason }}", style = MaterialTheme.typography.labelSmall, color = DeepBlushInk, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { chatViewModel.retryFailedMessage(failItem, member) }) { Text("Retry", fontWeight = FontWeight.Bold) }
+                        IconButton(onClick = { chatViewModel.dismissFailedMessage(failItem.id) }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+
+            // Bottom Composer Stack
+            if (!canPostInChannel) {
+                Surface(
+                    color = MutedSurface.copy(alpha = 0.94f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Text(
+                        text = "Only group administrators can send messages in this channel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = StudioTextSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(14.dp)
                     )
                 }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (isProcessingFile || isUploading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(999.dp)), color = VioletPrimary)
+                    }
 
-                replyTarget?.let { target ->
+                    // @Mention Autocomplete Bar
+                    if (mentionCandidates.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            mentionCandidates.forEach { cand ->
+                                AssistChip(
+                                    onClick = {
+                                        val prefix = composerText.substringBeforeLast("@")
+                                        val handle = cand.fullName.trim().replace(" ", "")
+                                        composerText = "$prefix@$handle "
+                                    },
+                                    label = { Text("@${formatTitleCase(cand.fullName)}") }
+                                )
+                            }
+                        }
+                    }
+
+                    // Reply / Edit Preview Banner
+                    val bannerTarget = replyTarget ?: editingMsg
+                    if (bannerTarget != null) {
+                        Surface(shape = RoundedCornerShape(12.dp), color = PureWhite.copy(alpha = 0.92f), border = BorderStroke(1.dp, SubtleOutline), modifier = Modifier.fillMaxWidth()) {
+                            Row(modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Icon(if (editingMsg != null) Icons.Default.Edit else Icons.AutoMirrored.Filled.Reply, null, tint = VioletPrimary, modifier = Modifier.size(16.dp))
+                                Text(
+                                    text = if (editingMsg != null) "Editing: ${editingMsg!!.body}" else "Replying to ${bannerTarget.senderName.substringBefore(" ")}: ${bannerTarget.body.ifBlank { bannerTarget.attachmentName }}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        chatViewModel.setReply(null)
+                                        if (editingMsg != null) {
+                                            chatViewModel.setEditing(null)
+                                            composerText = ""
+                                        }
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel", modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        }
+                    }
+
+                    // Staged Attachments Strip (Multi-photo / HD / Docs)
+                    if (stagedAttachments.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            stagedAttachments.forEach { att ->
+                                Surface(shape = RoundedCornerShape(12.dp), color = PureWhite, border = BorderStroke(1.dp, SubtleOutline)) {
+                                    Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("${att.fileName.take(18)} (${ChatFileManager.formatFileSize(att.sizeBytes)})", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                        if (att.isHd) Text("HD", fontSize = 10.sp, color = VioletPrimary, fontWeight = FontWeight.ExtraBold)
+                                        IconButton(onClick = { chatViewModel.removeStagedAttachment(att.id) }, modifier = Modifier.size(20.dp)) {
+                                            Icon(Icons.Default.Close, contentDescription = "Remove", modifier = Modifier.size(14.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Active Voice Recording OR Voice Preview & Transcription Bar
+                    if (isRecordingAudio) {
+                        Surface(shape = RoundedCornerShape(18.dp), color = SoftBlush, border = BorderStroke(1.dp, CrimsonBlocked.copy(alpha = 0.4f)), modifier = Modifier.fillMaxWidth()) {
+                            Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Icon(Icons.Default.Mic, null, tint = CrimsonBlocked)
+                                Text(
+                                    text = "Recording ${String.format("%02d:%02d", recordingSec / 60, recordingSec % 60)}…",
+                                    fontWeight = FontWeight.Bold,
+                                    color = DeepBlushInk,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    onClick = { chatViewModel.stopRecordingForPreview(channel.id, member.uid, member.fullName) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite)
+                                ) { Text("Stop & Preview") }
+                            }
+                        }
+                    } else if (voicePreview != null) {
+                        val draft = voicePreview!!
+                        val playback by ChatAudioManager.playbackState.collectAsStateWithLifecycle()
+                        val previewPlaying = playback.activeKey == "draft_preview" && playback.isPlaying
+                        Surface(shape = RoundedCornerShape(18.dp), color = PureWhite, border = BorderStroke(1.dp, VioletPrimary.copy(alpha = 0.4f)), modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    IconButton(onClick = { ChatAudioManager.togglePlay("draft_preview", draft.file) }) {
+                                        Icon(if (previewPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Preview", tint = EmeraldApproved)
+                                    }
+                                    Text("Voice Preview (${(draft.durationMs / 1000L).coerceAtLeast(1L)}s)", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                    TextButton(onClick = { chatViewModel.transcribeVoiceIntoDraft(context) }, enabled = !isTranscribing) {
+                                        Text(if (isTranscribing) "Listening…" else "Transcribe")
+                                    }
+                                    IconButton(onClick = { chatViewModel.discardVoicePreview() }) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = "Discard", tint = CrimsonBlocked)
+                                    }
+                                    Surface(
+                                        onClick = {
+                                            chatViewModel.sendVoicePreview(channel.id, member, viewOnce = viewOnceMode) {
+                                                viewOnceMode = false
+                                                AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                            }
+                                        },
+                                        shape = CircleShape,
+                                        color = ObsidianCharcoal,
+                                        modifier = Modifier.size(38.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send Voice Note", tint = PureWhite, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                }
+                                if (draft.transcript.isNotBlank()) {
+                                    Text("Transcript: ${draft.transcript}", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                                }
+                            }
+                        }
+                    }
+
+                    // Main Input Capsule
+                    val canSend = composerText.isNotBlank() || stagedAttachments.isNotEmpty()
                     Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MutedSurface,
+                        shape = RoundedCornerShape(22.dp),
+                        color = PureWhite.copy(alpha = 0.96f),
+                        border = BorderStroke(1.dp, SubtleOutline),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Reply, contentDescription = null, modifier = Modifier.size(16.dp), tint = VioletPrimary)
-                            Text(
-                                text = "Replying to ${target.senderName.substringBefore(" ")}: ${target.body.ifBlank { target.attachmentName }}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = ObsidianCharcoal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            IconButton(onClick = onClearReply, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Filled.Close, contentDescription = "Cancel reply", modifier = Modifier.size(15.dp))
-                            }
-                        }
-                    }
-                }
-
-                stagedAttachment?.let { att ->
-                    StagedAttachmentBanner(attachment = att, onRemove = onClearAttachment)
-                }
-
-                val canSend = composerText.isNotBlank() || stagedAttachment != null
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = PureWhite,
-                    border = BorderStroke(1.dp, SubtleOutline),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 58.dp)
-                            .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.weight(1f),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            if (composerText.isEmpty()) {
-                                Text(
-                                    text = "Write a message…",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = StudioTextSecondary
-                                )
-                            }
-                            BasicTextField(
-                                value = composerText,
-                                onValueChange = onComposerTextChange,
-                                textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
-                                cursorBrush = SolidColor(ObsidianCharcoal),
-                                maxLines = 4,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("chat_thread_input")
-                            )
-                        }
-
-                        Surface(
-                            onClick = onSend,
-                            enabled = canSend && !isProcessingFile,
-                            shape = CircleShape,
-                            color = if (canSend) ObsidianCharcoal else MutedSurface,
                             modifier = Modifier
-                                .size(38.dp)
-                                .testTag("chat_thread_send_button")
+                                .fillMaxWidth()
+                                .heightIn(min = 52.dp)
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Filled.ArrowUpward,
-                                    contentDescription = "Send",
-                                    tint = if (canSend) PureWhite else ObsidianCharcoal,
-                                    modifier = Modifier.size(18.dp)
+                            IconButton(
+                                onClick = {
+                                    emojiPickerTargetMessage = null
+                                    showEmojiStickerSheet = true
+                                },
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Icon(Icons.Default.EmojiEmotions, contentDescription = "Emoji, Stickers & GIFs", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+
+                            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                                if (composerText.isEmpty()) {
+                                    Text("Write a message…", style = MaterialTheme.typography.bodyMedium, color = StudioTextSecondary)
+                                }
+                                BasicTextField(
+                                    value = composerText,
+                                    onValueChange = { next ->
+                                        composerText = next
+                                        if (next.isNotBlank()) chatViewModel.notifyTyping(channel.id, member.uid, member.fullName)
+                                    },
+                                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = ObsidianCharcoal),
+                                    cursorBrush = SolidColor(ObsidianCharcoal),
+                                    maxLines = 4,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("chat_thread_input")
                                 )
+                            }
+
+                            IconButton(
+                                onClick = { showAttachmentMenu = true },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("chat_thread_attach_button")
+                            ) {
+                                Icon(Icons.Default.AddCircleOutline, contentDescription = "More attachments", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = onCamera, modifier = Modifier.size(36.dp)) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = "Camera", tint = ObsidianCharcoal, modifier = Modifier.size(19.dp))
+                            }
+
+                            if (!canSend && editingMsg == null) {
+                                IconButton(
+                                    onClick = {
+                                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                                            chatViewModel.startVoiceRecording(context, channel.id, member.uid, member.fullName)
+                                        } else {
+                                            audioPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    },
+                                    modifier = Modifier.size(38.dp)
+                                ) {
+                                    Icon(Icons.Default.Mic, contentDescription = "Record Voice", tint = VioletPrimary, modifier = Modifier.size(20.dp))
+                                }
+                            }
+
+                            Surface(
+                                onClick = {
+                                    if (canSend && !isProcessingFile && !isUploading) {
+                                        val mentionUids = mentionCandidates.map { it.uid }
+                                        chatViewModel.sendMessage(
+                                            channelId = channel.id,
+                                            body = composerText,
+                                            actor = member,
+                                            viewOnce = viewOnceMode,
+                                            mentions = mentionUids
+                                        ) {
+                                            AppHapticsAndNotifier.triggerCompletionVibration(context)
+                                            composerText = ""
+                                            viewOnceMode = false
+                                        }
+                                    }
+                                },
+                                enabled = canSend && !isProcessingFile && !isUploading,
+                                shape = CircleShape,
+                                color = if (canSend) ObsidianCharcoal else MutedSurface,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("chat_thread_send_button")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Filled.ArrowUpward,
+                                        contentDescription = "Send",
+                                        tint = if (canSend) PureWhite else ObsidianCharcoal,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
-                }
 
-                // Soft full-width pill quick-attach bar directly under input (matching bottom pill style of reference)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    QuickAttachPill(
-                        label = "Attach File",
-                        icon = Icons.Outlined.Description,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("quick_attach_file_button"),
-                        onClick = onPickFiles
-                    )
-                    QuickAttachPill(
-                        label = "Photo",
-                        icon = Icons.Outlined.Image,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("quick_attach_photo_button"),
-                        onClick = onPickImages
-                    )
-                    QuickAttachPill(
-                        label = "Audio",
-                        icon = Icons.Outlined.Mic,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("quick_attach_audio_button"),
-                        onClick = onPickAudio
-                    )
+                    // Quick Attach Bar (Preserves quick_attach_* testTags + adds Poll/ViewOnce toggles)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        QuickAttachPill(
+                            label = "Attach File",
+                            icon = Icons.Outlined.Description,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_attach_file_button"),
+                            onClick = onPickDocs
+                        )
+                        QuickAttachPill(
+                            label = "Photo",
+                            icon = Icons.Outlined.Image,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_attach_photo_button"),
+                            onClick = onPickSinglePhoto
+                        )
+                        QuickAttachPill(
+                            label = "Audio",
+                            icon = Icons.Outlined.Mic,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("quick_attach_audio_button"),
+                            onClick = onPickAudio
+                        )
+                    }
                 }
             }
         }
+    }
+
+    // Sub-sheets and Modals
+    if (showEmojiStickerSheet) {
+        EmojiStickerGifSheet(
+            onPickEmoji = { emoji ->
+                val target = emojiPickerTargetMessage
+                if (target != null) {
+                    chatViewModel.reactToMessage(channel.id, target.id, emoji, member.uid)
+                    emojiPickerTargetMessage = null
+                    showEmojiStickerSheet = false
+                } else {
+                    composerText += emoji
+                }
+            },
+            onPickSticker = { stk ->
+                showEmojiStickerSheet = false
+                chatViewModel.sendRichOptions(
+                    channel.id,
+                    stk.title,
+                    member,
+                    SendMessageOptions(kind = ChatMessageKind.STICKER, stickerId = stk.id)
+                )
+            },
+            onPickGif = { gif ->
+                showEmojiStickerSheet = false
+                chatViewModel.sendRichOptions(
+                    channel.id,
+                    gif.badgeText,
+                    member,
+                    SendMessageOptions(kind = ChatMessageKind.GIF, gifId = gif.id, gifTitle = gif.badgeText)
+                )
+            },
+            onDismiss = {
+                emojiPickerTargetMessage = null
+                showEmojiStickerSheet = false
+            }
+        )
+    }
+
+    if (showAttachmentMenu) {
+        AttachmentMenuBottomSheet(
+            hdMedia = hdMediaMode,
+            viewOnce = viewOnceMode,
+            onToggleHd = onToggleHdMedia,
+            onToggleViewOnce = { viewOnceMode = it },
+            onCamera = { showAttachmentMenu = false; onCamera() },
+            onGalleryPhoto = { showAttachmentMenu = false; onPickSinglePhoto() },
+            onMultiPhoto = { showAttachmentMenu = false; onPickMultiPhoto() },
+            onVideo = { showAttachmentMenu = false; onPickVideo() },
+            onDocument = { showAttachmentMenu = false; onPickDocs() },
+            onAudioFile = { showAttachmentMenu = false; onPickAudio() },
+            onContact = { showAttachmentMenu = false; contactPickerLauncher.launch(null) },
+            onCurrentLocation = { showAttachmentMenu = false; requestOrRunLocation(0) },
+            onLiveLocation = { mins -> showAttachmentMenu = false; requestOrRunLocation(mins) },
+            onCreatePoll = { showAttachmentMenu = false; showCreatePoll = true },
+            onCreateEvent = { showAttachmentMenu = false; showCreateEvent = true },
+            onBusinessRecord = { showAttachmentMenu = false; showBusinessPicker = true },
+            onDismiss = { showAttachmentMenu = false }
+        )
+    }
+
+    if (showCreatePoll) {
+        CreatePollDialog(
+            onSubmit = { q, opts ->
+                chatViewModel.sendPoll(channel.id, q, opts, member) { showCreatePoll = false }
+            },
+            onDismiss = { showCreatePoll = false }
+        )
+    }
+
+    if (showCreateEvent) {
+        CreateEventDialog(
+            onCreate = { title, loc, ms ->
+                showCreateEvent = false
+                chatViewModel.sendRichOptions(
+                    channel.id,
+                    title,
+                    member,
+                    SendMessageOptions(
+                        kind = ChatMessageKind.EVENT,
+                        eventTitle = title,
+                        eventLocation = loc,
+                        eventTimeMillis = ms
+                    )
+                )
+            },
+            onDismiss = { showCreateEvent = false }
+        )
+    }
+
+    if (showBusinessPicker) {
+        ShareBusinessRecordDialog(
+            state = state,
+            onShare = { kind, refId, title, sub, st, amt ->
+                chatViewModel.sendBusinessCard(channel.id, kind, refId, title, sub, st, amt, member) {
+                    showBusinessPicker = false
+                }
+            },
+            onDismiss = { showBusinessPicker = false }
+        )
+    }
+
+    if (showInfoSheet) {
+        EnhancedConversationInfoSheet(
+            channel = channel,
+            messages = messages,
+            allMembers = state.members,
+            myUid = member.uid,
+            isSuperAdmin = state.isSuperAdmin,
+            prefs = prefs,
+            onUpdateInfo = { title, desc, photoB64 -> chatViewModel.updateChannelInfo(channel.id, title, desc, photoB64) },
+            onUpdatePermissions = { msgAdm, editAdm, app -> chatViewModel.updateGroupPermissions(channel.id, msgAdm, editAdm, app) },
+            onUpdateDisappearing = { sec -> chatViewModel.updateDisappearingTimer(channel.id, sec) },
+            onMuteToggle = { chatViewModel.toggleChannelMute(channel.id, member.uid) },
+            onPinToggle = { chatViewModel.toggleChannelPin(channel.id, member.uid) },
+            onArchiveToggle = { chatViewModel.toggleChannelArchive(channel.id, member.uid) },
+            onFavouriteToggle = { chatViewModel.toggleChannelFavourite(channel.id, member.uid) },
+            onLockToggle = {
+                if (!prefs.hasSecretCode) showPinSetupDialog = true
+                else ChatSettingsStore.toggleChannelLocked(context, channel.id)
+            },
+            onResetInviteLink = { chatViewModel.resetInviteLink(channel.id) },
+            onApprovePending = { uid -> chatViewModel.approvePendingMember(channel.id, uid) },
+            onDeclinePending = { uid -> chatViewModel.declinePendingMember(channel.id, uid) },
+            onAddMember = { uid -> chatViewModel.addChannelMember(channel.id, uid) },
+            onRemoveMember = { uid -> chatViewModel.removeChannelMember(channel.id, uid) },
+            onToggleAdmin = { uid -> chatViewModel.toggleChannelAdmin(channel.id, uid) },
+            onClearChat = { chatViewModel.clearChatHistory(channel.id, member.uid); showInfoSheet = false },
+            onExitGroup = {
+                chatViewModel.exitGroup(channel.id, member.uid) {
+                    showInfoSheet = false
+                    onBackToHub()
+                }
+            },
+            onReportGroup = {
+                showInfoSheet = false
+                reportTargetPair = channel to null
+            },
+            onOpenAttachment = { msg -> showInfoSheet = false; onOpenMessageAttachment(msg) },
+            onDismiss = { showInfoSheet = false }
+        )
+    }
+
+    if (showStarredSheet) {
+        StarredMessagesSheet(
+            messages = messages,
+            myUid = member.uid,
+            onUnstar = { msg -> chatViewModel.toggleStar(channel.id, msg.id, member.uid) },
+            onDismiss = { showStarredSheet = false }
+        )
+    }
+
+    forwardTarget?.let { msg ->
+        ForwardMessageDialog(
+            channels = state.chatChannels,
+            myUid = member.uid,
+            onSelectChannel = { target ->
+                chatViewModel.forwardMessage(msg, target, member) { forwardTarget = null }
+            },
+            onDismiss = { forwardTarget = null }
+        )
+    }
+
+    messageInfoTarget?.let { msg ->
+        MessageInfoBottomSheet(
+            message = msg,
+            allMembers = state.members,
+            onDismiss = { messageInfoTarget = null }
+        )
+    }
+
+    reportTargetPair?.let { (ch, msg) ->
+        ReportContentDialog(
+            title = if (msg == null) "Report Group" else "Report Message",
+            onSubmit = { reason ->
+                chatViewModel.reportContent(ch, msg, reason, member)
+                reportTargetPair = null
+            },
+            onDismiss = { reportTargetPair = null }
+        )
+    }
+
+    if (showPinSetupDialog) {
+        PinUnlockDialog(
+            title = "Set Secret Code",
+            subtitle = "Set a PIN first to lock this chat.",
+            confirmSetupMode = true,
+            onVerified = {
+                ChatSettingsStore.toggleChannelLocked(context, channel.id)
+                showPinSetupDialog = false
+            },
+            onDismiss = { showPinSetupDialog = false }
+        )
     }
 
     if (showDeleteThreadConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteThreadConfirm = false },
             containerColor = PureWhite,
-            title = { Text("Delete chat thread?", fontWeight = FontWeight.Bold, color = ObsidianCharcoal) },
+            title = { Text("Delete chat thread?", fontWeight = FontWeight.Bold) },
             text = { Text("Permanently delete ${formatTitleCase(channel.title)} and every message in it?") },
             confirmButton = {
                 Button(
-                    onClick = {
-                        showDeleteThreadConfirm = false
-                        onDeleteChannel()
-                    },
+                    onClick = { showDeleteThreadConfirm = false; onDeleteChannel() },
                     colors = ButtonDefaults.buttonColors(containerColor = CrimsonBlocked, contentColor = PureWhite)
-                ) { Text("Delete Thread", fontWeight = FontWeight.Bold) }
+                ) { Text("Delete Thread") }
             },
-            dismissButton = {
-                TextButton(onClick = { showDeleteThreadConfirm = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showDeleteThreadConfirm = false }) { Text("Cancel") } }
         )
     }
 }
@@ -1802,466 +1652,19 @@ private fun QuickAttachPill(
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MutedSurface,
-        modifier = modifier.height(48.dp)
+        modifier = modifier.height(42.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
+            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = ObsidianCharcoal,
-                modifier = Modifier.size(17.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Medium,
-                color = ObsidianCharcoal,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun ThreadedMessageRow(
-    message: ChatMessage,
-    isMe: Boolean,
-    isSuperAdmin: Boolean,
-    senderPhotoBase64: String,
-    showSenderHeader: Boolean,
-    isThreadedFollowUp: Boolean,
-    isReplyBranch: Boolean,
-    onReply: () -> Unit,
-    onDelete: () -> Unit,
-    onOpenAttachment: () -> Unit,
-    onDownloadAttachment: () -> Unit
-) {
-    val timeLabel = remember(message.createdAt) {
-        val millis = message.createdAt?.toDate()?.time ?: System.currentTimeMillis()
-        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(millis))
-    }
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        if (showSenderHeader) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
-            ) {
-                StudioAvatar(
-                    name = message.senderName,
-                    size = 26.dp,
-                    borderColor = PureWhite,
-                    photoBase64 = senderPhotoBase64
-                )
-                Text(
-                    text = if (isMe) "${formatTitleCase(message.senderName)} (You)" else formatTitleCase(message.senderName),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = ObsidianCharcoal
-                )
-                if (message.senderRole.isNotBlank()) {
-                    Text(
-                        text = "• ${formatTitleCase(message.senderRole)}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                Text(
-                    text = timeLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = StudioTextSecondary
-                )
-            }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Top
-        ) {
-            if (isThreadedFollowUp) {
-                // Sleek thread connector matching the right screen of chat_page_ui_6bb989de.jpg
-                Canvas(
-                    modifier = Modifier
-                        .width(26.dp)
-                        .height(34.dp)
-                        .padding(start = 6.dp)
-                ) {
-                    val lineColor = Color(0xFFB5B9C4)
-                    val stroke = 1.25.dp.toPx()
-                    if (isReplyBranch) {
-                        val path = Path().apply {
-                            moveTo(size.width * 0.25f, 0f)
-                            lineTo(size.width * 0.25f, size.height * 0.56f)
-                            quadraticTo(
-                                size.width * 0.25f, size.height * 0.72f,
-                                size.width * 0.45f, size.height * 0.72f
-                            )
-                            lineTo(size.width * 0.90f, size.height * 0.72f)
-                        }
-                        drawPath(path = path, color = lineColor, style = Stroke(width = stroke, cap = StrokeCap.Round))
-                        // Subtle arrowhead
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(size.width * 0.74f, size.height * 0.58f),
-                            end = Offset(size.width * 0.90f, size.height * 0.72f),
-                            strokeWidth = stroke,
-                            cap = StrokeCap.Round
-                        )
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(size.width * 0.74f, size.height * 0.86f),
-                            end = Offset(size.width * 0.90f, size.height * 0.72f),
-                            strokeWidth = stroke,
-                            cap = StrokeCap.Round
-                        )
-                    } else {
-                        drawLine(
-                            color = lineColor,
-                            start = Offset(size.width * 0.55f, 0f),
-                            end = Offset(size.width * 0.55f, size.height * 0.75f),
-                            strokeWidth = stroke,
-                            cap = StrokeCap.Round
-                        )
-                    }
-                }
-            }
-
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = if (isMe) MutedSurface else PureWhite.copy(alpha = 0.92f),
-                border = if (isMe) null else BorderStroke(1.dp, SubtleOutline),
-                modifier = Modifier.weight(1f, fill = false)
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (message.parentPreview.isNotBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = PureWhite.copy(alpha = 0.75f),
-                            border = BorderStroke(1.dp, SubtleOutline)
-                        ) {
-                            Text(
-                                text = message.parentPreview,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = StudioTextSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    if (message.body.isNotBlank()) {
-                        Text(
-                            text = message.body,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = ObsidianCharcoal
-                        )
-                    }
-
-                    if (message.hasAttachment) {
-                        MessageAttachmentCard(
-                            message = message,
-                            onClick = onOpenAttachment,
-                            onDownload = onDownloadAttachment
-                        )
-                    }
-                }
-            }
-
-            IconButton(
-                onClick = onReply,
-                modifier = Modifier
-                    .size(40.dp)
-                    .padding(start = 2.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.Reply,
-                    contentDescription = "Reply to message",
-                    tint = StudioTextSecondary.copy(alpha = 0.72f),
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            if (isSuperAdmin) {
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("delete_message_${message.id}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.DeleteOutline,
-                        contentDescription = "Delete Message",
-                        tint = CrimsonBlocked,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MessageAttachmentCard(
-    message: ChatMessage,
-    onClick: () -> Unit,
-    onDownload: () -> Unit
-) {
-    val type = message.attachmentTypeEnum()
-    if (type == ChatAttachmentType.IMAGE) {
-        val decoded by produceState<Bitmap?>(initialValue = null, message.id, message.attachmentDataBase64, message.attachmentLocalPath) {
-            value = withContext(Dispatchers.IO) {
-                ChatFileManager.decodeMessageBitmap(message, maxEdgePx = 720)
-            }
-        }
-
-        Surface(
-            onClick = onClick,
-            shape = RoundedCornerShape(14.dp),
-            color = PureWhite,
-            border = BorderStroke(1.dp, SubtleOutline),
-            modifier = Modifier.widthIn(min = 190.dp, max = 264.dp)
-        ) {
-            Column {
-                val bmp = decoded
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = message.attachmentName.ifBlank { "Uploaded image" },
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(156.dp)
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(96.dp)
-                            .background(KpiSkyBg),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Filled.Image, contentDescription = null, tint = KpiSkyStroke, modifier = Modifier.size(30.dp))
-                    }
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = message.attachmentName.ifBlank { "Image attachment" },
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = ObsidianCharcoal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = ChatFileManager.formatFileSize(message.attachmentSizeBytes),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = StudioTextSecondary
-                        )
-                    }
-                    IconButton(
-                        onClick = onDownload,
-                        modifier = Modifier
-                            .size(36.dp)
-                            .testTag("download_attachment_${message.id}")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Download,
-                            contentDescription = "Download image",
-                            tint = VioletPrimary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-        }
-    } else {
-        val isAudio = type == ChatAttachmentType.AUDIO
-        val isPdf = message.attachmentName.lowercase().endsWith(".pdf") ||
-            message.attachmentMimeType.contains("pdf", ignoreCase = true)
-        val badgeBg = when {
-            isAudio -> KpiLavenderBg
-            isPdf -> SoftBlush
-            else -> InfoPillBg
-        }
-        val badgeTint = when {
-            isAudio -> VioletPrimary
-            isPdf -> CrimsonBlocked
-            else -> InfoPillInk
-        }
-        val badgeIcon = when {
-            isAudio -> Icons.Filled.AudioFile
-            isPdf -> Icons.Filled.PictureAsPdf
-            else -> Icons.Filled.Description
-        }
-
-        Surface(
-            onClick = onClick,
-            shape = RoundedCornerShape(14.dp),
-            color = PureWhite,
-            border = BorderStroke(1.dp, SubtleOutline),
-            modifier = Modifier.widthIn(min = 216.dp, max = 304.dp)
-        ) {
-            Row(
-                modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(badgeBg),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(badgeIcon, contentDescription = null, tint = badgeTint, modifier = Modifier.size(20.dp))
-                }
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(
-                        text = message.attachmentName.ifBlank { "Uploaded file" },
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = ObsidianCharcoal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${ChatFileManager.formatFileSize(message.attachmentSizeBytes)} • Tap to open",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = StudioTextSecondary
-                    )
-                }
-                IconButton(
-                    onClick = onDownload,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .testTag("download_attachment_${message.id}")
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Download,
-                        contentDescription = "Download file",
-                        tint = VioletPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                IconButton(
-                    onClick = onClick,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                        contentDescription = "Open file",
-                        tint = StudioTextSecondary,
-                        modifier = Modifier.size(15.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StagedAttachmentBanner(
-    attachment: StagedChatAttachment,
-    onRemove: () -> Unit
-) {
-    val thumb by produceState<Bitmap?>(initialValue = null, attachment.id, attachment.localCachePath) {
-        if (attachment.type == ChatAttachmentType.IMAGE) {
-            value = withContext(Dispatchers.IO) {
-                ChatFileManager.decodeMessageBitmap(
-                    ChatMessage(
-                        id = attachment.id,
-                        attachmentType = ChatAttachmentType.IMAGE.name,
-                        attachmentLocalPath = attachment.localCachePath,
-                        attachmentDataBase64 = attachment.base64Payload
-                    ),
-                    maxEdgePx = 180
-                )
-            }
-        }
-    }
-
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = PureWhite,
-        border = BorderStroke(1.dp, SubtleOutline),
-        shadowElevation = 2.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("staged_attachment_banner")
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            val (bg, tint, icon) = when (attachment.type) {
-                ChatAttachmentType.IMAGE -> Triple(KpiSkyBg, KpiSkyStroke, Icons.Filled.Image)
-                ChatAttachmentType.AUDIO -> Triple(KpiLavenderBg, VioletPrimary, Icons.Filled.AudioFile)
-                else -> Triple(SoftBlush, CrimsonBlocked, Icons.Filled.Description)
-            }
-            val bmp = thumb
-            if (bmp != null) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = attachment.fileName,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(bg),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
-                }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = attachment.fileName,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = ObsidianCharcoal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "${attachment.type.label} • ${ChatFileManager.formatFileSize(attachment.sizeBytes)} ready to send",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = StudioTextSecondary
-                )
-            }
-            IconButton(onClick = onRemove, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Filled.Close, contentDescription = "Remove attachment", modifier = Modifier.size(16.dp))
-            }
+            Icon(icon, contentDescription = label, tint = ObsidianCharcoal, modifier = Modifier.size(16.dp))
+            Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = ObsidianCharcoal, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -2297,7 +1700,7 @@ private fun ChannelPickerBottomSheet(
             ) {
                 Column {
                     Text("Workspace Channels", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.ExtraBold)
-                    Text("General, project, department & 1:1 DM chats", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                    Text("General, groups, projects, departments & DMs", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                 }
                 FilledTonalButton(
                     onClick = onNewChannel,
@@ -2315,6 +1718,7 @@ private fun ChannelPickerBottomSheet(
                 val symbol = when (ch.channelTypeEnum()) {
                     ChatChannelType.DIRECT -> "@"
                     ChatChannelType.DEPARTMENT -> "D"
+                    ChatChannelType.SAVED -> "★"
                     else -> "#"
                 }
                 Surface(
@@ -2336,34 +1740,14 @@ private fun ChannelPickerBottomSheet(
                                 .background(if (selected) ObsidianCharcoal else PureWhite),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = symbol,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (selected) PureWhite else ObsidianCharcoal
-                            )
+                            Text(symbol, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = if (selected) PureWhite else ObsidianCharcoal)
                         }
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = formatTitleCase(ch.title),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = ObsidianCharcoal
-                            )
-                            Text(
-                                text = ch.lastMessagePreview.ifBlank { ch.topic },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = StudioTextSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Text(formatTitleCase(ch.title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text(ch.lastMessagePreview.ifBlank { ch.topic }, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         if (ch.messageCount > 0) {
-                            StatusPill(
-                                label = "${ch.messageCount}",
-                                containerColor = PureWhite,
-                                contentColor = ObsidianCharcoal
-                            )
+                            StatusPill(label = "${ch.messageCount}", containerColor = PureWhite, contentColor = ObsidianCharcoal)
                         }
                         if (isSuperAdmin && ch.id != ChatRepository.GENERAL_CHANNEL_ID) {
                             IconButton(
@@ -2378,7 +1762,6 @@ private fun ChannelPickerBottomSheet(
                     }
                 }
             }
-
             Spacer(Modifier.height(10.dp))
         }
     }
@@ -2403,17 +1786,8 @@ private fun CreateChatChannelDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (!errorMessage.isNullOrBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = SoftBlush,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = errorMessage.orEmpty(),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = DeepBlushInk,
-                            modifier = Modifier.padding(10.dp)
-                        )
+                    Surface(shape = RoundedCornerShape(12.dp), color = SoftBlush, modifier = Modifier.fillMaxWidth()) {
+                        Text(errorMessage.orEmpty(), style = MaterialTheme.typography.bodySmall, color = DeepBlushInk, modifier = Modifier.padding(10.dp))
                     }
                 }
                 OutlinedTextField(
@@ -2449,9 +1823,7 @@ private fun CreateChatChannelDialog(
                                 onClick = {
                                     if (!isSubmitting) {
                                         selectedProject = if (isSel) null else proj
-                                        if (!isSel && title.isBlank()) {
-                                            title = proj.title
-                                        }
+                                        if (!isSel && title.isBlank()) title = proj.title
                                         errorMessage = null
                                     }
                                 },
@@ -2475,10 +1847,7 @@ private fun CreateChatChannelDialog(
                         type,
                         proj,
                         { isSubmitting = false },
-                        { err ->
-                            isSubmitting = false
-                            errorMessage = err
-                        }
+                        { err -> isSubmitting = false; errorMessage = err }
                     )
                 },
                 enabled = !isSubmitting && (title.isNotBlank() || selectedProject != null),
