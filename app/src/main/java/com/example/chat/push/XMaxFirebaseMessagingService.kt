@@ -42,6 +42,12 @@ object PushTokenRegistry {
         registerToken(context, companyId, uid, token)
     }
 
+    private fun getFirestore(context: Context): FirebaseFirestore {
+        val dbId = runCatching { context.getString(R.string.firestore_database_id) }.getOrNull()?.trim()
+            ?.takeIf { it.isNotBlank() } ?: AgencyRepository.TARGET_FIRESTORE_DATABASE_ID
+        return FirebaseFirestore.getInstance(dbId)
+    }
+
     suspend fun registerToken(
         context: Context,
         companyId: String,
@@ -55,7 +61,7 @@ object PushTokenRegistry {
                 ?.take(48)
                 .orEmpty()
                 .ifBlank { "tok_" + abs(token.hashCode()) }
-            val db = FirebaseFirestore.getInstance(context.getString(R.string.firestore_database_id))
+            val db = getFirestore(context)
             db.collection("companies").document(companyId)
                 .collection("deviceTokens").document(uid)
                 .collection("tokens").document(deviceId)
@@ -80,7 +86,7 @@ object PushTokenRegistry {
                 ?.take(48)
                 .orEmpty()
             if (deviceId.isNotBlank()) {
-                val db = FirebaseFirestore.getInstance(context.getString(R.string.firestore_database_id))
+                val db = getFirestore(context)
                 db.collection("companies").document(companyId)
                     .collection("deviceTokens").document(uid)
                     .collection("tokens").document(deviceId)

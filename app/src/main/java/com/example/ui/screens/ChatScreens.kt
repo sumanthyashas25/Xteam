@@ -31,6 +31,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Download
@@ -75,6 +77,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -678,10 +681,10 @@ private fun Modifier.animatedChatGlowBackdrop(isThread: Boolean): Modifier {
             y = size.height * (0.78f - 0.20f * cos(secondaryOrbit))
         )
 
-        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.33f) else Color(0xFF10B981).copy(alpha = 0.37f)
-        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.35f) else Color(0xFF8B5CF6).copy(alpha = 0.33f)
-        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.31f) else Color(0xFFFB923C).copy(alpha = 0.35f)
-        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.31f) else Color(0xFF38BDF8).copy(alpha = 0.29f)
+        val primaryColor = if (isThread) Color(0xFFFB7185).copy(alpha = 0.16f) else Color(0xFF10B981).copy(alpha = 0.18f)
+        val secondColor = if (isThread) Color(0xFF8B5CF6).copy(alpha = 0.17f) else Color(0xFF8B5CF6).copy(alpha = 0.16f)
+        val thirdColor = if (isThread) Color(0xFF38BDF8).copy(alpha = 0.15f) else Color(0xFFFB923C).copy(alpha = 0.17f)
+        val fourthColor = if (isThread) Color(0xFFFDBA74).copy(alpha = 0.15f) else Color(0xFF38BDF8).copy(alpha = 0.14f)
 
         drawCircle(
             brush = Brush.radialGradient(
@@ -798,7 +801,7 @@ private fun ChatHubView(
                         )
                     }
                     Text(
-                        text = "X.MAX Chats",
+                        text = "New Chat",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.ExtraBold,
                         color = ObsidianCharcoal
@@ -831,6 +834,65 @@ private fun ChatHubView(
                             imageVector = Icons.Filled.Close,
                             contentDescription = "Close Chat",
                             tint = ObsidianCharcoal
+                        )
+                    }
+                }
+            }
+
+            // Horizontal Active Stories / Contacts Row
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                contentPadding = PaddingValues(vertical = 4.dp)
+            ) {
+                item {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clickable { onCreateNewChannelClick() }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(54.dp)
+                                .border(2.dp, VioletPrimary, CircleShape)
+                                .clip(CircleShape)
+                                .background(MutedSurface),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Filled.Add, contentDescription = "Add Story", tint = ObsidianCharcoal, modifier = Modifier.size(24.dp))
+                        }
+                        Text("My Story", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, color = ObsidianCharcoal)
+                    }
+                }
+                items(colleagues.size) { index ->
+                    val person = colleagues[index]
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.clickable { onOpenDirectChat(person) }
+                    ) {
+                        Box {
+                            StudioAvatar(
+                                name = person.fullName,
+                                size = 54.dp,
+                                borderColor = VioletPrimary,
+                                photoBase64 = person.photoBase64
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(13.dp)
+                                    .background(EmeraldApproved, CircleShape)
+                                    .border(2.dp, PureWhite, CircleShape)
+                                    .align(Alignment.BottomEnd)
+                            )
+                        }
+                        Text(
+                            text = person.fullName.substringBefore(" "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = ObsidianCharcoal,
+                            maxLines = 1
                         )
                     }
                 }
@@ -942,6 +1004,26 @@ private fun ChatHubView(
                 }
             }
 
+            // 2. Team Channels & Department Chats (Sorted: Pinned first, then by lastMessageAtMillis)
+            val sortedChannels = remember(channels, member.uid) {
+                channels.sortedWith(
+                    compareByDescending<ChatChannel> { it.isPinnedFor(member.uid) }
+                        .thenByDescending { it.lastMessageAtMillis }
+                )
+            }
+            val teamChannels = sortedChannels.filter { ch ->
+                val name = ch.title
+                val matchesSearch = searchQuery.isBlank() || name.contains(searchQuery, ignoreCase = true) || ch.lastMessagePreview.contains(searchQuery, ignoreCase = true)
+                val isGroup = ch.channelTypeEnum() == ChatChannelType.DEPARTMENT || ch.channelTypeEnum() == ChatChannelType.GENERAL || ch.channelTypeEnum() == ChatChannelType.PROJECT
+                val matchesFilter = when (selectedFilter) {
+                    "Unread" -> ch.messageCount > 0L
+                    "Groups" -> isGroup
+                    "Favourites" -> ch.isFavouriteFor(member.uid)
+                    else -> true
+                }
+                matchesSearch && matchesFilter
+            }
+
             // Unified Conversation List (LazyColumn)
             LazyColumn(
                 modifier = Modifier
@@ -977,7 +1059,7 @@ private fun ChatHubView(
                         border = BorderStroke(1.dp, SubtleOutline),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("dm_item_${person.uid}")
+                            .testTag("dm_person_${person.uid}")
                     ) {
                         Row(
                             modifier = Modifier.padding(12.dp),
@@ -1047,24 +1129,53 @@ private fun ChatHubView(
                     }
                 }
 
-                // 2. Team Channels & Department Chats (Sorted: Pinned first, then by lastMessageAtMillis)
-                val sortedChannels = remember(channels, member.uid) {
-                    channels.sortedWith(
-                        compareByDescending<ChatChannel> { it.isPinnedFor(member.uid) }
-                            .thenByDescending { it.lastMessageAtMillis }
-                    )
-                }
-                val teamChannels = sortedChannels.filter { ch ->
-                    val name = ch.title
-                    val matchesSearch = searchQuery.isBlank() || name.contains(searchQuery, ignoreCase = true) || ch.lastMessagePreview.contains(searchQuery, ignoreCase = true)
-                    val isGroup = ch.channelTypeEnum() == ChatChannelType.DEPARTMENT || ch.channelTypeEnum() == ChatChannelType.GENERAL || ch.channelTypeEnum() == ChatChannelType.PROJECT
-                    val matchesFilter = when (selectedFilter) {
-                        "Unread" -> ch.messageCount > 0L
-                        "Groups" -> isGroup
-                        "Favourites" -> ch.isFavouriteFor(member.uid)
-                        else -> true
+                if (selectedFilter == "All" || selectedFilter == "Groups") {
+                    val filteredDepts = departments.filter { dept ->
+                        searchQuery.isBlank() || dept.name.contains(searchQuery, ignoreCase = true)
                     }
-                    matchesSearch && matchesFilter
+                    items(filteredDepts.size) { index ->
+                        val dept = filteredDepts[index]
+                        Surface(
+                            onClick = { onOpenDepartmentChat(dept) },
+                            shape = RoundedCornerShape(16.dp),
+                            color = PureWhite.copy(alpha = 0.95f),
+                            border = BorderStroke(1.dp, SubtleOutline),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("dept_chat_${dept.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = VioletSoftBg,
+                                    modifier = Modifier.size(50.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Filled.Apartment, contentDescription = null, tint = VioletPrimary)
+                                    }
+                                }
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Text(
+                                        text = "${dept.name} Team",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal
+                                    )
+                                    Text(
+                                        text = "Department chat & files",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StudioTextSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 items(teamChannels.size) { index ->

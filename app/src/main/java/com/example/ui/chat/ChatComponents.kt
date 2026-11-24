@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -294,7 +295,7 @@ fun BusinessReferenceCard(
 
             if (message.businessRefAmountPaise > 0L) {
                 Text(
-                    text = MoneyFormatter.formatPaise(message.businessRefAmountPaise),
+                    text = MoneyFormatter.formatInr(message.businessRefAmountPaise),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     color = ObsidianCharcoal
@@ -960,23 +961,23 @@ fun ShareBusinessRecordDialog(
                 ) {
                     when (selectedCategory) {
                         "INVOICE" -> {
-                            val activeQuotes = state.quotations.filter { it.statusEnum() == QuotationStatus.ACCEPTED }
+                            val activeQuotes = state.quotations.filter { it.statusEnum() == QuotationStatus.CLIENT_APPROVED }
                             if (activeQuotes.isEmpty()) {
                                 Text("No approved invoices to share.", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                             }
                             activeQuotes.forEach { q ->
                                 Surface(
                                     onClick = {
-                                        onShare("INVOICE", q.id, "Invoice #${q.referenceCode}", "Client: ${q.clientCompanyName}", "DUE", q.totalAmountPaise)
+                                        onShare("INVOICE", q.id, "Invoice #${q.quoteNumber}", "Client: ${q.clientSnapshot.companyName}", "DUE", q.totalPaise)
                                     },
                                     shape = RoundedCornerShape(12.dp),
                                     color = MutedSurface,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text("Invoice #${q.referenceCode}", fontWeight = FontWeight.Bold)
-                                        Text(q.clientCompanyName, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
-                                        Text(MoneyFormatter.formatPaise(q.totalAmountPaise), fontWeight = FontWeight.ExtraBold, color = EmeraldApproved)
+                                        Text("Invoice #${q.quoteNumber}", fontWeight = FontWeight.Bold)
+                                        Text(q.clientSnapshot.companyName, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                                        Text(MoneyFormatter.formatInr(q.totalPaise), fontWeight = FontWeight.ExtraBold, color = EmeraldApproved)
                                     }
                                 }
                             }
@@ -985,24 +986,25 @@ fun ShareBusinessRecordDialog(
                             state.quotations.take(15).forEach { q ->
                                 Surface(
                                     onClick = {
-                                        onShare("QUOTATION", q.id, "Quotation: ${q.clientCompanyName}", q.referenceCode, q.status, q.totalAmountPaise)
+                                        onShare("QUOTATION", q.id, "Quotation: ${q.clientSnapshot.companyName}", q.quoteNumber, q.status, q.totalPaise)
                                     },
                                     shape = RoundedCornerShape(12.dp),
                                     color = MutedSurface,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text(q.clientCompanyName, fontWeight = FontWeight.Bold)
-                                        Text("Ref: ${q.referenceCode} • ${q.status}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                                        Text(q.clientSnapshot.companyName, fontWeight = FontWeight.Bold)
+                                        Text("Ref: ${q.quoteNumber} • ${q.status}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                                     }
                                 }
                             }
                         }
                         "TASK" -> {
                             state.deliverables.take(15).forEach { d ->
+                                val daysLeft = ((d.dueDateMillis - System.currentTimeMillis()) / 86400000L).toInt().coerceAtLeast(0)
                                 Surface(
                                     onClick = {
-                                        onShare("TASK", d.id, d.title, "Due in ${d.daysToComplete}d", d.status, 0L)
+                                        onShare("TASK", d.id, d.title, "Due in ${daysLeft}d", d.status, 0L)
                                     },
                                     shape = RoundedCornerShape(12.dp),
                                     color = MutedSurface,
@@ -1036,15 +1038,15 @@ fun ShareBusinessRecordDialog(
                             state.payments.take(15).forEach { pay ->
                                 Surface(
                                     onClick = {
-                                        onShare("PAYMENT", pay.id, "Payment: ${MoneyFormatter.formatPaise(pay.amountPaise)}", pay.method, "RECEIVED", pay.amountPaise)
+                                        onShare("PAYMENT", pay.id, "Payment: ${MoneyFormatter.formatInr(pay.amountPaise)}", pay.method, "RECEIVED", pay.amountPaise)
                                     },
                                     shape = RoundedCornerShape(12.dp),
                                     color = MutedSurface,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp)) {
-                                        Text(MoneyFormatter.formatPaise(pay.amountPaise), fontWeight = FontWeight.ExtraBold, color = EmeraldApproved)
-                                        Text("${pay.method} • ${pay.referenceId}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
+                                        Text(MoneyFormatter.formatInr(pay.amountPaise), fontWeight = FontWeight.ExtraBold, color = EmeraldApproved)
+                                        Text("${pay.method} • ${pay.reference}", style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                                     }
                                 }
                             }

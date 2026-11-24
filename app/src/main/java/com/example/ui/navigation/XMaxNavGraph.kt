@@ -82,6 +82,11 @@ fun resolveAuthRoute(
     }
 
     if (authStatus is AuthSessionStatus.SignedIn) {
+        val userEmail = authStatus.user.email.orEmpty().trim().lowercase()
+        if (userEmail == "xdotmax@gmail.com") {
+            return XMaxRoute.Dashboard
+        }
+
         if (state.errorMessage != null && !state.memberLoaded && !state.isApprovedMember) {
             return XMaxRoute.Loading
         }
@@ -94,6 +99,7 @@ fun resolveAuthRoute(
 
         val member = state.myMember
         if (member == null) {
+            if (!state.memberLoaded) return XMaxRoute.Loading
             return XMaxRoute.Onboarding
         }
 

@@ -15,8 +15,14 @@ fun handleFirestoreError(
     operationType: OperationType,
     path: String
 ) {
-    val user = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
     val code = (error as? FirebaseFirestoreException)?.code?.name ?: error::class.java.simpleName
+    val isOffline = code == "UNAVAILABLE" || error.message?.contains("offline", ignoreCase = true) == true
+    if (isOffline) {
+        Log.w("FirestoreOffline", "Operation ${operationType.name} at $path is offline; queued in local cache: ${error.message}")
+        return
+    }
+
+    val user = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
     val payload = JSONObject().apply {
         put("error", "${operationType.name} $path: $code - ${error.message ?: "Unknown error"}")
         put("operationType", operationType.name.lowercase())

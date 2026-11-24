@@ -32,15 +32,17 @@ class AgencyRepository(context: Context) {
     val db: FirebaseFirestore = getOrConfigureFirestore(context)
 
     companion object {
+        const val TARGET_FIRESTORE_DATABASE_ID = "ai-studio-android-xteam-2d3c79c2-5261-467c-ba48-b366a64e6a80"
+
         @Volatile
         private var settingsConfigured = false
 
         private fun getOrConfigureFirestore(context: Context): FirebaseFirestore {
             val appCtx = context.applicationContext
             FirebaseStartup.ensureInitialized(appCtx)
-            val instance = FirebaseFirestore.getInstance(
-                appCtx.getString(R.string.firestore_database_id)
-            )
+            val dbId = runCatching { appCtx.getString(R.string.firestore_database_id) }.getOrNull()?.trim()
+                ?.takeIf { it.isNotBlank() } ?: TARGET_FIRESTORE_DATABASE_ID
+            val instance = FirebaseFirestore.getInstance(dbId)
             if (!settingsConfigured) {
                 synchronized(this) {
                     if (!settingsConfigured) {

@@ -77,9 +77,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private var messagesJob: Job? = null
     private var activityJob: Job? = null
+    private var currentMyUid: String = ""
     private var recordingTimerJob: Job? = null
 
     fun selectChannel(channel: ChatChannel, myUid: String) {
+        currentMyUid = myUid
         _activeChannel.value = channel
         _replyTarget.value = null
         _editingMessage.value = null
@@ -90,7 +92,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         // Observe Realtime Activity (typing & recording)
         activityJob?.cancel()
         activityJob = viewModelScope.launch {
-            rtdb.observeChatActivity(coreRepo.companyId, channel.id)
+            rtdb.observeChatActivity(coreRepo.companyId, channel.id, myUid)
                 .catch { emit(EphemeralChatActivity()) }
                 .collectLatest { act ->
                     _ephemeralActivity.value = act
@@ -132,13 +134,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun notifyTyping(channelId: String, senderName: String) {
-        rtdb.sendTypingIndicator(coreRepo.companyId, channelId, senderName)
+        rtdb.setTyping(coreRepo.companyId, channelId, currentMyUid, senderName, true)
     }
 
     fun startRecording(channelId: String, senderName: String) {
         _isRecordingAudio.value = true
         _recordingDurationSec.value = 0
-        rtdb.sendVoiceRecordingIndicator(coreRepo.companyId, channelId, senderName, recording = true)
+        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, true)
         recordingTimerJob?.cancel()
         recordingTimerJob = viewModelScope.launch {
             while (_isRecordingAudio.value) {
@@ -152,14 +154,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         _isRecordingAudio.value = false
         _recordingDurationSec.value = 0
         recordingTimerJob?.cancel()
-        rtdb.sendVoiceRecordingIndicator(coreRepo.companyId, channelId, senderName, recording = false)
+        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, false)
     }
 
     fun stopAndSendRecording(channelId: String, senderName: String, actor: Member) {
         val durationSec = _recordingDurationSec.value
         _isRecordingAudio.value = false
         recordingTimerJob?.cancel()
-        rtdb.sendVoiceRecordingIndicator(coreRepo.companyId, channelId, senderName, recording = false)
+        rtdb.setRecording(coreRepo.companyId, channelId, currentMyUid, senderName, false)
 
         if (durationSec <= 0) return
 
