@@ -7,6 +7,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMetadataRetriever
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -21,6 +26,8 @@ import com.example.chat.remote.WorkerResult
 import com.example.domain.CatalogueSeedData
 import com.example.model.ChatAttachmentType
 import com.example.model.ChatMessage
+import com.example.model.ChatStatus
+import java.nio.ByteBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -797,5 +804,282 @@ object ChatFileManager {
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .take(120)
             .ifBlank { "upload_${System.currentTimeMillis()}" }
+    }
+
+    data class PreparedStatusImage(
+        val file: File,
+        val thumbnailBase64: String,
+        val sha256: String,
+        val byteSize: Long
+    )
+
+    data class VideoInspectResult(
+        val file: File,
+        val durationMs: Long,
+        val width: Int,
+        val height: Int,
+        val mimeType: String,
+        val frames: List<Bitmap>
+    )
+
+    suspend fun loadStatusBitmapForEdit(context: Context, uri: Uri): Result<Bitmap> =
+        loadProfilePhotoPreview(context, uri).map { it.bitmap }
+
+    suspend fun cropAndPrepareStatusImage(
+        context: Context,
+        bitmap: Bitmap,
+        zoom: Float = 1f,
+        offsetXFrac: Float = 0f,
+        offsetYFrac: Float = 0f,
+        targetAspect: Float = 0f // <=0 keeps original aspect
+    ): Result<PreparedStatusImage> = withContext(Dispatchers.IO) {
+        runCatching {
+            val srcW = bitmap.width.coerceAtLeast(1)
+            val srcH = bitmap.height.coerceAtLeast(1)
+            val desiredAspect = if (targetAspect > 0f) targetAspect else (srcW.toFloat() / srcH.toFloat())
+            val baseCropW: Float
+            val baseCropH: Float
+            if (srcW.toFloat() / srcH.toFloat() > desiredAspect) {
+                baseCropH = srcH.toFloat()
+                baseCropW = baseCropH * desiredAspect
+            } else {
+                baseCropW = srcW.toFloat()
+                baseCropH = baseCropW / desiredAspect
+            }
+            val safeZoom = zoom.coerceIn(1f, 3f)
+            val cropW = (baseCropW / safeZoom).roundToInt().coerceIn(64, srcW)
+            val cropH = (baseCropH / safeZoom).roundToInt().coerceIn(64, srcH)
+            val maxShiftX = ((srcW - cropW) / 2f).coerceAtLeast(0f)
+            val maxShiftY = ((srcH - cropH) / 2f).coerceAtLeast(0f)
+            val centerX = srcW / 2f - offsetXFrac.coerceIn(-1f, 1f) * maxShiftX
+            val centerY = srcH / 2f - offsetYFrac.coerceIn(-1f, 1f) * maxShiftY
+            val cropX = (centerX - cropW / 2f).roundToInt().coerceIn(0, (srcW - cropW).coerceAtLeast(0))
+            val cropY = (centerY - cropH / 2f).roundToInt().coerceIn(0, (srcH - cropH).coerceAtLeast(0))
+
+            val cropped = Bitmap.createBitmap(bitmap, cropX, cropY, cropW, cropH)
+            val maxSide = max(cropped.width, cropped.height)
+            val outputBmp = if (maxSide > 1440) {
+                val ratio = 1440f / maxSide.toFloat()
+                Bitmap.createScaledBitmap(
+                    cropped,
+                    (cropped.width * ratio).roundToInt().coerceAtLeast(1),
+                    (cropped.height * ratio).roundToInt().coerceAtLeast(1),
+                    true
+                )
+            } else cropped
+
+            val uploadsDir = File(context.filesDir, "status_uploads").apply { mkdirs() }
+            val outFile = File(uploadsDir, "st_img_${UUID.randomUUID().toString().take(8)}.jpg")
+            val fullStream = ByteArrayOutputStream()
+            outputBmp.compress(Bitmap.CompressFormat.JPEG, 88, fullStream)
+            val fullBytes = fullStream.toByteArray()
+            outFile.writeBytes(fullBytes)
+
+            // Compact thumbnail <= 260KB base64 so Firestore doc stays small & instant to preview
+            val thumbMax = 560
+            val thumbBmp = if (max(outputBmp.width, outputBmp.height) > thumbMax) {
+                val r = thumbMax.toFloat() / max(outputBmp.width, outputBmp.height).toFloat()
+                Bitmap.createScaledBitmap(
+                    outputBmp,
+                    (outputBmp.width * r).roundToInt().coerceAtLeast(1),
+                    (outputBmp.height * r).roundToInt().coerceAtLeast(1),
+                    true
+                )
+            } else outputBmp
+
+            var thumbQ = 76
+            var thumbBytes: ByteArray
+            do {
+                val tb = ByteArrayOutputStream()
+                thumbBmp.compress(Bitmap.CompressFormat.JPEG, thumbQ, tb)
+                thumbBytes = tb.toByteArray()
+                thumbQ -= 10
+            } while (thumbBytes.size > 240_000 && thumbQ >= 40)
+
+            val thumbB64 = Base64.encodeToString(thumbBytes, Base64.NO_WRAP)
+            if (thumbBmp !== outputBmp) thumbBmp.recycle()
+            if (outputBmp !== cropped) outputBmp.recycle()
+            if (cropped !== bitmap) cropped.recycle()
+
+            PreparedStatusImage(
+                file = outFile,
+                thumbnailBase64 = thumbB64,
+                sha256 = sha256Hex(fullBytes),
+                byteSize = outFile.length()
+            )
+        }
+    }
+
+    suspend fun inspectStatusVideo(context: Context, uri: Uri): Result<VideoInspectResult> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val uploadsDir = File(context.filesDir, "status_uploads").apply { mkdirs() }
+                val destFile = File(uploadsDir, "st_vid_src_${UUID.randomUUID().toString().take(8)}.mp4")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    destFile.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("Unable to open selected video.")
+                if (!destFile.exists() || destFile.length() == 0L) error("Selected video is empty.")
+
+                val retriever = MediaMetadataRetriever()
+                var durationMs = 0L
+                var width = 0
+                var height = 0
+                val frames = mutableListOf<Bitmap>()
+                try {
+                    retriever.setDataSource(destFile.absolutePath)
+                    durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 5000L
+                    width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 720
+                    height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1280
+                    val count = 6
+                    for (i in 0 until count) {
+                        val timeUs = ((durationMs.coerceAtLeast(1000L) * i) / count) * 1000L
+                        val rawFrame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            retriever.getScaledFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 160, 160)
+                        } else {
+                            retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        }
+                        if (rawFrame != null) frames += rawFrame
+                    }
+                } finally {
+                    runCatching { retriever.release() }
+                }
+
+                VideoInspectResult(
+                    file = destFile,
+                    durationMs = durationMs.coerceAtLeast(1000L),
+                    width = width,
+                    height = height,
+                    mimeType = context.contentResolver.getType(uri)?.takeIf { it.startsWith("video/") } ?: "video/mp4",
+                    frames = frames
+                )
+            }
+        }
+
+    suspend fun trimStatusVideo(
+        context: Context,
+        sourceFile: File,
+        startMs: Long,
+        endMs: Long
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val uploadsDir = File(context.filesDir, "status_uploads").apply { mkdirs() }
+            val trimmedFile = File(uploadsDir, "st_vid_trim_${UUID.randomUUID().toString().take(8)}.mp4")
+            val extractor = MediaExtractor()
+            var muxer: MediaMuxer? = null
+            val muxAttempt = runCatching {
+                extractor.setDataSource(sourceFile.absolutePath)
+                muxer = MediaMuxer(trimmedFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                val indexMap = HashMap<Int, Int>()
+                var maxBufferSize = 256 * 1024
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+                    if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                        extractor.selectTrack(i)
+                        val dstIdx = muxer!!.addTrack(format)
+                        indexMap[i] = dstIdx
+                        if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                            val sz = format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+                            if (sz > maxBufferSize) maxBufferSize = sz
+                        }
+                    }
+                }
+                if (indexMap.isEmpty()) error("No audio/video tracks found.")
+                val retriever = MediaMetadataRetriever()
+                runCatching {
+                    retriever.setDataSource(sourceFile.absolutePath)
+                    val rot = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull()
+                    if (rot != null) muxer!!.setOrientationHint(rot)
+                }.also { runCatching { retriever.release() } }
+
+                muxer!!.start()
+                val startUs = startMs.coerceAtLeast(0L) * 1000L
+                val endUs = endMs.coerceAtLeast(startMs + 500L) * 1000L
+                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                val buffer = ByteBuffer.allocate(maxBufferSize)
+                val bufferInfo = MediaCodec.BufferInfo()
+                while (true) {
+                    val trackIndex = extractor.sampleTrackIndex
+                    if (trackIndex < 0) break
+                    val sampleTime = extractor.sampleTime
+                    if (sampleTime > endUs) break
+                    val sampleSize = extractor.readSampleData(buffer, 0)
+                    if (sampleSize < 0) break
+                    bufferInfo.offset = 0
+                    bufferInfo.size = sampleSize
+                    bufferInfo.presentationTimeUs = (sampleTime - startUs).coerceAtLeast(0L)
+                    bufferInfo.flags = extractor.sampleFlags
+                    indexMap[trackIndex]?.let { dst ->
+                        muxer!!.writeSampleData(dst, buffer, bufferInfo)
+                    }
+                    extractor.advance()
+                }
+                muxer!!.stop()
+                trimmedFile
+            }
+            runCatching { muxer?.release() }
+            runCatching { extractor.release() }
+
+            val candidate = muxAttempt.getOrNull()?.takeIf { it.exists() && it.length() > 1024L }
+            val resultFile = candidate ?: sourceFile
+            if (resultFile.length() > 15L * 1024L * 1024L) {
+                error("Trimmed video exceeds 15 MB Cloudflare upload limit. Select a shorter clip.")
+            }
+            resultFile
+        }
+    }
+
+    suspend fun loadOrDownloadStatusMediaFile(
+        context: Context,
+        status: ChatStatus,
+        companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID
+    ): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cacheDir = File(context.filesDir, "status_cache").apply { mkdirs() }
+            val ext = when {
+                status.mediaMimeType.contains("mp4") || status.kindEnum().name == "VIDEO" -> "mp4"
+                status.mediaMimeType.contains("audio") || status.kindEnum().name == "VOICE" -> "m4a"
+                else -> "jpg"
+            }
+            val dest = File(cacheDir, "${status.id}.$ext")
+            if (dest.exists() && dest.length() > 0L) return@runCatching dest
+
+            val storagePath = status.effectiveStoragePath()
+            if (storagePath.isBlank()) {
+                if (status.imageDataBase64.isNotBlank()) {
+                    dest.writeBytes(Base64.decode(status.imageDataBase64, Base64.DEFAULT))
+                    return@runCatching dest
+                }
+                error("Status media is unavailable.")
+            }
+
+            when (val res = WorkerBridgeClient.downloadStatusMediaFromCloudflare(
+                companyId = companyId,
+                storagePath = storagePath,
+                destination = dest,
+                statusId = status.id,
+                progressKey = "status_dl_${status.id}"
+            )) {
+                is WorkerResult.Success -> res.data
+                is WorkerResult.RateLimited -> error("Download throttled; retry in ${res.retryAfterSeconds}s.")
+                is WorkerResult.Error -> error(res.message)
+                WorkerResult.NotConfigured -> error("Cloudflare worker not configured.")
+            }
+        }
+    }
+
+    suspend fun loadOrDownloadStatusBitmap(
+        context: Context,
+        status: ChatStatus,
+        companyId: String = CatalogueSeedData.DEFAULT_COMPANY_ID
+    ): Bitmap? = withContext(Dispatchers.IO) {
+        if (status.effectiveStoragePath().isNotBlank() && WorkerBridgeClient.isConfigured()) {
+            val dl = loadOrDownloadStatusMediaFile(context, status, companyId).getOrNull()
+            if (dl != null && dl.exists()) {
+                val bmp = BitmapFactory.decodeFile(dl.absolutePath)
+                if (bmp != null) return@withContext bmp
+            }
+        }
+        decodeBase64Bitmap(status.imageDataBase64, 1280)
     }
 }

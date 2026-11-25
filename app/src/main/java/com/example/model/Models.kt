@@ -805,6 +805,19 @@ data class ChatMessage(
     }
 }
 
+enum class StatusKind(val label: String) {
+    TEXT("Text"),
+    IMAGE("Photo"),
+    VIDEO("Video"),
+    VOICE("Voice")
+}
+
+enum class StatusPrivacyMode(val label: String, val subtitle: String) {
+    ALL_APPROVED("All Approved Members", "Every active approved team member"),
+    SELECTED_ONLY("Selected Members Only", "Only members you explicitly allow"),
+    ALL_EXCEPT("Hide From Selected", "Everyone except selected members")
+}
+
 @Keep
 @IgnoreExtraProperties
 data class ChatStatus(
@@ -813,18 +826,46 @@ data class ChatStatus(
     val ownerName: String = "",
     val ownerRole: String = "",
     val ownerPhotoBase64: String = "",
-    val kind: String = "TEXT",
+    val kind: String = StatusKind.TEXT.name,
     val text: String = "",
+    val caption: String = "",
+    val textOverlay: String = "",
+    val textOverlayX: Float = 0.5f,
+    val textOverlayY: Float = 0.5f,
+    val overlayColorHex: Long = 0xFFFFFFFFL,
+    val fontStyle: String = "BOLD",
     val backgroundPreset: Int = 0,
     val imageDataBase64: String = "",
     val imageStoragePath: String = "",
     val imageBucket: String = "",
+    val mediaStoragePath: String = "",
+    val mediaBucket: String = "",
+    val mediaMimeType: String = "",
+    val mediaByteSize: Long = 0L,
+    val storageProvider: String = "",
+    val durationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val audioWaveform: List<Int> = emptyList(),
     val viewerUids: List<String> = emptyList(),
+    val viewerTimestamps: Map<String, Long> = emptyMap(),
+    val reactions: Map<String, String> = emptyMap(),
+    val replyCount: Long = 0L,
+    val privacyMode: String = StatusPrivacyMode.ALL_APPROVED.name,
+    val allowedUids: List<String> = emptyList(),
+    val excludedUids: List<String> = emptyList(),
+    val ownerBlockedUids: List<String> = emptyList(),
     val createdAtMillis: Long = System.currentTimeMillis(),
     val expiresAtMillis: Long = System.currentTimeMillis() + 86_400_000L,
     val createdAt: Timestamp? = null
 ) {
     fun isActive(nowMillis: Long = System.currentTimeMillis()): Boolean = expiresAtMillis > nowMillis
+    fun kindEnum(): StatusKind = safeEnum(kind, StatusKind.TEXT)
+    fun privacyModeEnum(): StatusPrivacyMode = safeEnum(privacyMode, StatusPrivacyMode.ALL_APPROVED)
+    fun effectiveStoragePath(): String = mediaStoragePath.ifBlank { imageStoragePath }
+    fun effectiveBucket(): String = mediaBucket.ifBlank { imageBucket }
+    fun effectiveDisplayText(): String = caption.ifBlank { text }
+    fun isViewedBy(uid: String): Boolean = uid in viewerUids || uid in viewerTimestamps.keys
 }
 
 @Keep

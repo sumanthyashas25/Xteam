@@ -293,6 +293,157 @@ fun StudioAvatar(
     }
 }
 
+fun availabilityDotColor(availability: com.example.chat.realtime.MemberAvailability): Color = when (availability) {
+    com.example.chat.realtime.MemberAvailability.ACTIVE -> EmeraldApproved
+    com.example.chat.realtime.MemberAvailability.BUSY -> CrimsonBlocked
+    com.example.chat.realtime.MemberAvailability.AWAY -> WarmAlarmAmber
+}
+
+@Composable
+fun AvailabilityStatusDot(
+    availability: com.example.chat.realtime.MemberAvailability,
+    size: Dp = 11.dp,
+    borderColor: Color = PureWhite,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(availabilityDotColor(availability))
+            .border(1.8.dp, borderColor, CircleShape)
+    )
+}
+
+@Composable
+fun AvatarWithAvailabilityBadge(
+    name: String,
+    availability: com.example.chat.realtime.MemberAvailability,
+    size: Dp = 44.dp,
+    borderColor: Color = PureWhite,
+    photoBase64: String = "",
+    dotSize: Dp = 12.dp,
+    showBadge: Boolean = true,
+    badgeTestTag: String? = null,
+    modifier: Modifier = Modifier
+) {
+    Box(modifier = modifier) {
+        StudioAvatar(
+            name = name,
+            size = size,
+            borderColor = borderColor,
+            photoBase64 = photoBase64
+        )
+        if (showBadge) {
+            AvailabilityStatusDot(
+                availability = availability,
+                size = dotSize,
+                borderColor = borderColor,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .testTag(badgeTestTag ?: "availability_dot_${availability.name.lowercase()}")
+            )
+        }
+    }
+}
+
+/**
+ * Renders a profile avatar wrapped with a segmented 24h status indicator ring
+ * whenever the member has active permitted statuses.
+ * Multiple statuses draw distinct arc segments; viewed vs unviewed states use distinct colors.
+ * Tapping the avatar opens the active status directly (independent of row click).
+ */
+@Composable
+fun SegmentedStatusAvatar(
+    name: String,
+    size: Dp = 46.dp,
+    borderColor: Color = PureWhite,
+    photoBase64: String = "",
+    activeStatuses: List<com.example.model.ChatStatus> = emptyList(),
+    statuses: List<com.example.model.ChatStatus> = activeStatuses,
+    viewerUid: String = "",
+    myUid: String = viewerUid,
+    isOwnAvatar: Boolean = false,
+    availability: com.example.chat.realtime.MemberAvailability? = null,
+    showAvailabilityBadge: Boolean = false,
+    dotSize: Dp = 12.dp,
+    badgeTestTag: String? = null,
+    onAvatarClick: (() -> Unit)? = null,
+    onClick: (() -> Unit)? = onAvatarClick,
+    modifier: Modifier = Modifier
+) {
+    val effectiveStatuses = if (statuses.isNotEmpty()) statuses else activeStatuses
+    val effectiveViewerUid = if (myUid.isNotBlank()) myUid else viewerUid
+    val effectiveOnClick = onClick ?: onAvatarClick
+    val hasActiveRing = effectiveStatuses.isNotEmpty()
+    val ringDiameter = if (hasActiveRing) size + 8.dp else size
+    val clickEnabled = hasActiveRing && effectiveOnClick != null
+
+    Box(
+        modifier = modifier
+            .size(ringDiameter)
+            .let { base ->
+                if (clickEnabled) {
+                    base
+                        .clip(CircleShape)
+                        .clickable(onClick = effectiveOnClick!!)
+                } else {
+                    base
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (hasActiveRing) {
+            val segments = effectiveStatuses.sortedBy { it.createdAtMillis }
+            val count = segments.size.coerceAtLeast(1)
+            val gapDegrees = if (count == 1) 0f else (14f).coerceAtMost(200f / count)
+            val sweepPerSegment = (360f - gapDegrees * count) / count
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokePx = 2.4.dp.toPx()
+                val inset = strokePx / 2f
+                val arcSize = Size(this.size.width - strokePx, this.size.height - strokePx)
+                segments.forEachIndexed { idx, st ->
+                    val startAngle = -90f + idx * (sweepPerSegment + gapDegrees)
+                    val isViewed = !isOwnAvatar && st.isViewedBy(effectiveViewerUid)
+                    val segColor = when {
+                        isOwnAvatar -> VioletPrimary
+                        isViewed -> Color(0xFFCBD5E1)
+                        else -> EmeraldApproved
+                    }
+                    drawArc(
+                        color = segColor,
+                        startAngle = startAngle,
+                        sweepAngle = sweepPerSegment,
+                        useCenter = false,
+                        topLeft = Offset(inset, inset),
+                        size = arcSize,
+                        style = Stroke(width = strokePx, cap = StrokeCap.Round)
+                    )
+                }
+            }
+        }
+
+        StudioAvatar(
+            name = name,
+            size = size,
+            borderColor = borderColor,
+            photoBase64 = photoBase64
+        )
+
+        if (showAvailabilityBadge && availability != null) {
+            AvailabilityStatusDot(
+                availability = availability,
+                size = dotSize,
+                borderColor = borderColor,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(if (hasActiveRing) 2.dp else 0.dp)
+                    .testTag(badgeTestTag ?: "availability_dot_${availability.name.lowercase()}")
+            )
+        }
+    }
+}
+
 @Composable
 fun OverlappingAvatarRow(
     names: List<String>,

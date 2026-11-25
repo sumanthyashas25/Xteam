@@ -291,7 +291,8 @@ fun RichChatMessageBubble(
     onDownloadAttachment: () -> Unit,
     onShowMessageInfo: () -> Unit,
     onReportMessage: () -> Unit,
-    onReportStatusError: (String) -> Unit
+    onReportStatusError: (String) -> Unit,
+    onOpenStatusRef: (String) -> Unit = {}
 ) {
     if (message.isDeletedFor(myUid) || message.isExpired()) return
 
@@ -510,9 +511,16 @@ fun RichChatMessageBubble(
                                 InteractivePollCard(message = message, myUid = myUid, onVote = onVotePoll)
                             }
 
-                            // Business Ref
+                            // Business / Status Ref
                             if (message.hasBusinessRef) {
-                                BusinessReferenceCard(message = message)
+                                BusinessReferenceCard(
+                                    message = message,
+                                    onOpen = { kind, refId ->
+                                        if (kind == "STATUS" && refId.isNotBlank()) {
+                                            onOpenStatusRef(refId)
+                                        }
+                                    }
+                                )
                             }
 
                             // Event Card
@@ -773,7 +781,7 @@ fun RichChatMessageBubble(
                             // Formatted text body + link preview pill
                             val showBody = message.body.isNotBlank() &&
                                 !message.isPoll &&
-                                !message.hasBusinessRef &&
+                                (!message.hasBusinessRef || message.businessRefKind.equals("STATUS", ignoreCase = true)) &&
                                 !message.isEvent &&
                                 !message.isContactCard &&
                                 !message.hasLocation &&

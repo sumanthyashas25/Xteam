@@ -35,11 +35,18 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.chat.realtime.MemberAvailability
+import com.example.chat.realtime.RtdbPresenceManager
+import com.example.domain.CatalogueSeedData
 import com.example.domain.MoneyFormatter
 import com.example.model.*
 import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
+import com.example.ui.components.AvailabilityStatusDot
+import com.example.ui.components.AvatarWithAvailabilityBadge
 import com.example.ui.components.StatusPill
+import com.example.ui.components.formatTitleCase
 import com.example.ui.components.pastelAmbientBackdrop
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
@@ -128,6 +135,16 @@ fun StaffPlanCalendarSection(
 ) {
     val context = LocalContext.current
     val uid = state.myMember?.uid.orEmpty()
+    val companyId = state.company?.id?.ifBlank { CatalogueSeedData.DEFAULT_COMPANY_ID }
+        ?: CatalogueSeedData.DEFAULT_COMPANY_ID
+    val companyPresence by remember(companyId) {
+        RtdbPresenceManager.observeCompanyPresence(companyId)
+    }.collectAsStateWithLifecycle(initialValue = emptyMap())
+    val activeTeamMembers = remember(state.members) {
+        state.members
+            .filter { it.statusEnum() == MembershipStatus.APPROVED && it.active }
+            .sortedWith(compareByDescending<Member> { it.uid == uid }.thenBy { it.fullName.lowercase() })
+    }
     val todayStart = remember { normalizeDayStart(System.currentTimeMillis()) }
 
     var selectedDayMillis by rememberSaveable { mutableStateOf(todayStart) }
@@ -311,6 +328,131 @@ fun StaffPlanCalendarSection(
                             modifier = Modifier.testTag("carry_over_plans_button")
                         ) {
                             Text("Carry to Today", fontWeight = FontWeight.ExtraBold, color = DeepAmberInk)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Team Real-Time Availability Bar (Active / Busy / Away)
+        if (activeTeamMembers.isNotEmpty()) {
+            item {
+                val myPresence = companyPresence[uid]
+                val myStatus = if (state.isFocusTimerRunning) {
+                    MemberAvailability.BUSY
+                } else {
+                    RtdbPresenceManager.resolveAvailability(state.myMember, myPresence)
+                }
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = PureWhite,
+                    border = BorderStroke(1.dp, SubtleOutline),
+                    shadowElevation = 1.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("staff_calendar_team_status_bar")
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Team Availability",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ObsidianCharcoal
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                MemberAvailability.entries.forEach { avail ->
+                                    val selected = myStatus == avail
+                                    val accent = when (avail) {
+                                        MemberAvailability.ACTIVE -> EmeraldApproved
+                                        MemberAvailability.BUSY -> CrimsonBlocked
+                                        MemberAvailability.AWAY -> WarmAlarmAmber
+                                    }
+                                    Surface(
+                                        onClick = {
+                                            if (uid.isNotBlank()) {
+                                                AppHapticsAndNotifier.triggerTickHaptic(context)
+                                                RtdbPresenceManager.setAvailability(context, companyId, uid, avail)
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = if (selected) accent.copy(alpha = 0.14f) else MutedSurface,
+                                        border = BorderStroke(1.dp, if (selected) accent.copy(alpha = 0.45f) else SubtleOutline),
+                                        modifier = Modifier.testTag("calendar_set_status_${avail.name.lowercase()}")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                        ) {
+                                            AvailabilityStatusDot(availability = avail, size = 8.dp)
+                                            Text(
+                                                text = avail.label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                color = if (selected) ObsidianCharcoal else StudioTextSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            activeTeamMembers.forEach { person ->
+                                val avail = if (person.uid == uid && state.isFocusTimerRunning) {
+                                    MemberAvailability.BUSY
+                                } else {
+                                    RtdbPresenceManager.resolveAvailability(person, companyPresence[person.uid])
+                                }
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.width(62.dp)
+                                ) {
+                                    AvatarWithAvailabilityBadge(
+                                        name = person.fullName,
+                                        availability = avail,
+                                        size = 44.dp,
+                                        borderColor = SubtleOutline,
+                                        photoBase64 = person.photoBase64,
+                                        badgeTestTag = "calendar_member_status_${person.uid}"
+                                    )
+                                    Text(
+                                        text = if (person.uid == uid) "You" else formatTitleCase(person.fullName).substringBefore(" "),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = ObsidianCharcoal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = avail.label,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        color = when (avail) {
+                                            MemberAvailability.ACTIVE -> EmeraldApproved
+                                            MemberAvailability.BUSY -> CrimsonBlocked
+                                            MemberAvailability.AWAY -> StudioTextSecondary
+                                        },
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                         }
                     }
                 }

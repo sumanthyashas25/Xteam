@@ -115,15 +115,14 @@ class ChatPhase1InfraTest {
     @Test
     fun `worker bridge returns NotConfigured gracefully when CHAT_WORKER_BASE_URL is empty`() = runBlocking {
         if (!WorkerBridgeClient.isConfigured()) {
-            val res = WorkerBridgeClient.requestSignedUploadUrl(
+            val ctx = ApplicationProvider.getApplicationContext<Context>()
+            val downloadRes = WorkerBridgeClient.downloadChatFileFromCloudflare(
                 companyId = "xmax",
-                bucket = "chat-media",
-                storagePath = "c1/m1/img.jpg",
-                mimeType = "image/jpeg",
-                byteSize = 1024L,
-                sha256 = "abc"
+                chatId = "ch_1",
+                storagePath = "companies/xmax/chats/ch_1/img.jpg",
+                destination = java.io.File(ctx.cacheDir, "img.jpg")
             )
-            assertTrue(res is WorkerResult.NotConfigured)
+            assertTrue(downloadRes is WorkerResult.NotConfigured)
         }
     }
 

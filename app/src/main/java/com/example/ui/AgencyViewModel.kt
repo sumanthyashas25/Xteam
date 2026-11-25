@@ -1335,6 +1335,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
         focusTimerJob = null
         _isFocusTimerRunning.value = false
         _focusSecondsRemaining.value = _focusPresetMinutes.value * 60L
+        RtdbPresenceManager.setAvailability(availability = com.example.chat.realtime.MemberAvailability.ACTIVE)
     }
 
     fun toggleFocusTimer() {
@@ -1342,12 +1343,14 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
             focusTimerJob?.cancel()
             focusTimerJob = null
             _isFocusTimerRunning.value = false
+            RtdbPresenceManager.setAvailability(availability = com.example.chat.realtime.MemberAvailability.ACTIVE)
             return
         }
         if (_focusSecondsRemaining.value <= 0L) {
             _focusSecondsRemaining.value = _focusPresetMinutes.value * 60L
         }
         _isFocusTimerRunning.value = true
+        RtdbPresenceManager.setAvailability(availability = com.example.chat.realtime.MemberAvailability.BUSY)
         focusTimerJob?.cancel()
         focusTimerJob = viewModelScope.launch {
             while (_focusSecondsRemaining.value > 0L) {
@@ -1356,6 +1359,7 @@ class AgencyViewModel(application: Application) : AndroidViewModel(application) 
                 _focusSecondsRemaining.value = next
                 if (next == 0L) {
                     _isFocusTimerRunning.value = false
+                    RtdbPresenceManager.setAvailability(availability = com.example.chat.realtime.MemberAvailability.ACTIVE)
                     AppHapticsAndNotifier.triggerCompletionVibration(getApplication())
                     if (_soundEnabled.value) {
                         AppHapticsAndNotifier.playNotificationSound(getApplication())

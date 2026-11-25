@@ -1,15 +1,16 @@
 package com.example.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,14 +22,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -38,17 +38,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.chat.ChatFileManager
 import com.example.chat.ChatSettingsStore
-import com.example.chat.ChatUserPreferences
 import com.example.chat.StagedChatAttachment
+import com.example.chat.StatusPrivacyEngine
+import com.example.chat.realtime.MemberAvailability
 import com.example.chat.realtime.MemberPresenceState
 import com.example.chat.realtime.RtdbPresenceManager
 import com.example.domain.CatalogueSeedData
 import com.example.model.*
 import com.example.ui.ChatFilterTab
+import com.example.ui.components.AvailabilityStatusDot
+import com.example.ui.components.AvatarWithAvailabilityBadge
+import com.example.ui.components.SegmentedStatusAvatar
 import com.example.ui.components.StudioAvatar
+import com.example.ui.components.availabilityDotColor
 import com.example.ui.components.formatTitleCase
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
@@ -61,7 +66,7 @@ enum class ChatHubBottomTab {
     SETTINGS
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatHubScreen(
     member: Member,
@@ -104,23 +109,47 @@ fun ChatHubScreen(
     onCreateNewChannelClick: () -> Unit,
     onSendQuickCompose: () -> Unit,
     onBack: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit = onBack
 ) {
     val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        ChatSettingsStore.ensureLoaded(context)
+    }
     val prefs by ChatSettingsStore.prefsFlow.collectAsStateWithLifecycle()
     val companyId = CatalogueSeedData.DEFAULT_COMPANY_ID
+    val companyPresence by RtdbPresenceManager.observeCompanyPresence(companyId)
+        .collectAsStateWithLifecycle(initialValue = emptyMap())
+    var liveNowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(20_000L)
+            liveNowMillis = System.currentTimeMillis()
+        }
+    }
+    val visibleStatusesByOwner = remember(statuses, member.uid, prefs.blockedUserUids, liveNowMillis) {
+        StatusPrivacyEngine.categorizeStatuses(
+            statuses = statuses,
+            myMember = member,
+            allMembers = colleagues + member,
+            mutedOwnerUids = prefs.mutedStatusOwnerUids,
+            blockedByViewerUids = prefs.blockedUserUids,
+            nowMillis = liveNowMillis
+        ).visibleByOwner
+    }
 
     var activeBottomTab by remember { mutableStateOf(ChatHubBottomTab.CHATS) }
     var showFilterChips by remember { mutableStateOf(false) }
-    var showNewActionOverlay by remember { mutableStateOf(false) }
     var showHubOverflowMenu by remember { mutableStateOf(false) }
-    var showSettingsSheet by remember { mutableStateOf(false) }
+    var showPinSetupDialog by remember { mutableStateOf(false) }
+    var pendingPinSetupAfterLockTarget by remember { mutableStateOf<ChatChannel?>(null) }
+    var pendingPinSetupSwitchLockedTab by remember { mutableStateOf(false) }
+    var lockedTabUnlocked by remember { mutableStateOf(false) }
     var pinUnlockTarget by remember { mutableStateOf<ChatChannel?>(null) }
     var pinUnlockCallback by remember { mutableStateOf<(() -> Unit)?>(null) }
     var channelActionTarget by remember { mutableStateOf<ChatChannel?>(null) }
-    var deleteChannelTarget by remember { mutableStateOf<ChatChannel?>(null) }
     var directorySearchQuery by remember { mutableStateOf("") }
     var directoryFilterOnlineOnly by remember { mutableStateOf(false) }
+    var newCustomListInput by remember { mutableStateOf("") }
 
     fun handleProtectedOpen(channel: ChatChannel, onOpen: () -> Unit) {
         val isLocked = channel.id in prefs.lockedChannelIds && channel.id !in prefs.unlockedThisSessionIds
@@ -178,7 +207,6 @@ fun ChatHubScreen(
             val ch = directChannelsByPeer[person.uid]
             val matchesQuery = q.isBlank() ||
                 person.fullName.lowercase().contains(q) ||
-                person.jobRoleName.lowercase().contains(q) ||
                 (ch?.lastMessagePreview?.lowercase()?.contains(q) == true)
             val isLocked = ch != null && ch.id in prefs.lockedChannelIds
             val isArchived = ch?.isArchivedFor(member.uid) == true
@@ -197,8 +225,53 @@ fun ChatHubScreen(
         }.sortedByDescending { directChannelsByPeer[it.uid]?.lastMessageAtMillis ?: 0L }
     }
 
+    val colleaguesByUid = remember(colleagues, member) {
+        (colleagues + member).associateBy { it.uid }
+    }
+
     val totalUnreadCount = remember(channels, member.uid) {
         channels.sumOf { it.unreadCountFor(member.uid) }
+    }
+
+    @Composable
+    fun HubOverflowDropdown() {
+        DropdownMenu(
+            expanded = showHubOverflowMenu,
+            onDismissRequest = { showHubOverflowMenu = false },
+            containerColor = PureWhite
+        ) {
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Outlined.ChatBubbleOutline, null) },
+                text = { Text("New Chat") },
+                onClick = { showHubOverflowMenu = false; onOpenChannelsSheet() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Outlined.BookmarkBorder, null) },
+                text = { Text("Message Yourself") },
+                onClick = { showHubOverflowMenu = false; onOpenSavedNotes() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Outlined.GroupAdd, null) },
+                text = { Text("New Group") },
+                onClick = { showHubOverflowMenu = false; onOpenCreateGroup() }
+            )
+            DropdownMenuItem(
+                leadingIcon = { Icon(Icons.Outlined.QrCode, null) },
+                text = { Text("Join Group by Link") },
+                onClick = { showHubOverflowMenu = false; onOpenJoinByInvite() }
+            )
+            if (activeBottomTab != ChatHubBottomTab.SETTINGS) {
+                HorizontalDivider(color = Color(0xFFECEFF2))
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Outlined.Settings, null) },
+                    text = { Text("Chat Settings") },
+                    onClick = {
+                        showHubOverflowMenu = false
+                        activeBottomTab = ChatHubBottomTab.SETTINGS
+                    }
+                )
+            }
+        }
     }
 
     Box(
@@ -212,59 +285,44 @@ fun ChatHubScreen(
                 .fillMaxSize()
                 .windowInsetsPadding(WindowInsets.statusBars)
                 .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-                .then(if (showNewActionOverlay) Modifier.blur(12.dp).alpha(0.6f) else Modifier)
         ) {
             when (activeBottomTab) {
                 ChatHubBottomTab.CHATS -> {
-                    // Top Bar matching reference: Left '...' circle, Right New Action + Close
+                    // Header: Left Back Arrow, Right Three-Dots Overflow (no Cross, no Pen)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Surface(
-                            onClick = { showHubOverflowMenu = true },
-                            shape = CircleShape,
-                            color = PureWhite,
-                            border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
-                            modifier = Modifier.size(36.dp)
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("chat_hub_back_button")
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.MoreHoriz, contentDescription = "Chat Options", tint = ObsidianCharcoal, modifier = Modifier.size(18.dp))
-                            }
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            IconButton(
-                                onClick = onBack,
+                        Box {
+                            Surface(
+                                onClick = { showHubOverflowMenu = true },
+                                shape = CircleShape,
+                                color = PureWhite,
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
                                 modifier = Modifier
-                                    .size(38.dp)
-                                    .testTag("chat_hub_back_button")
+                                    .size(40.dp)
+                                    .testTag("chat_hub_overflow_button")
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Chat Options", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                                }
                             }
-                            IconButton(
-                                onClick = { showNewActionOverlay = true },
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .testTag("create_channel_button")
-                            ) {
-                                Icon(Icons.Default.Edit, contentDescription = "Compose or new group", tint = StudioBlueAccent, modifier = Modifier.size(22.dp))
-                            }
-                            IconButton(
-                                onClick = onClose,
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .testTag("chat_hub_close_button")
-                            ) {
-                                Icon(Icons.Default.Close, contentDescription = "Close chat", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
-                            }
+                            HubOverflowDropdown()
                         }
                     }
 
-                    // Large Bold "Chats" Header matching reference
                     Text(
                         text = "Chats",
                         style = MaterialTheme.typography.headlineMedium.copy(fontSize = 30.sp),
@@ -306,11 +364,11 @@ fun ChatHubScreen(
                                     .testTag("chat_search_button")
                             )
                             if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { onSearchQueryChange("") }, modifier = Modifier.size(20.dp)) {
+                                IconButton(onClick = { onSearchQueryChange("") }, modifier = Modifier.size(24.dp)) {
                                     Icon(Icons.Default.Close, contentDescription = "Clear", tint = StudioTextSecondary, modifier = Modifier.size(16.dp))
                                 }
                             }
-                            IconButton(onClick = { showFilterChips = !showFilterChips }, modifier = Modifier.size(24.dp)) {
+                            IconButton(onClick = { showFilterChips = !showFilterChips }, modifier = Modifier.size(28.dp)) {
                                 Icon(
                                     imageVector = Icons.Default.FilterList,
                                     contentDescription = "Filters",
@@ -321,7 +379,7 @@ fun ChatHubScreen(
                         }
                     }
 
-                    // Optional Filter Pills Row (when toggled or active)
+                    // Optional Filter Pills Row
                     AnimatedVisibility(
                         visible = showFilterChips || filterTab != ChatFilterTab.ALL,
                         enter = fadeIn() + expandVertically(),
@@ -339,10 +397,21 @@ fun ChatHubScreen(
                                 FilterChip(
                                     selected = selected,
                                     onClick = {
-                                        if (tab == ChatFilterTab.LOCKED && prefs.hasSecretCode) {
-                                            pinUnlockTarget = null
-                                            pinUnlockCallback = { onSelectFilterTab(tab) }
+                                        if (tab == ChatFilterTab.LOCKED) {
+                                            if (!prefs.hasSecretCode) {
+                                                pendingPinSetupSwitchLockedTab = true
+                                                showPinSetupDialog = true
+                                            } else if (!lockedTabUnlocked) {
+                                                pinUnlockTarget = null
+                                                pinUnlockCallback = {
+                                                    lockedTabUnlocked = true
+                                                    onSelectFilterTab(tab)
+                                                }
+                                            } else {
+                                                onSelectFilterTab(tab)
+                                            }
                                         } else {
+                                            lockedTabUnlocked = false
                                             onSelectFilterTab(tab)
                                         }
                                     },
@@ -352,7 +421,10 @@ fun ChatHubScreen(
                             prefs.customLists.forEach { customList ->
                                 FilterChip(
                                     selected = selectedCustomList == customList,
-                                    onClick = { onSelectCustomList(if (selectedCustomList == customList) null else customList) },
+                                    onClick = {
+                                        lockedTabUnlocked = false
+                                        onSelectCustomList(if (selectedCustomList == customList) null else customList)
+                                    },
                                     label = { Text(customList, fontSize = 12.sp) }
                                 )
                             }
@@ -387,7 +459,6 @@ fun ChatHubScreen(
                             .verticalScroll(rememberScrollState())
                             .padding(bottom = 8.dp)
                     ) {
-                        // Status / Stories Strip
                         StatusAvatarBar(
                             myMember = member,
                             statuses = statuses,
@@ -405,8 +476,8 @@ fun ChatHubScreen(
                             ) {
                                 filteredColleagues.forEach { person ->
                                     val dmChannel = directChannelsByPeer[person.uid]
-                                    val presence by RtdbPresenceManager.observeMemberPresence(companyId, person.uid)
-                                        .collectAsStateWithLifecycle(initialValue = MemberPresenceState(uid = person.uid))
+                                    val presence = companyPresence[person.uid]
+                                    val availability = RtdbPresenceManager.resolveAvailability(person, presence)
                                     val unread = dmChannel?.unreadCountFor(member.uid) ?: 0
                                     val isMuted = dmChannel?.isMutedFor(member.uid) == true
                                     val isPinned = dmChannel?.isPinnedFor(member.uid) == true
@@ -417,16 +488,23 @@ fun ChatHubScreen(
                                     }
 
                                     Surface(
-                                        onClick = {
-                                            if (dmChannel != null) {
-                                                handleProtectedOpen(dmChannel) { onOpenDirectChat(person) }
-                                            } else {
-                                                onOpenDirectChat(person)
-                                            }
-                                        },
                                         color = PureWhite,
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .combinedClickable(
+                                                onClick = {
+                                                    if (dmChannel != null) {
+                                                        handleProtectedOpen(dmChannel) { onOpenDirectChat(person) }
+                                                    } else {
+                                                        onOpenDirectChat(person)
+                                                    }
+                                                },
+                                                onLongClick = {
+                                                    if (dmChannel != null) {
+                                                        channelActionTarget = dmChannel
+                                                    }
+                                                }
+                                            )
                                             .testTag("dm_person_${person.uid}")
                                     ) {
                                         Column {
@@ -435,24 +513,23 @@ fun ChatHubScreen(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(14.dp)
                                             ) {
-                                                Box {
-                                                    StudioAvatar(
-                                                        name = person.fullName,
-                                                        size = 48.dp,
-                                                        borderColor = PureWhite,
-                                                        photoBase64 = person.photoBase64
-                                                    )
-                                                    if (presence.online) {
-                                                        Box(
-                                                            modifier = Modifier
-                                                                .size(13.dp)
-                                                                .align(Alignment.BottomEnd)
-                                                                .clip(CircleShape)
-                                                                .background(EmeraldApproved)
-                                                                .border(2.dp, PureWhite, CircleShape)
-                                                        )
-                                                    }
-                                                }
+                                                val peerStatuses = visibleStatusesByOwner[person.uid].orEmpty()
+                                                SegmentedStatusAvatar(
+                                                    name = person.fullName,
+                                                    availability = availability,
+                                                    showAvailabilityBadge = true,
+                                                    size = 48.dp,
+                                                    borderColor = PureWhite,
+                                                    photoBase64 = person.photoBase64,
+                                                    dotSize = 13.dp,
+                                                    activeStatuses = peerStatuses,
+                                                    viewerUid = member.uid,
+                                                    isOwnAvatar = false,
+                                                    onAvatarClick = if (peerStatuses.isNotEmpty()) {
+                                                        { onOpenStatusViewer(person.uid, peerStatuses) }
+                                                    } else null,
+                                                    modifier = Modifier.testTag("dm_avatar_${person.uid}")
+                                                )
 
                                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -462,7 +539,8 @@ fun ChatHubScreen(
                                                             fontWeight = FontWeight.Bold,
                                                             color = ObsidianCharcoal,
                                                             maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f, fill = false)
                                                         )
                                                         if (isPinned) Icon(Icons.Default.PushPin, null, tint = StudioBlueAccent, modifier = Modifier.size(13.dp))
                                                         if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(13.dp))
@@ -474,7 +552,7 @@ fun ChatHubScreen(
                                                         }
                                                         Text(
                                                             text = dmChannel?.lastMessagePreview?.takeIf { it.isNotBlank() }
-                                                                ?: formatTitleCase(person.jobRoleName.ifBlank { "Personal Chat" }),
+                                                                ?: "No messages yet",
                                                             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                                                             color = StudioTextSecondary,
                                                             maxLines = 1,
@@ -519,13 +597,33 @@ fun ChatHubScreen(
                                     val timeStr = remember(ch.lastMessageAtMillis) {
                                         if (ch.lastMessageAtMillis > 0L) SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ch.lastMessageAtMillis)) else ""
                                     }
+                                    val groupMemberAvails = remember(ch.participantUids, companyPresence, colleaguesByUid, member.uid) {
+                                        val otherUids = ch.participantUids.filter { it != member.uid }.ifEmpty {
+                                            colleagues.map { it.uid }
+                                        }
+                                        otherUids.map { uid ->
+                                            RtdbPresenceManager.resolveAvailability(colleaguesByUid[uid], companyPresence[uid])
+                                        }
+                                    }
+                                    val groupBadgeAvail = remember(groupMemberAvails) {
+                                        when {
+                                            MemberAvailability.ACTIVE in groupMemberAvails -> MemberAvailability.ACTIVE
+                                            MemberAvailability.BUSY in groupMemberAvails -> MemberAvailability.BUSY
+                                            else -> MemberAvailability.AWAY
+                                        }
+                                    }
+                                    val activeMembersCount = remember(groupMemberAvails) {
+                                        groupMemberAvails.count { it == MemberAvailability.ACTIVE }
+                                    }
 
                                     Surface(
-                                        onClick = { handleProtectedOpen(ch) { onSelectChannel(ch) } },
                                         color = PureWhite,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .testTag("chat_row_${ch.id}")
+                                            .combinedClickable(
+                                                onClick = { handleProtectedOpen(ch) { onSelectChannel(ch) } },
+                                                onLongClick = { channelActionTarget = ch }
+                                            )
                                             .testTag("channel_chip_${ch.id}")
                                     ) {
                                         Column {
@@ -541,11 +639,13 @@ fun ChatHubScreen(
                                                         }
                                                     }
                                                 } else {
-                                                    StudioAvatar(
+                                                    AvatarWithAvailabilityBadge(
                                                         name = ch.title,
+                                                        availability = groupBadgeAvail,
                                                         size = 48.dp,
                                                         borderColor = PureWhite,
-                                                        photoBase64 = ch.photoBase64
+                                                        photoBase64 = ch.photoBase64,
+                                                        dotSize = 13.dp
                                                     )
                                                 }
 
@@ -557,19 +657,31 @@ fun ChatHubScreen(
                                                             fontWeight = FontWeight.Bold,
                                                             color = ObsidianCharcoal,
                                                             maxLines = 1,
-                                                            overflow = TextOverflow.Ellipsis
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f, fill = false)
                                                         )
                                                         if (isPinned) Icon(Icons.Default.PushPin, null, tint = StudioBlueAccent, modifier = Modifier.size(13.dp))
                                                         if (isMuted) Icon(Icons.Default.VolumeOff, null, tint = StudioTextSecondary, modifier = Modifier.size(13.dp))
                                                         if (isLocked) Icon(Icons.Default.Lock, null, tint = ObsidianCharcoal, modifier = Modifier.size(13.dp))
                                                     }
-                                                    Text(
-                                                        text = ch.lastMessagePreview.ifBlank { ch.topic.ifBlank { "Group conversation" } },
-                                                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                                                        color = StudioTextSecondary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
+                                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                        Text(
+                                                            text = ch.lastMessagePreview.ifBlank { ch.topic.ifBlank { "Group conversation" } },
+                                                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                                            color = StudioTextSecondary,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f, fill = false)
+                                                        )
+                                                        if (!isSaved && activeMembersCount > 0) {
+                                                            Text(
+                                                                text = "• $activeMembersCount active",
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                color = EmeraldApproved,
+                                                                maxLines = 1
+                                                            )
+                                                        }
+                                                    }
                                                 }
 
                                                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -596,7 +708,7 @@ fun ChatHubScreen(
                             }
                         }
 
-                        // Preserves quick send composer if user typed text
+                        // Preserves quick send composer if text/attachment staged
                         if (composerText.isNotEmpty() || stagedAttachment != null) {
                             Surface(
                                 shape = RoundedCornerShape(16.dp),
@@ -623,7 +735,7 @@ fun ChatHubScreen(
                                             .size(36.dp)
                                             .testTag("chat_hub_send_button")
                                     ) {
-                                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Send", tint = StudioBlueAccent)
+                                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = StudioBlueAccent)
                                     }
                                 }
                             }
@@ -632,19 +744,34 @@ fun ChatHubScreen(
                 }
 
                 ChatHubBottomTab.DIRECTORY -> {
-                    // "Find People" Tab matching center screen in reference image
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        IconButton(onClick = onBack, modifier = Modifier.size(38.dp)) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("chat_directory_back_button")
+                        ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = ObsidianCharcoal)
                         }
-                        IconButton(onClick = onClose, modifier = Modifier.size(38.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Close", tint = ObsidianCharcoal)
+                        Box {
+                            Surface(
+                                onClick = { showHubOverflowMenu = true },
+                                shape = CircleShape,
+                                color = PureWhite,
+                                border = BorderStroke(1.dp, Color(0xFFE2E8F0)),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Chat Options", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                                }
+                            }
+                            HubOverflowDropdown()
                         }
                     }
 
@@ -656,7 +783,6 @@ fun ChatHubScreen(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
                     )
 
-                    // Search input + Cancel button matching reference
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -701,7 +827,6 @@ fun ChatHubScreen(
                         }
                     }
 
-                    // Filter Pills matching reference
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -717,7 +842,7 @@ fun ChatHubScreen(
                         FilterChip(
                             selected = directoryFilterOnlineOnly,
                             onClick = { directoryFilterOnlineOnly = true },
-                            label = { Text("Online Now") }
+                            label = { Text("Active & Busy") }
                         )
                         FilterChip(
                             selected = false,
@@ -727,11 +852,10 @@ fun ChatHubScreen(
                         )
                     }
 
-                    // Directory Colleagues List
-                    val dirFiltered = remember(colleagues, directorySearchQuery, directoryFilterOnlineOnly) {
+                    val dirFiltered = remember(colleagues, directorySearchQuery) {
                         val q = directorySearchQuery.trim().lowercase()
                         colleagues.filter { c ->
-                            (q.isBlank() || c.fullName.lowercase().contains(q) || c.jobRoleName.lowercase().contains(q) || c.departmentName.lowercase().contains(q))
+                            q.isBlank() || c.fullName.lowercase().contains(q) || c.jobRoleName.lowercase().contains(q) || c.departmentName.lowercase().contains(q)
                         }
                     }
 
@@ -741,9 +865,8 @@ fun ChatHubScreen(
                             .fillMaxWidth()
                     ) {
                         items(dirFiltered, key = { it.uid }) { person ->
-                            val presence by RtdbPresenceManager.observeMemberPresence(companyId, person.uid)
-                                .collectAsStateWithLifecycle(initialValue = MemberPresenceState(uid = person.uid))
-                            if (!directoryFilterOnlineOnly || presence.online) {
+                            val availability = RtdbPresenceManager.resolveAvailability(person, companyPresence[person.uid])
+                            if (!directoryFilterOnlineOnly || availability != MemberAvailability.AWAY) {
                                 Surface(
                                     onClick = { onOpenDirectChat(person) },
                                     color = PureWhite,
@@ -755,21 +878,33 @@ fun ChatHubScreen(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                                         ) {
-                                            Box {
-                                                StudioAvatar(name = person.fullName, size = 48.dp, borderColor = PureWhite, photoBase64 = person.photoBase64)
-                                                if (presence.online) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(13.dp)
-                                                            .align(Alignment.BottomEnd)
-                                                            .clip(CircleShape)
-                                                            .background(EmeraldApproved)
-                                                            .border(2.dp, PureWhite, CircleShape)
+                                            val peerStatuses = visibleStatusesByOwner[person.uid].orEmpty()
+                                            SegmentedStatusAvatar(
+                                                name = person.fullName,
+                                                availability = availability,
+                                                showAvailabilityBadge = true,
+                                                size = 48.dp,
+                                                borderColor = PureWhite,
+                                                photoBase64 = person.photoBase64,
+                                                dotSize = 13.dp,
+                                                activeStatuses = peerStatuses,
+                                                viewerUid = member.uid,
+                                                isOwnAvatar = false,
+                                                onAvatarClick = if (peerStatuses.isNotEmpty()) {
+                                                    { onOpenStatusViewer(person.uid, peerStatuses) }
+                                                } else null,
+                                                modifier = Modifier.testTag("dir_avatar_${person.uid}")
+                                            )
+                                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                    Text(formatTitleCase(person.fullName), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
+                                                    Text(
+                                                        text = "• ${availability.label}",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = availabilityDotColor(availability)
                                                     )
                                                 }
-                                            }
-                                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                Text(formatTitleCase(person.fullName), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
                                                 Text(formatTitleCase(person.jobRoleName.ifBlank { "Team Member" }), style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
                                                 Text("📍 ${formatTitleCase(person.departmentName.ifBlank { "Workspace" })}", style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
                                             }
@@ -786,22 +921,33 @@ fun ChatHubScreen(
                 }
 
                 ChatHubBottomTab.SETTINGS -> {
-                    // Clean Settings Tab Content directly rendered
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 20.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text("Chat Settings & Privacy", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                            IconButton(onClick = onClose) { Icon(Icons.Default.Close, null) }
+                            IconButton(
+                                onClick = { activeBottomTab = ChatHubBottomTab.CHATS },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("chat_settings_back_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chats", tint = ObsidianCharcoal)
+                            }
+                            Text(
+                                text = "Chat Settings & Privacy",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ObsidianCharcoal
+                            )
                         }
 
                         // Chat Lock Secret Code
@@ -809,12 +955,15 @@ fun ChatHubScreen(
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("Secret Code for Locked Chats", fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = if (prefs.hasSecretCode) "Secret PIN configured (${prefs.lockedChannelIds.size} locked)" else "Not set",
+                                    text = if (prefs.hasSecretCode) "Secret PIN configured (${prefs.lockedChannelIds.size} locked)" else "Set a 4+ digit PIN to lock sensitive chats",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = StudioTextSecondary
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedButton(onClick = { showSettingsSheet = true }) {
+                                    OutlinedButton(
+                                        onClick = { showPinSetupDialog = true },
+                                        modifier = Modifier.testTag("settings_set_pin_button")
+                                    ) {
                                         Text(if (prefs.hasSecretCode) "Change PIN" else "Set Secret PIN")
                                     }
                                     if (prefs.hasSecretCode) {
@@ -833,18 +982,36 @@ fun ChatHubScreen(
                                 FilterChip(
                                     selected = prefs.bubbleThemeId == bt.id,
                                     onClick = { ChatSettingsStore.setBubbleTheme(context, bt.id) },
+                                    leadingIcon = {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clip(CircleShape)
+                                                .background(bt.outgoingBg)
+                                                .border(1.dp, SubtleOutline, CircleShape)
+                                        )
+                                    },
                                     label = { Text(bt.label) }
                                 )
                             }
                         }
 
-                        // Canvas Tint / Wallpapers
-                        Text("Canvas Tone", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        // Chat Wallpaper
+                        Text("Chat Wallpaper", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                         Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             ChatVisualCatalog.wallpapers.forEach { wp ->
                                 FilterChip(
                                     selected = prefs.globalWallpaperId == wp.id,
                                     onClick = { ChatSettingsStore.setWallpaper(context, wp.id) },
+                                    leadingIcon = {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clip(CircleShape)
+                                                .background(wp.baseColors.lastOrNull() ?: PureWhite)
+                                                .border(1.dp, Color(0xFF94A3B8), CircleShape)
+                                        )
+                                    },
                                     label = { Text(wp.label) }
                                 )
                             }
@@ -863,16 +1030,64 @@ fun ChatHubScreen(
                                     Switch(checked = prefs.autoDownloadAudio, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, prefs.autoDownloadPhotos, it, prefs.autoDownloadDocs, prefs.mediaVisibleInGallery) })
                                 }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Auto-download documents", style = MaterialTheme.typography.bodyMedium)
+                                    Switch(checked = prefs.autoDownloadDocs, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, prefs.autoDownloadPhotos, prefs.autoDownloadAudio, it, prefs.mediaVisibleInGallery) })
+                                }
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Text("Show media in device gallery", style = MaterialTheme.typography.bodyMedium)
                                     Switch(checked = prefs.mediaVisibleInGallery, onCheckedChange = { ChatSettingsStore.updateMediaSettings(context, prefs.autoDownloadPhotos, prefs.autoDownloadAudio, prefs.autoDownloadDocs, it) })
                                 }
+                            }
+                        }
+
+                        // Custom Chat Lists
+                        Text("Custom Chat Lists", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedTextField(
+                                value = newCustomListInput,
+                                onValueChange = { newCustomListInput = it },
+                                placeholder = { Text("New list name…") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    ChatSettingsStore.addCustomList(context, newCustomListInput)
+                                    newCustomListInput = ""
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ObsidianCharcoal, contentColor = PureWhite)
+                            ) {
+                                Text("Add")
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            prefs.customLists.forEach { listName ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {},
+                                    label = { Text(listName) },
+                                    trailingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Delete list",
+                                            modifier = Modifier
+                                                .size(16.dp)
+                                                .clickable { ChatSettingsStore.deleteCustomList(context, listName) }
+                                        )
+                                    }
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // Reference Image 3-Tab Bottom Navigation Bar (Directory | Chats | Settings)
+            // 3-Tab Bottom Navigation Bar (Directory | Chats | Settings)
             Surface(
                 shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
                 color = PureWhite,
@@ -886,7 +1101,6 @@ fun ChatHubScreen(
                     horizontalArrangement = Arrangement.SpaceAround,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Tab 1: Directory (Find People)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
@@ -907,7 +1121,6 @@ fun ChatHubScreen(
                         )
                     }
 
-                    // Tab 2: Chats (Active default with unread badge)
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
@@ -938,7 +1151,6 @@ fun ChatHubScreen(
                         )
                     }
 
-                    // Tab 3: Settings
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
@@ -961,101 +1173,102 @@ fun ChatHubScreen(
                 }
             }
         }
+    }
 
-        // New Chat / Group Action Sheet Modal (Overlay Menu)
-        if (showNewActionOverlay) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.35f))
-                    .clickable { showNewActionOverlay = false }
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(26.dp),
-                    color = PureWhite,
-                    shadowElevation = 14.dp,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(start = 20.dp, end = 20.dp, bottom = 80.dp)
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .fillMaxWidth()
-                        .clickable(enabled = false) {}
-                        .testTag("chat_new_action_pill")
-                ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OverlayMenuRow(
-                            icon = Icons.Outlined.ChatBubbleOutline,
-                            title = "New Chat",
-                            subtitle = "Browse channels or send a direct message",
-                            onClick = {
-                                showNewActionOverlay = false
-                                onOpenChannelsSheet()
-                            }
-                        )
-                        HorizontalDivider(color = Color(0xFFECEFF2))
-                        OverlayMenuRow(
-                            icon = Icons.Outlined.BookmarkBorder,
-                            title = "Message Yourself",
-                            subtitle = "Save personal notes, links, and files",
-                            onClick = {
-                                showNewActionOverlay = false
-                                onOpenSavedNotes()
-                            }
-                        )
-                        HorizontalDivider(color = Color(0xFFECEFF2))
-                        OverlayMenuRow(
-                            icon = Icons.Outlined.Groups,
-                            title = "New Group",
-                            subtitle = "Create a group with admins, polls & invites",
-                            onClick = {
-                                showNewActionOverlay = false
-                                onOpenCreateGroup()
-                            }
-                        )
-                        HorizontalDivider(color = Color(0xFFECEFF2))
-                        OverlayMenuRow(
-                            icon = Icons.Outlined.QrCode,
-                            title = "Join Group by Link",
-                            subtitle = "Enter an invite code to join a workspace group",
-                            onClick = {
-                                showNewActionOverlay = false
-                                onOpenJoinByInvite()
-                            }
-                        )
+    // Long-press quick conversation actions (Lock/Unlock, Pin, Mute, Archive, Favourite, Read/Unread)
+    channelActionTarget?.let { target ->
+        val isLocked = target.id in prefs.lockedChannelIds
+        val isPinned = target.isPinnedFor(member.uid)
+        val isMuted = target.isMutedFor(member.uid)
+        val isArchived = target.isArchivedFor(member.uid)
+        val isFav = target.isFavouriteFor(member.uid)
+        val hasUnread = target.unreadCountFor(member.uid) > 0
+
+        Dialog(onDismissRequest = { channelActionTarget = null }) {
+            Surface(shape = RoundedCornerShape(22.dp), color = PureWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = formatTitleCase(target.title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = ObsidianCharcoal
+                    )
+                    HorizontalDivider(color = Color(0xFFECEFF2))
+                    ActionDialogRow(
+                        icon = if (isLocked) Icons.Outlined.LockOpen else Icons.Outlined.Lock,
+                        label = if (isLocked) "Unlock Chat" else "Lock Chat"
+                    ) {
+                        channelActionTarget = null
+                        if (!prefs.hasSecretCode) {
+                            pendingPinSetupAfterLockTarget = target
+                            showPinSetupDialog = true
+                        } else {
+                            ChatSettingsStore.toggleChannelLocked(context, target.id)
+                        }
+                    }
+                    ActionDialogRow(
+                        icon = Icons.Outlined.PushPin,
+                        label = if (isPinned) "Unpin Chat" else "Pin Chat"
+                    ) {
+                        channelActionTarget = null
+                        onTogglePinChannel(target)
+                    }
+                    ActionDialogRow(
+                        icon = if (isMuted) Icons.Outlined.VolumeUp else Icons.Outlined.VolumeOff,
+                        label = if (isMuted) "Unmute Notifications" else "Mute Notifications"
+                    ) {
+                        channelActionTarget = null
+                        onToggleMuteChannel(target)
+                    }
+                    ActionDialogRow(
+                        icon = if (isFav) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        label = if (isFav) "Remove from Favourites" else "Add to Favourites"
+                    ) {
+                        channelActionTarget = null
+                        onToggleFavouriteChannel(target)
+                    }
+                    ActionDialogRow(
+                        icon = Icons.Outlined.Archive,
+                        label = if (isArchived) "Unarchive Chat" else "Archive Chat"
+                    ) {
+                        channelActionTarget = null
+                        onToggleArchiveChannel(target)
+                    }
+                    ActionDialogRow(
+                        icon = if (hasUnread) Icons.Outlined.MarkChatRead else Icons.Outlined.MarkChatUnread,
+                        label = if (hasUnread) "Mark as Read" else "Mark as Unread"
+                    ) {
+                        channelActionTarget = null
+                        onMarkReadUnread(target, !hasUnread)
                     }
                 }
             }
         }
     }
 
-    // Overflow & Dialog handlers
-    if (showHubOverflowMenu) {
-        DropdownMenu(expanded = showHubOverflowMenu, onDismissRequest = { showHubOverflowMenu = false }) {
-            DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.Bookmark, null) },
-                text = { Text("Message Yourself (Saved)") },
-                onClick = { showHubOverflowMenu = false; onOpenSavedNotes() }
-            )
-            DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.GroupAdd, null) },
-                text = { Text("New Group") },
-                onClick = { showHubOverflowMenu = false; onOpenCreateGroup() }
-            )
-            DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.QrCode, null) },
-                text = { Text("Join via Invite Link") },
-                onClick = { showHubOverflowMenu = false; onOpenJoinByInvite() }
-            )
-            DropdownMenuItem(
-                leadingIcon = { Icon(Icons.Default.Tune, null) },
-                text = { Text("Chat Settings & Lock") },
-                onClick = { showHubOverflowMenu = false; showSettingsSheet = true }
-            )
-        }
-    }
-
-    if (showSettingsSheet) {
-        ChatSettingsAndSecuritySheet(prefs = prefs, onDismiss = { showSettingsSheet = false })
+    if (showPinSetupDialog) {
+        PinUnlockDialog(
+            title = if (prefs.hasSecretCode) "Change Secret PIN" else "Set Secret Code",
+            subtitle = "Use this PIN to hide and unlock protected conversations.",
+            confirmSetupMode = true,
+            onVerified = {
+                pendingPinSetupAfterLockTarget?.let { ch ->
+                    ChatSettingsStore.toggleChannelLocked(context, ch.id)
+                }
+                pendingPinSetupAfterLockTarget = null
+                if (pendingPinSetupSwitchLockedTab) {
+                    lockedTabUnlocked = true
+                    onSelectFilterTab(ChatFilterTab.LOCKED)
+                    pendingPinSetupSwitchLockedTab = false
+                }
+                showPinSetupDialog = false
+            },
+            onDismiss = {
+                pendingPinSetupAfterLockTarget = null
+                pendingPinSetupSwitchLockedTab = false
+                showPinSetupDialog = false
+            }
+        )
     }
 
     if (pinUnlockCallback != null) {
@@ -1076,29 +1289,21 @@ fun ChatHubScreen(
 }
 
 @Composable
-private fun OverlayMenuRow(
+private fun ActionDialogRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    subtitle: String,
+    label: String,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Surface(shape = CircleShape, color = Color(0xFFF2F4F7), modifier = Modifier.size(40.dp)) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
-            }
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = ObsidianCharcoal)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = StudioTextSecondary)
-        }
+        Icon(icon, contentDescription = null, tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = ObsidianCharcoal)
     }
 }

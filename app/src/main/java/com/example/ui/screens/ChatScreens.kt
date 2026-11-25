@@ -67,19 +67,27 @@ import com.example.chat.ChatFileManager
 import com.example.chat.ChatLocationManager
 import com.example.chat.ChatSettingsStore
 import com.example.chat.StagedChatAttachment
+import com.example.chat.realtime.MemberAvailability
 import com.example.chat.realtime.MemberPresenceState
+import com.example.chat.realtime.RtdbPresenceManager
 import com.example.data.ChatRepository
 import com.example.data.SendMessageOptions
 import com.example.data.SyncedData
+import android.widget.Toast
+import com.example.chat.StatusPrivacyEngine
 import com.example.domain.CatalogueSeedData
 import com.example.model.*
 import com.example.system.AppHapticsAndNotifier
 import com.example.ui.AgencyUiState
 import com.example.ui.ChatViewModel
 import com.example.ui.chat.*
+import com.example.ui.components.AvatarWithAvailabilityBadge
+import com.example.ui.components.SegmentedStatusAvatar
 import com.example.ui.components.StatusPill
 import com.example.ui.components.StudioAvatar
 import com.example.ui.components.formatTitleCase
+import com.example.ui.status.CreateStatusStudioDialog
+import com.example.ui.status.EnhancedFullScreenStatusViewer
 import com.example.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -120,6 +128,7 @@ fun TeamChatScreen(
     val prefs by ChatSettingsStore.prefsFlow.collectAsStateWithLifecycle()
 
     LaunchedEffect(member.uid) {
+        ChatSettingsStore.ensureLoaded(context)
         onEnsureGeneralChannel()
     }
 
@@ -140,6 +149,8 @@ fun TeamChatScreen(
     var showJoinInviteDialog by remember { mutableStateOf(false) }
     var showCreateStatusDialog by remember { mutableStateOf(false) }
     var viewingStatuses by remember { mutableStateOf<List<ChatStatus>?>(null) }
+    var viewingStatusOwnerUid by remember { mutableStateOf<String?>(null) }
+    var viewingInitialStatusId by remember { mutableStateOf<String?>(null) }
     var previewImageMessage by remember { mutableStateOf<Pair<ChatMessage, ImageBitmap>?>(null) }
 
     val activeChannel = remember(state.chatChannels, activeChannelId, activeChannelOverride) {
@@ -373,7 +384,11 @@ fun TeamChatScreen(
                 onOpenCreateGroup = { showCreateGroupDialog = true },
                 onOpenJoinByInvite = { showJoinInviteDialog = true },
                 onOpenCreateStatus = { showCreateStatusDialog = true },
-                onOpenStatusViewer = { _, list -> viewingStatuses = list },
+                onOpenStatusViewer = { ownerUid, list ->
+                    viewingStatusOwnerUid = ownerUid
+                    viewingStatuses = list
+                    viewingInitialStatusId = null
+                },
                 onTogglePinChannel = { ch -> chatViewModel.toggleChannelPin(ch.id, member.uid) },
                 onToggleMuteChannel = { ch -> chatViewModel.toggleChannelMute(ch.id, member.uid) },
                 onToggleArchiveChannel = { ch -> chatViewModel.toggleChannelArchive(ch.id, member.uid) },
@@ -460,7 +475,12 @@ fun TeamChatScreen(
                     ChatAudioManager.stopPlayback()
                     mode = ChatScreenMode.HUB
                 },
-                onClose = onCloseChat
+                onClose = onCloseChat,
+                onOpenStatusViewer = { ownerUid, list ->
+                    viewingStatusOwnerUid = ownerUid
+                    viewingStatuses = list
+                    viewingInitialStatusId = null
+                }
             )
         }
     }
@@ -516,6 +536,13 @@ fun TeamChatScreen(
     if (showCreateGroupDialog) {
         CreateGroupSheet(
             colleagues = state.members.filter { it.statusEnum() == MembershipStatus.APPROVED && it.active && it.uid != member.uid },
+            statuses = state.chatStatuses,
+            myMember = member,
+            onOpenStatuses = { list ->
+                viewingStatusOwnerUid = list.firstOrNull()?.ownerUid
+                viewingStatuses = list
+                viewingInitialStatusId = null
+            },
             onCreateGroup = { title, desc, memberUids, photoB64, announcementOnly, requireApproval ->
                 scope.launch {
                     runCatching {
@@ -555,38 +582,110 @@ fun TeamChatScreen(
     }
 
     if (showCreateStatusDialog) {
-        CreateStatusDialog(
-            onPost = { text, preset, imageB64 ->
-                chatViewModel.postStatus(text, preset, imageB64, member) {
-                    showCreateStatusDialog = false
-                }
+        CreateStatusStudioDialog(
+            myMember = member,
+            allMembers = state.members,
+            onPublishQueue = { submissions ->
+                chatViewModel.enqueueStatuses(submissions, member)
+                showCreateStatusDialog = false
             },
             onDismiss = { showCreateStatusDialog = false }
         )
     }
 
-    viewingStatuses?.let { list ->
-        FullScreenStatusViewer(
-            statuses = list,
-            myUid = member.uid,
+    viewingStatuses?.let { activeList ->
+        val statusSummary = remember(state.chatStatuses, state.members, member.uid, prefs.mutedStatusOwnerUids, prefs.blockedUserUids) {
+            StatusPrivacyEngine.categorizeStatuses(
+                allStatuses = state.chatStatuses,
+                allMembers = state.members,
+                viewer = member,
+                mutedOwnerUids = prefs.mutedStatusOwnerUids,
+                blockedUids = prefs.blockedUserUids
+            )
+        }
+        val allGroups = remember(statusSummary, activeList, viewingStatusOwnerUid) {
+            val list = mutableListOf<Pair<Member, List<ChatStatus>>>()
+            statusSummary.mySummary?.let { list.add(it.member to it.activeStatuses) }
+            (statusSummary.recentUpdates + statusSummary.viewedUpdates + statusSummary.mutedUpdates).forEach {
+                list.add(it.member to it.activeStatuses)
+            }
+            val ownerUid = viewingStatusOwnerUid ?: activeList.firstOrNull()?.ownerUid
+            if (ownerUid != null && list.none { it.first.uid == ownerUid }) {
+                val ownerMember = state.members.firstOrNull { it.uid == ownerUid }
+                if (ownerMember != null) {
+                    list.add(0, ownerMember to activeList)
+                }
+            }
+            list
+        }
+
+        EnhancedFullScreenStatusViewer(
+            statusGroups = allGroups,
+            initialOwnerUid = viewingStatusOwnerUid ?: activeList.firstOrNull()?.ownerUid ?: "",
+            initialStatusId = viewingInitialStatusId ?: "",
+            myMember = member,
             allMembers = state.members,
+            companyId = companyId,
+            mutedOwnerUids = prefs.mutedStatusOwnerUids,
+            blockedUserUids = prefs.blockedUserUids,
             onMarkViewed = { sId -> chatViewModel.markStatusViewed(sId, member.uid) },
-            onDeleteStatus = { sId -> chatViewModel.deleteStatus(sId) },
-            onReplyDm = { ownerUid, replyMsg ->
-                val target = state.members.firstOrNull { it.uid == ownerUid }
-                if (target != null) {
-                    onOpenDirectChat(
-                        target,
-                        { ch ->
-                            activeChannelId = ch.id
-                            mode = ChatScreenMode.THREAD
-                            chatViewModel.sendMessage(ch.id, replyMsg, member)
-                        },
-                        { err -> onReportMessage(err, true) }
+            onReact = { st, owner, emoji ->
+                chatViewModel.reactToStatusAndSendDm(st, owner, emoji, member) { chId ->
+                    activeChannelId = chId
+                    mode = ChatScreenMode.THREAD
+                }
+            },
+            onReplyDm = { st, owner, text ->
+                chatViewModel.replyToStatusInDm(st, owner, text, member) { chId ->
+                    activeChannelId = chId
+                    mode = ChatScreenMode.THREAD
+                }
+            },
+            onToggleMute = { ownerUid ->
+                ChatSettingsStore.toggleStatusOwnerMuted(context, ownerUid)
+            },
+            onToggleBlock = { ownerUid ->
+                ChatSettingsStore.toggleUserBlocked(context, ownerUid)
+                scope.launch {
+                    chatViewModel.syncBlockedAndPrivacyToMyStatuses(
+                        myUid = member.uid,
+                        privacyMode = prefs.statusPrivacyMode,
+                        allowedUids = prefs.statusAllowedUids,
+                        excludedUids = prefs.statusExcludedUids,
+                        blockedUids = if (ownerUid in prefs.blockedUserUids) prefs.blockedUserUids - ownerUid else prefs.blockedUserUids + ownerUid
                     )
                 }
             },
-            onDismiss = { viewingStatuses = null }
+            onReportStatus = { st, reason ->
+                chatViewModel.reportStatus(st.id, member.uid, reason) { ok ->
+                    onReportMessage(if (ok) "Status report submitted to compliance." else "Failed to submit report.", !ok)
+                }
+            },
+            onDeleteStatus = { st ->
+                chatViewModel.deleteStatus(st.id) {
+                    onReportMessage("Status deleted.", false)
+                }
+            },
+            onDeleteAllMyStatuses = {
+                chatViewModel.deleteAllMyStatuses(member.uid) {
+                    onReportMessage("All active statuses deleted.", false)
+                }
+            },
+            onOpenResponderChat = { target ->
+                onOpenDirectChat(
+                    target,
+                    { ch ->
+                        activeChannelId = ch.id
+                        mode = ChatScreenMode.THREAD
+                    },
+                    { err -> onReportMessage(err, true) }
+                )
+            },
+            onDismiss = {
+                viewingStatuses = null
+                viewingStatusOwnerUid = null
+                viewingInitialStatusId = null
+            }
         )
     }
 
@@ -669,7 +768,8 @@ private fun EnhancedChatThreadView(
     onDownloadAttachment: (ChatMessage) -> Unit,
     onDeleteChannel: () -> Unit,
     onBackToHub: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onOpenStatusViewer: (String, List<ChatStatus>) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -799,6 +899,9 @@ private fun EnhancedChatThreadView(
     val peerPresence by remember(peerUid) {
         chatViewModel.observeMemberPresence(peerUid)
     }.collectAsStateWithLifecycle(initialValue = MemberPresenceState())
+    val companyPresence by remember(companyId) {
+        RtdbPresenceManager.observeCompanyPresence(companyId)
+    }.collectAsStateWithLifecycle(initialValue = emptyMap())
 
     val filteredMessages = remember(messages, threadSearchQuery, dateFilterIndex) {
         val q = threadSearchQuery.trim().lowercase()
@@ -861,107 +964,160 @@ private fun EnhancedChatThreadView(
                 .widthIn(max = 640.dp)
                 .align(Alignment.Center)
         ) {
-            // Top Bar
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                IconButton(
-                    onClick = onBackToHub,
-                    modifier = Modifier
-                        .size(44.dp)
-                        .testTag("chat_thread_back_button")
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = StudioBlueAccent)
-                }
-
-                val otherPeer = remember(channel, state.members, member.uid) {
-                    if (channel.channelTypeEnum() == ChatChannelType.DIRECT && !channel.isSelfNotes(member.uid)) {
-                        state.members.firstOrNull { it.uid != member.uid && it.uid in channel.participantUids }
-                    } else null
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { showInfoSheet = true }
-                        .padding(horizontal = 4.dp, vertical = 4.dp)
-                        .testTag(if (channel.channelTypeEnum() == ChatChannelType.DIRECT) "chat_direct_header" else "chat_thread_header")
-                ) {
-                    StudioAvatar(
-                        name = when {
-                            channel.isSelfNotes(member.uid) -> "Saved"
-                            otherPeer != null -> otherPeer.fullName
-                            else -> channel.title
-                        },
-                        size = 38.dp,
-                        borderColor = PureWhite,
-                        photoBase64 = otherPeer?.photoBase64?.ifBlank { channel.photoBase64 } ?: channel.photoBase64
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = when {
-                                channel.isSelfNotes(member.uid) -> "Message Yourself (Saved)"
-                                otherPeer != null -> formatTitleCase(otherPeer.fullName)
-                                else -> formatTitleCase(channel.title)
-                            },
-                            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
-                            fontWeight = FontWeight.ExtraBold,
-                            color = ObsidianCharcoal,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        val subtitleText = when {
-                            ephemeral.recordingNames.isNotEmpty() -> "${ephemeral.recordingNames.first().substringBefore(" ")} recording audio…"
-                            ephemeral.typingNames.isNotEmpty() -> "${ephemeral.typingNames.first().substringBefore(" ")} typing…"
-                            hasPendingWrites -> "Syncing updates…"
-                            peerPresence.online -> "Online"
-                            peerPresence.lastSeenMillis > 0L -> {
-                                val ls = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(peerPresence.lastSeenMillis))
-                                "Last seen $ls"
-                            }
-                            channel.channelTypeEnum() == ChatChannelType.DIRECT -> {
-                                val role = otherPeer?.jobRoleName?.ifBlank { "Graphic Designer" } ?: "Graphic Designer"
-                                "Personal Chat • $role"
-                            }
-                            else -> channel.topic.ifBlank { "Group conversation" }
-                        }
-                        Text(
-                            text = subtitleText,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
-                            color = if (ephemeral.typingNames.isNotEmpty() || ephemeral.recordingNames.isNotEmpty() || peerPresence.online) EmeraldApproved else StudioTextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { showInThreadSearch = !showInThreadSearch }, modifier = Modifier.size(38.dp)) {
-                        Icon(Icons.Default.Search, contentDescription = "Search thread", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
-                    }
-                    IconButton(onClick = { showStarredSheet = true }, modifier = Modifier.size(38.dp)) {
-                        Icon(Icons.Default.StarBorder, contentDescription = "Starred messages", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
-                    }
-                    IconButton(onClick = { showInfoSheet = true }, modifier = Modifier.size(38.dp)) {
-                        Icon(Icons.Default.Info, contentDescription = "Chat info", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
-                    }
-                    IconButton(
-                        onClick = onClose,
+            // Top Bar (always crisp white, separate from message wallpaper)
+            Surface(color = PureWhite, modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
                         modifier = Modifier
-                            .size(38.dp)
-                            .testTag("chat_thread_close_button")
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close Chat", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                        IconButton(
+                            onClick = onBackToHub,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("chat_thread_back_button")
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Chat Hub", tint = StudioBlueAccent)
+                        }
+
+                        val otherPeer = remember(channel, state.members, member.uid) {
+                            if (channel.channelTypeEnum() == ChatChannelType.DIRECT && !channel.isSelfNotes(member.uid)) {
+                                state.members.firstOrNull { it.uid != member.uid && it.uid in channel.participantUids }
+                            } else null
+                        }
+                        val headerAvailability = remember(channel, otherPeer, peerPresence, companyPresence, state.members) {
+                            when {
+                                channel.isSelfNotes(member.uid) -> MemberAvailability.ACTIVE
+                                otherPeer != null -> RtdbPresenceManager.resolveAvailability(otherPeer, peerPresence)
+                                else -> {
+                                    val otherMemberUids = channel.participantUids.filter { it != member.uid }
+                                    val anyActive = otherMemberUids.any { uid ->
+                                        val m = state.members.firstOrNull { it.uid == uid }
+                                        RtdbPresenceManager.resolveAvailability(m, companyPresence[uid]) == MemberAvailability.ACTIVE
+                                    }
+                                    val anyBusy = otherMemberUids.any { uid ->
+                                        val m = state.members.firstOrNull { it.uid == uid }
+                                        RtdbPresenceManager.resolveAvailability(m, companyPresence[uid]) == MemberAvailability.BUSY
+                                    }
+                                    when {
+                                        anyActive -> MemberAvailability.ACTIVE
+                                        anyBusy -> MemberAvailability.BUSY
+                                        else -> MemberAvailability.AWAY
+                                    }
+                                }
+                            }
+                        }
+                        val otherPeerActiveStatuses = remember(state.chatStatuses, otherPeer?.uid, member.uid, prefs.blockedUserUids) {
+                            if (otherPeer == null) emptyList()
+                            else StatusPrivacyEngine.visibleActiveStatusesForOwner(
+                                ownerUid = otherPeer.uid,
+                                allStatuses = state.chatStatuses,
+                                viewer = member,
+                                blockedUids = prefs.blockedUserUids
+                            )
+                        }
+                        val myActiveStatuses = remember(state.chatStatuses, member.uid) {
+                            StatusPrivacyEngine.visibleActiveStatusesForOwner(
+                                ownerUid = member.uid,
+                                allStatuses = state.chatStatuses,
+                                viewer = member,
+                                blockedUids = emptySet()
+                            )
+                        }
+                        val headerStatuses = if (channel.isSelfNotes(member.uid)) myActiveStatuses else otherPeerActiveStatuses
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                                .testTag(if (channel.channelTypeEnum() == ChatChannelType.DIRECT) "chat_direct_header" else "chat_thread_header")
+                        ) {
+                            SegmentedStatusAvatar(
+                                name = when {
+                                    channel.isSelfNotes(member.uid) -> "Saved"
+                                    otherPeer != null -> otherPeer.fullName
+                                    else -> channel.title
+                                },
+                                photoBase64 = otherPeer?.photoBase64?.ifBlank { channel.photoBase64 } ?: channel.photoBase64,
+                                size = 40.dp,
+                                statuses = headerStatuses,
+                                myUid = member.uid,
+                                availability = headerAvailability,
+                                showAvailabilityBadge = !channel.isSelfNotes(member.uid),
+                                badgeTestTag = "chat_thread_status_dot",
+                                onClick = if (headerStatuses.isNotEmpty()) {
+                                    {
+                                        val targetUid = headerStatuses.first().ownerUid
+                                        onOpenStatusViewer(targetUid, headerStatuses)
+                                    }
+                                } else null
+                            )
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable { showInfoSheet = true }
+                                    .padding(vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = when {
+                                        channel.isSelfNotes(member.uid) -> "Message Yourself (Saved)"
+                                        otherPeer != null -> formatTitleCase(otherPeer.fullName)
+                                        else -> formatTitleCase(channel.title)
+                                    },
+                                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp),
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = ObsidianCharcoal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val subtitleText = when {
+                                    ephemeral.recordingNames.isNotEmpty() -> "${ephemeral.recordingNames.first().substringBefore(" ")} recording audio…"
+                                    ephemeral.typingNames.isNotEmpty() -> "${ephemeral.typingNames.first().substringBefore(" ")} typing…"
+                                    otherPeer != null && peerPresence.online -> peerPresence.availability.label
+                                    otherPeer != null && peerPresence.lastSeenMillis > 0L -> {
+                                        val ls = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(peerPresence.lastSeenMillis))
+                                        "Last seen $ls"
+                                    }
+                                    channel.isSelfNotes(member.uid) -> "Personal Notes"
+                                    channel.channelTypeEnum() == ChatChannelType.DIRECT -> "Personal Chat"
+                                    else -> channel.topic.ifBlank { "Group conversation" }
+                                }
+                                Text(
+                                    text = subtitleText,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 12.sp),
+                                    color = when {
+                                        ephemeral.typingNames.isNotEmpty() || ephemeral.recordingNames.isNotEmpty() -> EmeraldApproved
+                                        otherPeer != null && peerPresence.online && peerPresence.availability == MemberAvailability.BUSY -> CrimsonBlocked
+                                        otherPeer != null && peerPresence.online -> EmeraldApproved
+                                        else -> StudioTextSecondary
+                                    },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { showInThreadSearch = !showInThreadSearch }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Default.Search, contentDescription = "Search thread", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = { showStarredSheet = true }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Default.StarBorder, contentDescription = "Starred messages", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = { showInfoSheet = true }, modifier = Modifier.size(44.dp)) {
+                                Icon(Icons.Default.Info, contentDescription = "Chat info", tint = ObsidianCharcoal, modifier = Modifier.size(20.dp))
+                            }
+                        }
                     }
+                    HorizontalDivider(color = Color(0xFFECEFF2))
                 }
             }
-            HorizontalDivider(color = Color(0xFFECEFF2))
 
             // Search-within-conversation + Search-by-Date bar
             AnimatedVisibility(visible = showInThreadSearch) {
@@ -1044,11 +1200,12 @@ private fun EnhancedChatThreadView(
                 }
             }
 
-            // Messages Stream
+            // Messages Stream (applies active chat wallpaper)
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .animatedChatGlowBackdrop(isThread = true, wallpaperId = threadWallpaper)
             ) {
                 if (filteredMessages.isEmpty()) {
                     Column(
@@ -1109,7 +1266,25 @@ private fun EnhancedChatThreadView(
                                 onDownloadAttachment = { onDownloadAttachment(msg) },
                                 onShowMessageInfo = { messageInfoTarget = msg },
                                 onReportMessage = { reportTargetPair = channel to msg },
-                                onReportStatusError = {}
+                                onReportStatusError = {},
+                                onOpenStatusRef = { sId ->
+                                    val targetStatus = state.chatStatuses.firstOrNull { it.id == sId }
+                                    if (targetStatus != null && targetStatus.isActive) {
+                                        val ownerList = StatusPrivacyEngine.visibleActiveStatusesForOwner(
+                                            ownerUid = targetStatus.ownerUid,
+                                            allStatuses = state.chatStatuses,
+                                            viewer = member,
+                                            blockedUids = prefs.blockedUserUids
+                                        )
+                                        if (ownerList.isNotEmpty()) {
+                                            onOpenStatusViewer(targetStatus.ownerUid, ownerList)
+                                        } else {
+                                            Toast.makeText(context, "Status is private or hidden by viewer settings.", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        Toast.makeText(context, "This status has expired (older than 24h) or was deleted.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
                             )
                         }
                     }
@@ -1406,37 +1581,6 @@ private fun EnhancedChatThreadView(
                             }
                         }
                     }
-
-                    // Quick Attach Bar (Preserves quick_attach_* testTags + adds Poll/ViewOnce toggles)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        QuickAttachPill(
-                            label = "Attach File",
-                            icon = Icons.Outlined.Description,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("quick_attach_file_button"),
-                            onClick = onPickDocs
-                        )
-                        QuickAttachPill(
-                            label = "Photo",
-                            icon = Icons.Outlined.Image,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("quick_attach_photo_button"),
-                            onClick = onPickSinglePhoto
-                        )
-                        QuickAttachPill(
-                            label = "Audio",
-                            icon = Icons.Outlined.Mic,
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("quick_attach_audio_button"),
-                            onClick = onPickAudio
-                        )
-                    }
                 }
             }
         }
@@ -1559,8 +1703,12 @@ private fun EnhancedChatThreadView(
             onArchiveToggle = { chatViewModel.toggleChannelArchive(channel.id, member.uid) },
             onFavouriteToggle = { chatViewModel.toggleChannelFavourite(channel.id, member.uid) },
             onLockToggle = {
-                if (!prefs.hasSecretCode) showPinSetupDialog = true
-                else ChatSettingsStore.toggleChannelLocked(context, channel.id)
+                if (!prefs.hasSecretCode) {
+                    showInfoSheet = false
+                    showPinSetupDialog = true
+                } else {
+                    ChatSettingsStore.toggleChannelLocked(context, channel.id)
+                }
             },
             onResetInviteLink = { chatViewModel.resetInviteLink(channel.id) },
             onApprovePending = { uid -> chatViewModel.approvePendingMember(channel.id, uid) },
@@ -1580,7 +1728,12 @@ private fun EnhancedChatThreadView(
                 reportTargetPair = channel to null
             },
             onOpenAttachment = { msg -> showInfoSheet = false; onOpenMessageAttachment(msg) },
-            onDismiss = { showInfoSheet = false }
+            onDismiss = { showInfoSheet = false },
+            statuses = state.chatStatuses,
+            onOpenMemberStatuses = { list ->
+                val ownerUid = list.firstOrNull()?.ownerUid ?: ""
+                onOpenStatusViewer(ownerUid, list)
+            }
         )
     }
 
@@ -1650,32 +1803,6 @@ private fun EnhancedChatThreadView(
             },
             dismissButton = { TextButton(onClick = { showDeleteThreadConfirm = false }) { Text("Cancel") } }
         )
-    }
-}
-
-@Composable
-private fun QuickAttachPill(
-    label: String,
-    icon: ImageVector,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = MutedSurface,
-        modifier = modifier.height(42.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally)
-        ) {
-            Icon(icon, contentDescription = label, tint = ObsidianCharcoal, modifier = Modifier.size(16.dp))
-            Text(label, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = ObsidianCharcoal, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
     }
 }
 

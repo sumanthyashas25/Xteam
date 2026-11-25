@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -231,12 +232,18 @@ fun BusinessReferenceCard(
 ) {
     val kind = message.businessRefKind.uppercase()
     val (icon, tint, bg) = when (kind) {
+        "STATUS" -> Triple(Icons.Default.AutoAwesome, EmeraldApproved, Color(0xFFECFDF5))
         "INVOICE" -> Triple(Icons.Default.Receipt, EmeraldApproved, Color(0xFFECFDF5))
         "QUOTATION" -> Triple(Icons.Default.Work, VioletPrimary, Color(0xFFF5F3FF))
         "TASK" -> Triple(Icons.Default.TaskAlt, Color(0xFF0288D1), Color(0xFFF0F9FF))
         "PROJECT" -> Triple(Icons.Default.Folder, Color(0xFFD97706), Color(0xFFFFFBEB))
         "PAYMENT" -> Triple(Icons.Default.Payment, EmeraldApproved, Color(0xFFECFDF5))
         else -> Triple(Icons.Default.Bookmark, ObsidianCharcoal, MutedSurface)
+    }
+    val thumbBmp = remember(kind, message.attachmentDataBase64) {
+        if (kind == "STATUS" && message.attachmentDataBase64.isNotBlank()) {
+            ChatFileManager.decodeBase64Bitmap(message.attachmentDataBase64, 200)
+        } else null
     }
 
     Surface(
@@ -247,6 +254,7 @@ fun BusinessReferenceCard(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
+            .testTag(if (kind == "STATUS") "status_ref_card_${message.businessRefId}" else "biz_ref_card_${message.businessRefId}")
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -261,9 +269,9 @@ fun BusinessReferenceCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(18.dp))
+                    Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
                     Text(
-                        text = kind,
+                        text = if (kind == "STATUS") "STATUS REFERENCE" else kind,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = tint
@@ -276,6 +284,17 @@ fun BusinessReferenceCard(
                         contentColor = tint
                     )
                 }
+            }
+            if (thumbBmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = thumbBmp.asImageBitmap(),
+                    contentDescription = "Referenced status thumbnail",
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(76.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                )
             }
 
             Text(
@@ -523,7 +542,7 @@ fun StudioMessageBubble(
                         }
 
                         // Text body
-                        if (message.body.isNotBlank() && !message.body.startsWith("Voice message") && !message.isPoll && !message.hasBusinessRef) {
+                        if (message.body.isNotBlank() && !message.body.startsWith("Voice message") && !message.isPoll && (!message.hasBusinessRef || message.businessRefKind.equals("STATUS", ignoreCase = true))) {
                             Text(
                                 text = message.body,
                                 style = MaterialTheme.typography.bodyMedium,

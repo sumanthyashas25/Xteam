@@ -35,11 +35,13 @@ const ALLOWED_BUCKETS = {
       "audio/mpeg",
       "audio/wav",
       "audio/ogg",
+      "audio/3gpp",
+      "audio/amr",
     ],
   },
   "chat-videos": {
     maxBytes: 15 * 1024 * 1024,
-    mimes: ["video/mp4", "video/webm", "image/jpeg"],
+    mimes: ["video/mp4", "video/webm", "video/quicktime", "video/3gpp", "image/jpeg"],
   },
   "chat-docs": {
     maxBytes: 10 * 1024 * 1024,
@@ -423,7 +425,23 @@ async function assertChatParticipant(companyId, chatId, uid, member, idToken, pr
       }
       return { chat: doc, isSuperOrAdmin, isParticipant: true };
     }
-    if (["GENERAL", "PROJECT", "DEPARTMENT"].includes(channelType)) {
+    if (channelType === "SAVED") {
+      if (doc.createdByUid !== uid && !participants.includes(uid)) {
+        const err = new Error("Unauthorized saved messages access");
+        err.status = 403;
+        throw err;
+      }
+      return { chat: doc, isSuperOrAdmin, isParticipant: true };
+    }
+    if (channelType === "GROUP") {
+      if (!participants.includes(uid) && !isSuperOrAdmin) {
+        const err = new Error("User is not a member of this group chat");
+        err.status = 403;
+        throw err;
+      }
+      return { chat: doc, isSuperOrAdmin, isParticipant: participants.includes(uid) || isSuperOrAdmin };
+    }
+    if (["GENERAL", "PROJECT", "DEPARTMENT", "ANNOUNCEMENT"].includes(channelType)) {
       return { chat: doc, isSuperOrAdmin, isParticipant: true };
     }
     const err = new Error("Unsupported chat channel type");
@@ -513,9 +531,15 @@ async function handleR2Upload(request, url, uid, idToken, projectId, firestoreDb
   const member = await fetchMemberDoc(companyId, uid, idToken, projectId, firestoreDbId);
   assertApprovedNotSuspended(member);
 
+  const scope = sanitizeId(url.searchParams.get("scope") || "");
   let prefix = "";
   if (bucket === "avatars") {
     prefix = `companies/${companyId}/avatars/${uid}/`;
+  } else if (scope === "status" || chatId === "status_feed") {
+    if (!["chat-media", "chat-videos", "chat-voice"].includes(bucket)) {
+      return jsonResponse({ error: "Unsupported status media bucket" }, 400, cors);
+    }
+    prefix = `companies/${companyId}/statuses/${uid}/`;
   } else if (bucket === "group-photos") {
     if (!chatId) return jsonResponse({ error: "Missing chatId for group photo" }, 400, cors);
     await assertChatParticipant(companyId, chatId, uid, member, idToken, projectId, firestoreDbId);
@@ -584,6 +608,7 @@ async function handleR2Download(url, uid, idToken, projectId, firestoreDbId, env
 
   const companyId = sanitizeId(url.searchParams.get("companyId") || "");
   const chatId = sanitizeId(url.searchParams.get("chatId") || "");
+  const statusId = sanitizeId(url.searchParams.get("statusId") || "");
   const storagePath = String(url.searchParams.get("storagePath") || "").replace(/^\/+/, "");
 
   if (!companyId) return jsonResponse({ error: "Missing companyId" }, 400, cors);
@@ -594,11 +619,36 @@ async function handleR2Download(url, uid, idToken, projectId, firestoreDbId, env
   const member = await fetchMemberDoc(companyId, uid, idToken, projectId, firestoreDbId);
   assertApprovedNotSuspended(member);
 
+  const isStatusMedia = storagePath.startsWith(`companies/${companyId}/statuses/`);
   const isAvatarOrGroup =
     storagePath.startsWith(`companies/${companyId}/avatars/`) ||
     storagePath.startsWith(`companies/${companyId}/group-photos/`);
 
-  if (!isAvatarOrGroup) {
+  if (isStatusMedia) {
+    if (statusId) {
+      const stUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/${firestoreDbId}/documents/companies/${companyId}/chat_statuses/${statusId}`;
+      const stRes = await fetch(stUrl, { headers: { Authorization: `Bearer ${idToken}` } });
+      if (!stRes.ok) {
+        return jsonResponse({ error: "Status access denied or unavailable" }, stRes.status === 404 ? 404 : 403, cors);
+      }
+      const stDoc = parseFirestoreDoc(await stRes.json());
+      if (stDoc.ownerUid && stDoc.ownerUid !== uid) {
+        const blocked = Array.isArray(stDoc.ownerBlockedUids) ? stDoc.ownerBlockedUids : [];
+        if (blocked.includes(uid)) {
+          return jsonResponse({ error: "Blocked user cannot view status media" }, 403, cors);
+        }
+        const mode = stDoc.privacyMode || "ALL_APPROVED";
+        const allowed = Array.isArray(stDoc.allowedUids) ? stDoc.allowedUids : [];
+        const excluded = Array.isArray(stDoc.excludedUids) ? stDoc.excludedUids : [];
+        if (mode === "SELECTED_ONLY" && !allowed.includes(uid)) {
+          return jsonResponse({ error: "You do not have permission to view this status" }, 403, cors);
+        }
+        if (mode === "ALL_EXCEPT" && excluded.includes(uid)) {
+          return jsonResponse({ error: "You do not have permission to view this status" }, 403, cors);
+        }
+      }
+    }
+  } else if (!isAvatarOrGroup) {
     if (!chatId) return jsonResponse({ error: "Missing chatId" }, 400, cors);
     const expectedPrefix = `companies/${companyId}/chats/${chatId}/`;
     if (!storagePath.startsWith(expectedPrefix)) {

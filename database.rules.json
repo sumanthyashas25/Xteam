@@ -2,30 +2,31 @@
   "rules": {
     ".read": false,
     ".write": false,
-    "presence": {
+    "companies": {
       "$companyId": {
-        "$uid": {
+        "presence": {
           ".read": "auth != null",
-          ".write": "auth != null && auth.uid == $uid"
-        }
-      }
-    },
-    "typing": {
-      "$companyId": {
-        "$chatId": {
           "$uid": {
             ".read": "auth != null",
             ".write": "auth != null && auth.uid == $uid"
           }
-        }
-      }
-    },
-    "recording": {
-      "$companyId": {
-        "$chatId": {
-          "$uid": {
+        },
+        "typing": {
+          "$chatId": {
             ".read": "auth != null",
-            ".write": "auth != null && auth.uid == $uid"
+            "$uid": {
+              ".read": "auth != null",
+              ".write": "auth != null && auth.uid == $uid"
+            }
+          }
+        },
+        "recording": {
+          "$chatId": {
+            ".read": "auth != null",
+            "$uid": {
+              ".read": "auth != null",
+              ".write": "auth != null && auth.uid == $uid"
+            }
           }
         }
       }

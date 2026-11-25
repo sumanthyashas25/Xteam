@@ -234,6 +234,17 @@ class XMaxDomainAndPdfTest {
         assertTrue(target.exists())
         assertTrue(target.absolutePath.contains("quotations/QT-2026-0001_v1.pdf"))
 
+        // Verify Catalogue Ticket design palettes and category monograms used in PDF rendering
+        val p0 = QuotationPdfGenerator.ticketPaletteForIndex(0)
+        val p1 = QuotationPdfGenerator.ticketPaletteForIndex(1)
+        val p2 = QuotationPdfGenerator.ticketPaletteForIndex(2)
+        val p3 = QuotationPdfGenerator.ticketPaletteForIndex(3)
+        assertNotEquals(p0.startColor, p1.startColor)
+        assertNotEquals(p1.startColor, p2.startColor)
+        assertNotEquals(p2.startColor, p3.startColor)
+        assertEquals("BD", QuotationPdfGenerator.ticketMonogram("Branding", "Logo Kit"))
+        assertEquals("WB", QuotationPdfGenerator.ticketMonogram("Web", "Company Site"))
+
         val shareIntent = QuotationPdfGenerator.buildShareIntent(context, target, quote)
         assertEquals(android.content.Intent.ACTION_SEND, shareIntent.action)
         assertEquals("application/pdf", shareIntent.type)

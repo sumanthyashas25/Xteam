@@ -1355,6 +1355,83 @@ test("Scenario 13: Advanced Chat strict DM/Saved privacy, snapshot reports, kill
     })
   );
   await assertFails(staffDb.collection("companies").doc(COMPANY_ID).collection("invoices").get());
+
+  // 6. 24h Chat Statuses: Privacy modes, mutual blocking, permitted viewer updates, and deletion
+  const statusDocRef = staffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1");
+  // Staff creates ALL_APPROVED status
+  await assertSucceeds(
+    statusDocRef.set({
+      id: "status_pub_1",
+      companyId: COMPANY_ID,
+      ownerUid: STAFF_UID,
+      ownerName: "Creative Staff",
+      kind: "TEXT",
+      text: "Launching new campaign today!",
+      privacyMode: "ALL_APPROVED",
+      allowedUids: [],
+      excludedUids: [],
+      ownerBlockedUids: [],
+      viewerUids: [],
+      viewerTimestamps: {},
+      reactions: {},
+      replyCount: 0,
+      createdAtMillis: Date.now(),
+      expiresAtMillis: Date.now() + 86400000,
+    })
+  );
+
+  // Other staff can read ALL_APPROVED status
+  await assertSucceeds(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").get());
+
+  // Other staff marks as viewed and reacts (permitted update fields)
+  await assertSucceeds(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").update({
+      viewerUids: [OTHER_STAFF_UID],
+      viewerTimestamps: { [OTHER_STAFF_UID]: Date.now() },
+      reactions: { [OTHER_STAFF_UID]: "🔥" },
+      replyCount: 1,
+    })
+  );
+
+  // Other staff attempts to change status text or owner (MUST FAIL)
+  await assertFails(
+    otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").update({
+      text: "Tampered status text",
+    })
+  );
+
+  // Staff updates privacy mode to SELECTED_ONLY (only admin allowed)
+  await assertSucceeds(
+    statusDocRef.update({
+      privacyMode: "SELECTED_ONLY",
+      allowedUids: [ADMIN_UID],
+      excludedUids: [],
+      ownerBlockedUids: [],
+    })
+  );
+
+  // Admin can read, but OTHER_STAFF cannot read SELECTED_ONLY status
+  await assertSucceeds(adminDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").get());
+  await assertFails(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").get());
+
+  // Staff blocks OTHER_STAFF in ALL_APPROVED status
+  await assertSucceeds(
+    statusDocRef.update({
+      privacyMode: "ALL_APPROVED",
+      allowedUids: [],
+      excludedUids: [],
+      ownerBlockedUids: [OTHER_STAFF_UID],
+    })
+  );
+  // Blocked user cannot read status
+  await assertFails(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").get());
+
+  // Other staff cannot delete staff's status
+  await assertFails(otherStaffDb.collection("companies").doc(COMPANY_ID).collection("chat_statuses").doc("status_pub_1").delete());
+
+  // Staff can delete their own status
+  await assertSucceeds(statusDocRef.delete());
 });
+
 
 

@@ -412,7 +412,9 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("chat_tile_images").assertDoesNotExist()
     composeTestRule.onNodeWithTag("dm_person_u_staff").assertExists()
     composeTestRule.onNodeWithTag("dept_chat_dept_creative").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("chat_hub_send_button").assertExists()
+    composeTestRule.onNodeWithTag("chat_hub_overflow_button").assertExists()
+    composeTestRule.onNodeWithTag("chat_hub_close_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("create_channel_button").assertDoesNotExist()
     // DIRECT channels must NOT show up inside Team Threads
     composeTestRule.onNodeWithTag("channel_chip_dm_u_admin_u_staff").assertDoesNotExist()
 
@@ -421,8 +423,10 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_direct_header").assertExists()
     composeTestRule.onAllNodesWithText("Aarav Designer")[0].assertExists()
-    composeTestRule.onNodeWithText("Personal Chat • Graphic Designer").assertExists()
+    composeTestRule.onNodeWithText("Personal Chat").assertExists()
+    composeTestRule.onNodeWithText("Personal Chat • Graphic Designer").assertDoesNotExist()
     composeTestRule.onNodeWithText("Team channel & shared files").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_thread_close_button").assertDoesNotExist()
     composeTestRule.onNodeWithTag("chat_thread_back_button").performClick()
     composeTestRule.waitForIdle()
 
@@ -431,9 +435,11 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("chat_thread_screen").assertExists()
     composeTestRule.onNodeWithText("Brand_Guidelines.pdf").assertExists()
     composeTestRule.onNodeWithText("Reviewed — ready for client sign-off").assertExists()
-    composeTestRule.onNodeWithTag("quick_attach_file_button").assertExists()
-    composeTestRule.onNodeWithTag("quick_attach_photo_button").assertExists()
-    composeTestRule.onNodeWithTag("quick_attach_audio_button").assertExists()
+    composeTestRule.onNodeWithTag("quick_attach_file_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("quick_attach_photo_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("quick_attach_audio_button").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("chat_thread_input").performTextInput("Hello team")
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("chat_thread_send_button").assertExists()
 
     assertEquals("242 KB", ChatFileManager.formatFileSize(248_000L))
@@ -904,12 +910,14 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("nav_tab_chat").assertDoesNotExist()
     composeTestRule.onNodeWithText("Welcome").assertDoesNotExist()
 
-    // Closing Chat returns Staff cleanly to MY_WORK
-    composeTestRule.onNodeWithTag("chat_hub_close_button").performClick()
+    composeTestRule.onNodeWithText("Synced").assertDoesNotExist()
+
+    // Navigating back from Chat returns Staff cleanly to MY_WORK
+    composeTestRule.onNodeWithTag("chat_hub_back_button").performClick()
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("my_work_plan_switcher").assertExists()
 
-    // 2. Switching MyWorkScreen to Plan renders calendar design + day-to-day focus & editor workflow
+    // 2. Switching MyWorkScreen to Plan renders calendar design + team availability + editor workflow
     var savedPlan: StaffPlanItem? = null
     var focusToggled = false
     composeTestRule.activityRule.scenario.onActivity { activity ->
@@ -930,6 +938,7 @@ class ExampleRobolectricTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("my_work_mode_plan").performClick()
     composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("staff_calendar_team_status_bar").assertExists()
     composeTestRule.onNodeWithTag("staff_plan_calendar_card").assertExists()
     composeTestRule.onNodeWithTag("today_task_filter").assertExists()
     composeTestRule.onNodeWithTag("staff_plan_lazy_list").performTouchInput {

@@ -72,6 +72,7 @@ enum class PrimaryTab(val label: String, val icon: ImageVector, val inactiveIcon
     HOME("Home", Icons.Filled.Home, Icons.Outlined.Home),
     REQUESTS("Requests", Icons.Filled.Inbox, Icons.Outlined.Inbox),
     CHAT("Chats", Icons.AutoMirrored.Filled.Chat, Icons.AutoMirrored.Outlined.Chat),
+    STATUS("Status", Icons.Filled.Adjust, Icons.Outlined.Adjust),
     MY_WORK("My Work", Icons.Filled.TaskAlt, Icons.Outlined.TaskAlt)
 }
 
@@ -139,6 +140,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         return
     }
     val isStaffOnly = member.accessLevelEnum() == AccessLevel.STAFF
+    val chatViewModel: com.example.ui.ChatViewModel = viewModel()
 
     val canSeeCommercial = state.isSuperAdmin || state.isAdmin ||
         listOf(
@@ -161,10 +163,12 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                 add(PrimaryTab.MY_WORK)
                 if (canSeeCommercial) add(PrimaryTab.REQUESTS)
                 add(PrimaryTab.CHAT)
+                add(PrimaryTab.STATUS)
             } else {
                 add(PrimaryTab.HOME)
                 add(PrimaryTab.REQUESTS)
                 add(PrimaryTab.CHAT)
+                add(PrimaryTab.STATUS)
                 add(PrimaryTab.MY_WORK)
             }
         }
@@ -174,6 +178,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         ActivityResultContracts.RequestPermission()
     ) { }
     LaunchedEffect(member.uid) {
+        com.example.chat.ChatSettingsStore.ensureLoaded(context)
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -241,10 +246,10 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
         BackHandler { scope.launch { drawerState.close() } }
     } else if (secondaryDest != null) {
         BackHandler { secondaryDest = null }
-    } else if (activeTab == PrimaryTab.CHAT) {
+    } else if (activeTab == PrimaryTab.CHAT || activeTab == PrimaryTab.STATUS) {
         BackHandler {
             chatInitialChannelId = null
-            activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
+            activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT && it != PrimaryTab.STATUS } ?: PrimaryTab.HOME
         }
     }
 
@@ -369,8 +374,7 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                     }
                                 },
                                 actions = {
-                                    SyncFeedbackChip(state.syncFeedback, state.deliverablesPendingSync)
-                                    Spacer(Modifier.width(12.dp))
+                                    Spacer(Modifier.width(8.dp))
                                 }
                             )
                         } else {
@@ -429,10 +433,6 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    if (state.syncFeedback != com.example.ui.SyncFeedback.IDLE || state.deliverablesPendingSync) {
-                                        SyncFeedbackChip(state.syncFeedback, state.deliverablesPendingSync)
-                                        Spacer(Modifier.width(4.dp))
-                                    }
                                     Box {
                                         CircleHeaderIconButton(
                                             icon = Icons.Outlined.Notifications,
@@ -535,7 +535,8 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             onCloseChat = {
                                                 chatInitialChannelId = null
                                                 secondaryDest = null
-                                            }
+                                            },
+                                            chatViewModel = chatViewModel
                                         )
                                         SecondaryDestination.NOTIFICATIONS -> NotificationsScreen(
                                             state = state,
@@ -655,7 +656,16 @@ internal fun ApprovedWorkspace(state: AgencyUiState, viewModel: AgencyViewModel)
                                             },
                                             onCloseChat = {
                                                 chatInitialChannelId = null
-                                                activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT } ?: PrimaryTab.HOME
+                                                activeTab = visibleTabs.firstOrNull { it != PrimaryTab.CHAT && it != PrimaryTab.STATUS } ?: PrimaryTab.HOME
+                                            },
+                                            chatViewModel = chatViewModel
+                                        )
+                                        PrimaryTab.STATUS -> com.example.ui.status.StatusTabScreen(
+                                            state = state,
+                                            chatViewModel = chatViewModel,
+                                            onOpenDirectChannel = { ch ->
+                                                chatInitialChannelId = ch.id
+                                                activeTab = PrimaryTab.CHAT
                                             }
                                         )
                                         PrimaryTab.MY_WORK -> MyWorkScreen(

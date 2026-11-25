@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.RectF
@@ -207,12 +208,27 @@ object QuotationPdfGenerator {
         canvas.drawText("Prepared by: ${quotation.preparedByName}", MARGIN_X, y + 9f, mutedPaint)
         y += 18f
 
-        // === ITEMIZED LINES TABLE ===
+        // === ITEMIZED SERVICES & DELIVERABLES (CATALOGUE TICKET DESIGN) ===
         y = drawItemsTableHeader(canvas, y, boldBodyPaint, rightBoldPaint)
 
-        for (line in quotation.lines) {
+        for ((idx, line) in quotation.lines.withIndex()) {
+            val palette = ticketPaletteForIndex(idx)
+            val freqLabel = if (line.billingFrequency == "ONE_TIME") "" else " / ${line.billingFrequency.lowercase()}"
+            val effectiveUnit = line.overridePricePaise ?: line.unitPricePaise
+            val rateStr = if (line.separatelyBilled) "Actuals" else MoneyFormatter.formatInr(effectiveUnit)
+            val amtStr = if (line.separatelyBilled) "Separately Billed" else MoneyFormatter.formatInr(line.lineTotalPaise)
+            val qtyMeta = "Qty: ${line.quantity}$freqLabel  •  Rate: $rateStr"
+
+            val whitePanelLeft = MARGIN_X + 64f
+            val whitePanelRight = MARGIN_X + CONTENT_WIDTH - 8f
+            val whitePanelInnerWidth = (whitePanelRight - whitePanelLeft - 24f).toInt()
+            val amtWidthReserve = rightBoldPaint.measureText(amtStr) + 12f
+            val titleWidth = (whitePanelInnerWidth - amtWidthReserve).toInt().coerceAtLeast(110)
+
+            val titleLayout = buildStaticLayout(line.title, boldBodyPaint, titleWidth)
+            val metaLayout = buildStaticLayout(qtyMeta, mutedPaint, whitePanelInnerWidth)
             val detailsText = buildString {
-                if (line.description.isNotBlank()) append(line.description)
+                if (line.description.isNotBlank()) append(line.description.trim())
                 if (line.inclusions.isNotEmpty()) {
                     if (isNotEmpty()) append("\n")
                     append("Includes: ")
@@ -221,31 +237,72 @@ object QuotationPdfGenerator {
                     })
                 }
             }
-            val titleLayout = buildStaticLayout(line.title, boldBodyPaint, COL_ITEM_W.toInt())
-            val detailLayout = if (detailsText.isNotBlank()) buildStaticLayout(detailsText, mutedPaint, COL_ITEM_W.toInt()) else null
-            val rowHeight = (titleLayout.height + (detailLayout?.height ?: 0) + 14f).coerceAtLeast(26f)
+            val detailLayout = if (detailsText.isNotBlank()) {
+                buildStaticLayout(detailsText, mutedPaint, whitePanelInnerWidth)
+            } else null
 
-            if (y + rowHeight > PAGE_HEIGHT - MARGIN_BOTTOM - 20f) {
+            val panelContentH = titleLayout.height + 4f + metaLayout.height +
+                (detailLayout?.let { 5f + it.height } ?: 0f) + 18f
+            val cardHeight = maxOf(62f, panelContentH + 14f)
+
+            if (y + cardHeight > PAGE_HEIGHT - MARGIN_BOTTOM - 16f) {
                 startNewPage(drawTableHeader = true)
             }
 
-            drawStaticLayout(canvas, titleLayout, COL_ITEM_X, y + 4f)
+            val cardRect = RectF(MARGIN_X, y, MARGIN_X + CONTENT_WIDTH, y + cardHeight)
+            val ticketPath = buildTicketPath(cardRect, cornerRadius = 15f, notchRadius = 6.5f)
+
+            val gradPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                shader = android.graphics.LinearGradient(
+                    cardRect.left, cardRect.top, cardRect.right, cardRect.top,
+                    palette.startColor, palette.endColor,
+                    android.graphics.Shader.TileMode.CLAMP
+                )
+            }
+            canvas.drawPath(ticketPath, gradPaint)
+
+            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1.1f
+                color = palette.borderColor
+            }
+            canvas.drawPath(ticketPath, strokePaint)
+
+            // Left circular category emblem centered beside ticket notch
+            val emblemCx = MARGIN_X + 36f
+            val emblemCy = cardRect.centerY()
+            val emblemBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = palette.emblemBg }
+            val emblemRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1.2f
+                color = Color.argb(180, 255, 255, 255)
+            }
+            canvas.drawCircle(emblemCx, emblemCy, 15.5f, emblemBgPaint)
+            canvas.drawCircle(emblemCx, emblemCy, 15.5f, emblemRingPaint)
+            val monogram = ticketMonogram(line.category, line.title)
+            val emblemTextPaint = makeTextPaint(9.5f, palette.emblemTextColor, bold = true, align = Paint.Align.CENTER)
+            canvas.drawText(monogram, emblemCx, emblemCy + 3.5f, emblemTextPaint)
+
+            // Inset rounded crisp white detail panel matching CatalogueServiceTicketCard
+            val panelRect = RectF(whitePanelLeft, y + 7f, whitePanelRight, y + cardHeight - 7f)
+            val whitePanelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(242, 255, 255, 255)
+            }
+            canvas.drawRoundRect(panelRect, 11f, 11f, whitePanelPaint)
+
+            val contentX = panelRect.left + 12f
+            var cy = panelRect.top + 9f
+            drawStaticLayout(canvas, titleLayout, contentX, cy)
+            canvas.drawText(amtStr, panelRect.right - 12f, cy + 10f, rightBoldPaint)
+            cy += titleLayout.height + 4f
+            drawStaticLayout(canvas, metaLayout, contentX, cy)
+            cy += metaLayout.height
             if (detailLayout != null) {
-                drawStaticLayout(canvas, detailLayout, COL_ITEM_X, y + 6f + titleLayout.height)
+                cy += 5f
+                drawStaticLayout(canvas, detailLayout, contentX, cy)
             }
 
-            val freqLabel = if (line.billingFrequency == "ONE_TIME") "" else " ${line.billingFrequency.lowercase()}"
-            val qtyStr = "${line.quantity}$freqLabel"
-            val effectiveUnit = line.overridePricePaise ?: line.unitPricePaise
-            val rateStr = if (line.separatelyBilled) "Actuals" else MoneyFormatter.formatInr(effectiveUnit)
-            val amtStr = if (line.separatelyBilled) "Separately Billed" else MoneyFormatter.formatInr(line.lineTotalPaise)
-
-            canvas.drawText(qtyStr, COL_QTY_X, y + 14f, bodyPaint)
-            canvas.drawText(rateStr, COL_RATE_X + COL_RATE_W, y + 14f, rightPaint)
-            canvas.drawText(amtStr, COL_AMT_RIGHT, y + 14f, rightBoldPaint)
-
-            y += rowHeight
-            canvas.drawLine(MARGIN_X, y, MARGIN_X + CONTENT_WIDTH, y, dividerPaint)
+            y += cardHeight + 8f
         }
 
         // === TOTALS BLOCK (kept together on page) ===
@@ -349,18 +406,100 @@ object QuotationPdfGenerator {
         context.startActivity(chooser)
     }
 
+    internal data class PdfTicketPalette(
+        val startColor: Int,
+        val endColor: Int,
+        val borderColor: Int,
+        val emblemBg: Int,
+        val emblemTextColor: Int
+    )
+
+    internal fun ticketPaletteForIndex(index: Int): PdfTicketPalette = when (index % 4) {
+        0 -> PdfTicketPalette(
+            startColor = Color.rgb(191, 224, 254),
+            endColor = Color.rgb(229, 243, 255),
+            borderColor = Color.rgb(171, 210, 252),
+            emblemBg = Color.rgb(0, 103, 197),
+            emblemTextColor = Color.WHITE
+        )
+        1 -> PdfTicketPalette(
+            startColor = Color.rgb(206, 230, 244),
+            endColor = Color.rgb(253, 243, 196),
+            borderColor = Color.rgb(230, 230, 198),
+            emblemBg = Color.WHITE,
+            emblemTextColor = Color.rgb(13, 17, 25)
+        )
+        2 -> PdfTicketPalette(
+            startColor = Color.rgb(251, 213, 197),
+            endColor = Color.rgb(253, 242, 218),
+            borderColor = Color.rgb(246, 200, 181),
+            emblemBg = Color.rgb(241, 90, 27),
+            emblemTextColor = Color.WHITE
+        )
+        else -> PdfTicketPalette(
+            startColor = Color.rgb(200, 243, 220),
+            endColor = Color.rgb(237, 252, 243),
+            borderColor = Color.rgb(179, 232, 203),
+            emblemBg = Color.rgb(22, 163, 74),
+            emblemTextColor = Color.WHITE
+        )
+    }
+
+    private fun buildTicketPath(rect: RectF, cornerRadius: Float, notchRadius: Float): Path {
+        val l = rect.left
+        val t = rect.top
+        val r = rect.right
+        val b = rect.bottom
+        val cr = cornerRadius
+        val nr = notchRadius
+        val cy = rect.centerY()
+
+        return Path().apply {
+            moveTo(l + cr, t)
+            lineTo(r - cr, t)
+            quadTo(r, t, r, t + cr)
+            lineTo(r, b - cr)
+            quadTo(r, b, r - cr, b)
+            lineTo(l + cr, b)
+            quadTo(l, b, l, b - cr)
+            lineTo(l, cy + nr)
+            arcTo(
+                RectF(l - nr, cy - nr, l + nr, cy + nr),
+                90f,
+                -180f,
+                false
+            )
+            lineTo(l, t + cr)
+            quadTo(l, t, l + cr, t)
+            close()
+        }
+    }
+
+    internal fun ticketMonogram(category: String, title: String): String {
+        val text = "$category $title".lowercase()
+        return when {
+            text.contains("brand") || text.contains("logo") || text.contains("design") -> "BD"
+            text.contains("web") || text.contains("site") || text.contains("app") -> "WB"
+            text.contains("video") || text.contains("reel") || text.contains("motion") -> "VD"
+            text.contains("seo") || text.contains("analytics") -> "SE"
+            text.contains("social") || text.contains("insta") -> "SM"
+            text.contains("ads") || text.contains("market") || text.contains("campaign") -> "MK"
+            text.contains("launch") || text.contains("package") -> "PK"
+            text.contains("extra") || text.contains("add") -> "AD"
+            else -> "SR"
+        }
+    }
+
     private fun drawItemsTableHeader(
         canvas: Canvas,
         y: Float,
         leftBold: TextPaint,
         rightBold: TextPaint
     ): Float {
-        canvas.drawRoundRect(RectF(MARGIN_X, y, MARGIN_X + CONTENT_WIDTH, y + 24f), 6f, 6f, headerBgPaint)
-        canvas.drawText("Service / Deliverable", COL_ITEM_X + 4f, y + 16f, leftBold)
-        canvas.drawText("Qty / Cycle", COL_QTY_X, y + 16f, leftBold)
-        canvas.drawText("Rate", COL_RATE_X + COL_RATE_W, y + 16f, rightBold)
-        canvas.drawText("Amount", COL_AMT_RIGHT - 4f, y + 16f, rightBold)
-        return y + 28f
+        canvas.drawRoundRect(RectF(MARGIN_X, y, MARGIN_X + CONTENT_WIDTH, y + 24f), 8f, 8f, headerBgPaint)
+        canvas.drawText("Catalogue Services & Pricing", MARGIN_X + 12f, y + 16f, leftBold)
+        canvas.drawText("Amount", COL_AMT_RIGHT - 12f, y + 16f, rightBold)
+        return y + 30f
     }
 
     private fun drawPageFooter(canvas: Canvas, quotation: Quotation, pageNumber: Int, mutedPaint: TextPaint) {

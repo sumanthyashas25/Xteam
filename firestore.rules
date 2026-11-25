@@ -793,7 +793,8 @@ service cloud.firestore {
                                ])
                              ) || (
                                (existing().senderUid == request.auth.uid || isSuper(fetchMe(companyId)) ||
-                                 request.auth.uid in get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data.adminUids) &&
+                                 ('adminUids' in get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data &&
+                                  request.auth.uid in get(/databases/$(database)/documents/companies/$(companyId)/chat_channels/$(channelId)).data.adminUids)) &&
                                incoming().diff(existing()).affectedKeys().hasOnly([
                                  'isDeletedForEveryone', 'body', 'attachmentType', 'attachmentDataBase64', 'attachmentName', 'attachmentStoragePath'
                                ])
@@ -809,15 +810,43 @@ service cloud.firestore {
         }
       }
 
+      function canReadStatusDoc(d) {
+        return d != null &&
+          !(request.auth.uid in d.get('ownerBlockedUids', [])) &&
+          (
+            d.get('privacyMode', 'ALL_APPROVED') == 'ALL_APPROVED' ||
+            (d.get('privacyMode', 'ALL_APPROVED') == 'SELECTED_ONLY' && request.auth.uid in d.get('allowedUids', [])) ||
+            (d.get('privacyMode', 'ALL_APPROVED') == 'ALL_EXCEPT' && !(request.auth.uid in d.get('excludedUids', [])))
+          );
+      }
+
       match /chat_statuses/{statusId} {
-        allow get, list: if isValidId(companyId) && isApproved(fetchMe(companyId));
+        allow list: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId));
+        allow get: if isValidId(companyId) && meExists(companyId) && isApproved(fetchMe(companyId)) && (
+          resource == null ||
+          existing().ownerUid == request.auth.uid ||
+          canReadStatusDoc(existing())
+        );
         allow create: if isValidId(companyId) && isValidId(statusId) &&
                          meExists(companyId) && isApproved(fetchMe(companyId)) &&
                          incoming().ownerUid == request.auth.uid &&
+                         incoming().get('privacyMode', 'ALL_APPROVED') in ['ALL_APPROVED', 'SELECTED_ONLY', 'ALL_EXCEPT'] &&
                          (!('imageDataBase64' in incoming()) || (incoming().imageDataBase64 is string && incoming().imageDataBase64.size() <= 450000));
         allow update: if isValidId(companyId) && isValidId(statusId) &&
-                         meExists(companyId) && isApproved(fetchMe(companyId)) &&
-                         incoming().diff(existing()).affectedKeys().hasOnly(['viewerUids']);
+                         meExists(companyId) && isApproved(fetchMe(companyId)) && (
+                           (
+                             incoming().ownerUid == existing().ownerUid &&
+                             incoming().createdAtMillis == existing().createdAtMillis &&
+                             incoming().expiresAtMillis == existing().expiresAtMillis &&
+                             canReadStatusDoc(existing()) &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['viewerUids', 'viewerTimestamps', 'reactions', 'replyCount'])
+                           ) || (
+                             existing().ownerUid == request.auth.uid &&
+                             incoming().ownerUid == existing().ownerUid &&
+                             incoming().diff(existing()).affectedKeys().hasOnly(['privacyMode', 'allowedUids', 'excludedUids', 'ownerBlockedUids']) &&
+                             incoming().get('privacyMode', 'ALL_APPROVED') in ['ALL_APPROVED', 'SELECTED_ONLY', 'ALL_EXCEPT']
+                           )
+                         );
         allow delete: if isValidId(companyId) && isValidId(statusId) && meExists(companyId) && (
           existing().ownerUid == request.auth.uid || isSuper(fetchMe(companyId))
         );
@@ -1120,9 +1149,9 @@ service cloud.firestore {
     function canReadChatChannel(companyId, ch) {
       let m = fetchMe(companyId);
       return isApproved(m) && (
-        (ch.channelType == 'DIRECT' && request.auth.uid in ch.participantUids) ||
-        (ch.channelType == 'SAVED' && (ch.createdByUid == request.auth.uid || request.auth.uid in ch.participantUids)) ||
-        (ch.channelType == 'GROUP' && (request.auth.uid in ch.participantUids || isSuper(m))) ||
+        (ch.channelType == 'DIRECT' && 'participantUids' in ch && request.auth.uid in ch.participantUids) ||
+        (ch.channelType == 'SAVED' && (ch.createdByUid == request.auth.uid || ('participantUids' in ch && request.auth.uid in ch.participantUids))) ||
+        (ch.channelType == 'GROUP' && (('participantUids' in ch && request.auth.uid in ch.participantUids) || isSuper(m))) ||
         !(ch.channelType in ['DIRECT', 'SAVED', 'GROUP'])
       );
     }

@@ -16,18 +16,24 @@ data class ChatUserPreferences(
     val unlockedThisSessionIds: Set<String> = emptySet(),
     val customLists: List<String> = listOf("Priority", "Clients", "Creative"),
     val channelListsMap: Map<String, Set<String>> = emptyMap(),
-    val globalWallpaperId: String = "ambient_glow",
+    val globalWallpaperId: String = "studio_white",
     val channelWallpapers: Map<String, String> = emptyMap(),
-    val bubbleThemeId: String = "classic_mint",
+    val bubbleThemeId: String = "studio_dark",
     val autoDownloadPhotos: Boolean = true,
     val autoDownloadAudio: Boolean = true,
     val autoDownloadDocs: Boolean = false,
-    val mediaVisibleInGallery: Boolean = true
+    val mediaVisibleInGallery: Boolean = true,
+    val mutedStatusOwnerUids: Set<String> = emptySet(),
+    val blockedUserUids: Set<String> = emptySet(),
+    val statusPrivacyMode: String = "ALL_APPROVED",
+    val statusAllowedUids: Set<String> = emptySet(),
+    val statusExcludedUids: Set<String> = emptySet()
 )
 
 /**
  * Local persistent chat settings (salted SHA-256 secret code for locked chats,
- * custom chat lists, custom wallpapers/themes, auto-download & gallery visibility).
+ * custom chat lists, custom wallpapers/themes, auto-download, gallery visibility,
+ * status mute list, blocked users, and default status privacy).
  */
 object ChatSettingsStore {
     private const val PREF_NAME = "xmax_chat_settings_v1"
@@ -43,6 +49,11 @@ object ChatSettingsStore {
     private const val KEY_AUTO_DL_AUDIO = "auto_dl_audio"
     private const val KEY_AUTO_DL_DOCS = "auto_dl_docs"
     private const val KEY_MEDIA_GALLERY = "media_visible_gallery"
+    private const val KEY_MUTED_STATUS_OWNERS = "muted_status_owner_uids"
+    private const val KEY_BLOCKED_USERS = "blocked_user_uids"
+    private const val KEY_STATUS_PRIVACY_MODE = "status_privacy_mode"
+    private const val KEY_STATUS_ALLOWED_UIDS = "status_allowed_uids"
+    private const val KEY_STATUS_EXCLUDED_UIDS = "status_excluded_uids"
 
     private val _prefsFlow = MutableStateFlow(ChatUserPreferences())
     val prefsFlow: StateFlow<ChatUserPreferences> = _prefsFlow.asStateFlow()
@@ -80,19 +91,33 @@ object ChatSettingsStore {
         }
         val channelLists = parseStringSetMap(sp.getString(KEY_CHANNEL_LISTS, null))
         val channelWallpapers = parseStringMap(sp.getString(KEY_CHANNEL_WALLPAPERS, null))
+        val rawGlobalWp = sp.getString(KEY_GLOBAL_WALLPAPER, "studio_white") ?: "studio_white"
+        val normalizedGlobalWp = when (rawGlobalWp) {
+            "ambient_glow" -> "studio_white"
+            "soft_light", "ocean_mist" -> "sky_breeze"
+            "subtle_zinc" -> "cool_slate"
+            else -> rawGlobalWp
+        }
+        val rawTheme = sp.getString(KEY_BUBBLE_THEME, "studio_dark") ?: "studio_dark"
+        val normalizedTheme = if (rawTheme == "classic_mint") "studio_dark" else rawTheme
         return ChatUserPreferences(
             hasSecretCode = hasPin,
             lockedChannelIds = locked,
             unlockedThisSessionIds = _prefsFlow.value.unlockedThisSessionIds,
             customLists = customLists,
             channelListsMap = channelLists,
-            globalWallpaperId = sp.getString(KEY_GLOBAL_WALLPAPER, "ambient_glow") ?: "ambient_glow",
+            globalWallpaperId = normalizedGlobalWp,
             channelWallpapers = channelWallpapers,
-            bubbleThemeId = sp.getString(KEY_BUBBLE_THEME, "classic_mint") ?: "classic_mint",
+            bubbleThemeId = normalizedTheme,
             autoDownloadPhotos = sp.getBoolean(KEY_AUTO_DL_PHOTOS, true),
             autoDownloadAudio = sp.getBoolean(KEY_AUTO_DL_AUDIO, true),
             autoDownloadDocs = sp.getBoolean(KEY_AUTO_DL_DOCS, false),
-            mediaVisibleInGallery = sp.getBoolean(KEY_MEDIA_GALLERY, true)
+            mediaVisibleInGallery = sp.getBoolean(KEY_MEDIA_GALLERY, true),
+            mutedStatusOwnerUids = sp.getStringSet(KEY_MUTED_STATUS_OWNERS, emptySet())?.toSet().orEmpty(),
+            blockedUserUids = sp.getStringSet(KEY_BLOCKED_USERS, emptySet())?.toSet().orEmpty(),
+            statusPrivacyMode = sp.getString(KEY_STATUS_PRIVACY_MODE, "ALL_APPROVED") ?: "ALL_APPROVED",
+            statusAllowedUids = sp.getStringSet(KEY_STATUS_ALLOWED_UIDS, emptySet())?.toSet().orEmpty(),
+            statusExcludedUids = sp.getStringSet(KEY_STATUS_EXCLUDED_UIDS, emptySet())?.toSet().orEmpty()
         )
     }
 
@@ -219,6 +244,60 @@ object ChatSettingsStore {
             autoDownloadAudio = autoDownloadAudio,
             autoDownloadDocs = autoDownloadDocs,
             mediaVisibleInGallery = mediaVisibleInGallery
+        )
+    }
+
+    fun setMutedStatusOwner(context: Context, ownerUid: String, muted: Boolean) {
+        if (ownerUid.isBlank()) return
+        val cur = ensureLoaded(context)
+        val next = cur.mutedStatusOwnerUids.toMutableSet()
+        if (muted) next.add(ownerUid) else next.remove(ownerUid)
+        prefs(context).edit().putStringSet(KEY_MUTED_STATUS_OWNERS, next).apply()
+        _prefsFlow.value = cur.copy(mutedStatusOwnerUids = next)
+    }
+
+    fun toggleMuteStatusOwner(context: Context, ownerUid: String): Boolean {
+        val cur = ensureLoaded(context)
+        val willMute = ownerUid !in cur.mutedStatusOwnerUids
+        setMutedStatusOwner(context, ownerUid, willMute)
+        return willMute
+    }
+
+    fun setBlockedUser(context: Context, targetUid: String, blocked: Boolean) {
+        if (targetUid.isBlank()) return
+        val cur = ensureLoaded(context)
+        val next = cur.blockedUserUids.toMutableSet()
+        if (blocked) next.add(targetUid) else next.remove(targetUid)
+        prefs(context).edit().putStringSet(KEY_BLOCKED_USERS, next).apply()
+        _prefsFlow.value = cur.copy(blockedUserUids = next)
+    }
+
+    fun toggleBlockUser(context: Context, targetUid: String): Boolean {
+        val cur = ensureLoaded(context)
+        val willBlock = targetUid !in cur.blockedUserUids
+        setBlockedUser(context, targetUid, willBlock)
+        return willBlock
+    }
+
+    fun toggleStatusOwnerMuted(context: Context, ownerUid: String): Boolean = toggleMuteStatusOwner(context, ownerUid)
+    fun toggleUserBlocked(context: Context, targetUid: String): Boolean = toggleBlockUser(context, targetUid)
+
+    fun updateStatusPrivacy(
+        context: Context,
+        mode: String,
+        allowedUids: Set<String>,
+        excludedUids: Set<String>
+    ) {
+        val cur = ensureLoaded(context)
+        prefs(context).edit()
+            .putString(KEY_STATUS_PRIVACY_MODE, mode)
+            .putStringSet(KEY_STATUS_ALLOWED_UIDS, allowedUids)
+            .putStringSet(KEY_STATUS_EXCLUDED_UIDS, excludedUids)
+            .apply()
+        _prefsFlow.value = cur.copy(
+            statusPrivacyMode = mode,
+            statusAllowedUids = allowedUids,
+            statusExcludedUids = excludedUids
         )
     }
 

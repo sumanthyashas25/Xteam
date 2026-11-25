@@ -37,6 +37,30 @@ data class SendMessageOptions(
     val eventTimeMillis: Long = 0L
 )
 
+data class NewStatusSubmission(
+    val kind: StatusKind,
+    val text: String = "",
+    val caption: String = "",
+    val textOverlay: String = "",
+    val textOverlayX: Float = 0.5f,
+    val textOverlayY: Float = 0.5f,
+    val overlayColorHex: Long = 0xFFFFFFFFL,
+    val fontStyle: String = "BOLD",
+    val backgroundPreset: Int = 0,
+    val mediaFile: java.io.File? = null,
+    val mediaMimeType: String = "",
+    val mediaSha256: String = "",
+    val imageThumbnailBase64: String = "",
+    val durationMs: Long = 0L,
+    val trimStartMs: Long = 0L,
+    val trimEndMs: Long = 0L,
+    val audioWaveform: List<Int> = emptyList(),
+    val privacyMode: StatusPrivacyMode = StatusPrivacyMode.ALL_APPROVED,
+    val allowedUids: List<String> = emptyList(),
+    val excludedUids: List<String> = emptyList(),
+    val ownerBlockedUids: List<String> = emptyList()
+)
+
 class ChatRepository(private val core: AgencyRepository) {
 
     private val db get() = core.db
@@ -212,41 +236,172 @@ class ChatRepository(private val core: AgencyRepository) {
         imageBase64: String = "",
         actor: Member
     ): ChatStatus {
-        val cleanText = text.trim().take(500)
-        require(cleanText.isNotBlank() || imageBase64.isNotBlank()) {
-            "Enter text or select a photo for your status."
+        val kind = if (imageBase64.isNotBlank()) StatusKind.IMAGE else StatusKind.TEXT
+        return postRichStatus(
+            submission = NewStatusSubmission(
+                kind = kind,
+                text = text,
+                caption = if (kind == StatusKind.IMAGE) text else "",
+                backgroundPreset = backgroundPreset,
+                imageThumbnailBase64 = imageBase64
+            ),
+            actor = actor
+        )
+    }
+
+    suspend fun postRichStatus(
+        submission: NewStatusSubmission,
+        actor: Member,
+        progressKey: String = "status_${System.currentTimeMillis()}",
+        onProgress: (Float) -> Unit = {},
+        onCallCreated: (okhttp3.Call) -> Unit = {}
+    ): ChatStatus {
+        val cleanText = submission.text.trim().take(500)
+        val cleanCaption = submission.caption.trim().take(500)
+        val cleanOverlay = submission.textOverlay.trim().take(120)
+        require(
+            cleanText.isNotBlank() ||
+                cleanCaption.isNotBlank() ||
+                submission.imageThumbnailBase64.isNotBlank() ||
+                submission.mediaFile != null
+        ) {
+            "Enter text or select photo, video, or audio for your status."
         }
+
         val statusId = "st_" + UUID.randomUUID().toString().take(10)
         val now = System.currentTimeMillis()
         val expires = now + 86_400_000L
-        val kind = if (imageBase64.isNotBlank()) "IMAGE" else "TEXT"
+
+        var resolvedBucket = ""
+        var resolvedPath = ""
+        var resolvedMime = submission.mediaMimeType
+        var resolvedBytes = submission.mediaFile?.length() ?: 0L
+        var resolvedProvider = "FIRESTORE_INLINE"
+
+        val mediaFile = submission.mediaFile
+        if (mediaFile != null && mediaFile.exists() && mediaFile.length() > 0L) {
+            val bucket = when (submission.kind) {
+                StatusKind.IMAGE -> "chat-media"
+                StatusKind.VIDEO -> "chat-videos"
+                StatusKind.VOICE -> "chat-voice"
+                StatusKind.TEXT -> "chat-media"
+            }
+            val mime = submission.mediaMimeType.ifBlank {
+                when (submission.kind) {
+                    StatusKind.VIDEO -> "video/mp4"
+                    StatusKind.VOICE -> "audio/mp4"
+                    else -> "image/jpeg"
+                }
+            }
+            if (WorkerBridgeClient.isConfigured()) {
+                when (val up = WorkerBridgeClient.uploadStatusMediaToCloudflare(
+                    companyId = core.companyId,
+                    bucket = bucket,
+                    fileName = mediaFile.name,
+                    mimeType = mime,
+                    file = mediaFile,
+                    sha256 = submission.mediaSha256,
+                    progressKey = progressKey,
+                    onProgress = onProgress,
+                    onCallCreated = onCallCreated
+                )) {
+                    is WorkerResult.Success -> {
+                        resolvedBucket = up.data.bucket
+                        resolvedPath = up.data.storagePath
+                        resolvedMime = up.data.mimeType.ifBlank { mime }
+                        resolvedBytes = up.data.byteSize
+                        resolvedProvider = up.data.provider
+                    }
+                    is WorkerResult.RateLimited -> {
+                        error("Upload rate limited; retry in ${up.retryAfterSeconds}s.")
+                    }
+                    is WorkerResult.Error -> {
+                        error(up.message)
+                    }
+                    WorkerResult.NotConfigured -> {
+                        if (submission.kind != StatusKind.IMAGE || submission.imageThumbnailBase64.isBlank()) {
+                            error("Cloudflare media storage is not configured for ${submission.kind.label}.")
+                        }
+                    }
+                }
+            } else if (submission.kind != StatusKind.IMAGE || submission.imageThumbnailBase64.isBlank()) {
+                error("Cloudflare media storage is required for ${submission.kind.label} status.")
+            }
+        } else {
+            onProgress(0.6f)
+        }
+
         val payload = mapOf(
             "ownerUid" to actor.uid,
             "ownerName" to actor.fullName.ifBlank { "Member" }.take(120),
             "ownerRole" to actor.jobRoleName.ifBlank { actor.accessLevelEnum().label }.take(80),
             "ownerPhotoBase64" to actor.photoBase64,
-            "kind" to kind,
+            "kind" to submission.kind.name,
             "text" to cleanText,
-            "backgroundPreset" to backgroundPreset,
-            "imageDataBase64" to imageBase64,
-            "imageStoragePath" to "",
-            "imageBucket" to "",
+            "caption" to cleanCaption,
+            "textOverlay" to cleanOverlay,
+            "textOverlayX" to submission.textOverlayX.coerceIn(0.05f, 0.95f),
+            "textOverlayY" to submission.textOverlayY.coerceIn(0.1f, 0.9f),
+            "overlayColorHex" to submission.overlayColorHex,
+            "fontStyle" to submission.fontStyle.ifBlank { "BOLD" },
+            "backgroundPreset" to submission.backgroundPreset,
+            "imageDataBase64" to submission.imageThumbnailBase64,
+            "imageStoragePath" to resolvedPath,
+            "imageBucket" to resolvedBucket,
+            "mediaStoragePath" to resolvedPath,
+            "mediaBucket" to resolvedBucket,
+            "mediaMimeType" to resolvedMime,
+            "mediaByteSize" to resolvedBytes,
+            "storageProvider" to resolvedProvider,
+            "durationMs" to submission.durationMs,
+            "trimStartMs" to submission.trimStartMs,
+            "trimEndMs" to submission.trimEndMs,
+            "audioWaveform" to submission.audioWaveform.take(40),
             "viewerUids" to emptyList<String>(),
+            "viewerTimestamps" to emptyMap<String, Long>(),
+            "reactions" to emptyMap<String, String>(),
+            "replyCount" to 0L,
+            "privacyMode" to submission.privacyMode.name,
+            "allowedUids" to submission.allowedUids.distinct().take(150),
+            "excludedUids" to submission.excludedUids.distinct().take(150),
+            "ownerBlockedUids" to submission.ownerBlockedUids.distinct().take(150),
             "createdAtMillis" to now,
             "expiresAtMillis" to expires,
             "createdAt" to FieldValue.serverTimestamp()
         )
         sub("chat_statuses").document(statusId).set(payload).await()
+        onProgress(1f)
         return ChatStatus(
             id = statusId,
             ownerUid = actor.uid,
             ownerName = actor.fullName.ifBlank { "Member" },
             ownerRole = actor.jobRoleName.ifBlank { actor.accessLevelEnum().label },
             ownerPhotoBase64 = actor.photoBase64,
-            kind = kind,
+            kind = submission.kind.name,
             text = cleanText,
-            backgroundPreset = backgroundPreset,
-            imageDataBase64 = imageBase64,
+            caption = cleanCaption,
+            textOverlay = cleanOverlay,
+            textOverlayX = submission.textOverlayX,
+            textOverlayY = submission.textOverlayY,
+            overlayColorHex = submission.overlayColorHex,
+            fontStyle = submission.fontStyle,
+            backgroundPreset = submission.backgroundPreset,
+            imageDataBase64 = submission.imageThumbnailBase64,
+            imageStoragePath = resolvedPath,
+            imageBucket = resolvedBucket,
+            mediaStoragePath = resolvedPath,
+            mediaBucket = resolvedBucket,
+            mediaMimeType = resolvedMime,
+            mediaByteSize = resolvedBytes,
+            storageProvider = resolvedProvider,
+            durationMs = submission.durationMs,
+            trimStartMs = submission.trimStartMs,
+            trimEndMs = submission.trimEndMs,
+            audioWaveform = submission.audioWaveform,
+            privacyMode = submission.privacyMode.name,
+            allowedUids = submission.allowedUids,
+            excludedUids = submission.excludedUids,
+            ownerBlockedUids = submission.ownerBlockedUids,
             createdAtMillis = now,
             expiresAtMillis = expires
         )
@@ -254,14 +409,189 @@ class ChatRepository(private val core: AgencyRepository) {
 
     suspend fun markStatusViewed(statusId: String, myUid: String) {
         if (statusId.isBlank() || myUid.isBlank()) return
+        val now = System.currentTimeMillis()
         sub("chat_statuses").document(statusId)
-            .update("viewerUids", FieldValue.arrayUnion(myUid))
+            .update(
+                mapOf(
+                    "viewerUids" to FieldValue.arrayUnion(myUid),
+                    "viewerTimestamps.$myUid" to now
+                )
+            )
             .await()
     }
 
-    suspend fun deleteStatus(statusId: String) {
+    suspend fun reactToStatus(statusId: String, myUid: String, emoji: String) {
+        if (statusId.isBlank() || myUid.isBlank() || emoji.isBlank()) return
+        val now = System.currentTimeMillis()
+        sub("chat_statuses").document(statusId)
+            .update(
+                mapOf(
+                    "viewerUids" to FieldValue.arrayUnion(myUid),
+                    "viewerTimestamps.$myUid" to now,
+                    "reactions.$myUid" to emoji.take(12)
+                )
+            )
+            .await()
+    }
+
+    suspend fun updateMyActiveStatusesPrivacyAndBlocks(
+        activeMyStatuses: List<ChatStatus>,
+        privacyMode: StatusPrivacyMode,
+        allowedUids: List<String>,
+        excludedUids: List<String>,
+        blockedUids: List<String>
+    ) {
+        if (activeMyStatuses.isEmpty()) return
+        val batch = db.batch()
+        activeMyStatuses.forEach { st ->
+            batch.update(
+                sub("chat_statuses").document(st.id),
+                mapOf(
+                    "privacyMode" to privacyMode.name,
+                    "allowedUids" to allowedUids.distinct().take(150),
+                    "excludedUids" to excludedUids.distinct().take(150),
+                    "ownerBlockedUids" to blockedUids.distinct().take(150)
+                )
+            )
+        }
+        batch.commit().await()
+    }
+
+    suspend fun sendStatusInteractionToDm(
+        ownerMember: Member,
+        actor: Member,
+        status: ChatStatus,
+        replyText: String = "",
+        reactionEmoji: String = ""
+    ): ChatChannel {
+        val dmChannel = createOrGetDirectChannel(actor, ownerMember)
+        val channelRef = sub("chat_channels").document(dmChannel.id)
+        val msgId = "stref_" + UUID.randomUUID().toString().take(10)
+        val senderName = actor.fullName.ifBlank { "Member" }.take(120)
+        val now = System.currentTimeMillis()
+        val isReaction = reactionEmoji.isNotBlank() && replyText.isBlank()
+        val body = when {
+            isReaction -> "Reacted $reactionEmoji to your status"
+            reactionEmoji.isNotBlank() -> "$reactionEmoji $replyText".trim()
+            else -> replyText.trim()
+        }.take(600)
+
+        val excerpt = status.effectiveDisplayText()
+            .ifBlank { status.textOverlay }
+            .ifBlank { "${status.kindEnum().label} status" }
+            .take(120)
+
+        val refSubtitle = if (isReaction) {
+            "Reaction $reactionEmoji • ${status.ownerName.ifBlank { "Status" }}"
+        } else {
+            "${status.kindEnum().label} status • ${status.ownerName.ifBlank { "Status" }}"
+        }
+
+        val recipients = dmChannel.participantUids.filter { it != actor.uid }
+        val nextUnread = dmChannel.unreadCounts.toMutableMap()
+        recipients.forEach { uid -> nextUnread[uid] = (nextUnread[uid] ?: 0L) + 1L }
+
+        val msgPayload = mapOf(
+            "channelId" to dmChannel.id,
+            "kind" to ChatMessageKind.TEXT.name,
+            "parentMessageId" to "",
+            "parentPreview" to "",
+            "senderUid" to actor.uid,
+            "senderName" to senderName,
+            "senderRole" to actor.jobRoleName.ifBlank { actor.accessLevelEnum().label }.take(80),
+            "body" to body,
+            "attachmentType" to ChatAttachmentType.NONE.name,
+            "attachmentName" to "",
+            "attachmentMimeType" to "",
+            "attachmentSizeBytes" to 0L,
+            "attachmentLocalPath" to "",
+            "attachmentDataBase64" to status.imageDataBase64.take(180000),
+            "businessRefKind" to "STATUS",
+            "businessRefId" to status.id,
+            "businessRefTitle" to excerpt,
+            "businessRefSubtitle" to refSubtitle.take(160),
+            "businessRefStatus" to status.kind,
+            "businessRefAmountPaise" to 0L,
+            "deliveryStatus" to "SENT",
+            "deliveredToUids" to emptyList<String>(),
+            "readByUids" to emptyList<String>(),
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        val preview = if (isReaction) "Reacted $reactionEmoji to status" else "Status reply: $body"
+        val batch = db.batch()
+        batch.set(channelRef.collection("messages").document(msgId), msgPayload)
+        batch.update(
+            channelRef,
+            mapOf(
+                "lastMessagePreview" to preview.take(200),
+                "lastSenderName" to senderName,
+                "lastSenderUid" to actor.uid,
+                "lastMessageStatus" to "SENT",
+                "lastMessageAtMillis" to now,
+                "messageCount" to FieldValue.increment(1L),
+                "unreadCounts" to nextUnread,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        )
+        if (!isReaction) {
+            batch.update(sub("chat_statuses").document(status.id), "replyCount", FieldValue.increment(1L))
+        }
+        batch.commit().await()
+        if (ownerMember.uid != actor.uid) {
+            core.createNotification(
+                category = NotificationCategory.CHAT,
+                title = "Status ${if (isReaction) "Reaction" else "Reply"} • $senderName",
+                body = preview.take(160),
+                actor = actor,
+                targetUid = ownerMember.uid,
+                channelId = dmChannel.id
+            )
+        }
+        return dmChannel
+    }
+
+    suspend fun deleteStatus(statusId: String, storagePath: String = "") {
         if (statusId.isBlank()) return
         sub("chat_statuses").document(statusId).delete().await()
+        if (storagePath.isNotBlank() && WorkerBridgeClient.isConfigured()) {
+            runCatching { WorkerBridgeClient.deleteStatusMediaFromCloudflare(core.companyId, storagePath) }
+        }
+    }
+
+    suspend fun deleteAllStatuses(statuses: List<ChatStatus>) {
+        if (statuses.isEmpty()) return
+        statuses.chunked(200).forEach { chunk ->
+            val batch = db.batch()
+            chunk.forEach { st ->
+                batch.delete(sub("chat_statuses").document(st.id))
+            }
+            batch.commit().await()
+        }
+        statuses.forEach { st ->
+            val path = st.effectiveStoragePath()
+            if (path.isNotBlank() && WorkerBridgeClient.isConfigured()) {
+                runCatching { WorkerBridgeClient.deleteStatusMediaFromCloudflare(core.companyId, path) }
+            }
+        }
+    }
+
+    suspend fun reportStatus(status: ChatStatus, reason: String, actor: Member) {
+        val reportId = "rep_" + UUID.randomUUID().toString().take(10)
+        val excerpt = "${status.ownerName}: ${status.effectiveDisplayText().ifBlank { status.kindEnum().label }}".take(200)
+        val payload = mapOf(
+            "channelId" to "status_${status.id}".take(120),
+            "channelTitle" to "Status Update",
+            "messageId" to status.id,
+            "snapshotMessages" to listOf(excerpt),
+            "reportedUid" to status.ownerUid,
+            "reporterUid" to actor.uid,
+            "reporterName" to actor.fullName.ifBlank { "Member" }.take(120),
+            "reason" to reason.trim().ifBlank { "Inappropriate status" }.take(400),
+            "status" to "OPEN",
+            "createdAtMillis" to System.currentTimeMillis(),
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        sub("chatReports").document(reportId).set(payload).await()
     }
 
     // --- Channel Creation & Retrieval ---
@@ -512,7 +842,7 @@ class ChatRepository(private val core: AgencyRepository) {
             existing.toObject(ChatChannel::class.java)?.let { return it }
         }
         val cleanTitle = "${actor.fullName.substringBefore(" ")} & ${otherMember.fullName}".take(100)
-        val cleanTopic = "Personal Chat • ${otherMember.jobRoleName.ifBlank { otherMember.accessLevelEnum().label }}".take(240)
+        val cleanTopic = "Personal Chat"
         val now = System.currentTimeMillis()
         val payload = mapOf(
             "title" to cleanTitle,

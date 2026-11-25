@@ -71,26 +71,38 @@ object ChatVisualCatalog {
         ChatWallpaperPreset(
             id = "studio_white",
             label = "Studio White",
-            baseColors = listOf(Color(0xFFFFFFFF), Color(0xFFFFFFFF)),
-            orbColors = listOf(Color(0xFFFFFFFF), Color(0xFFFFFFFF), Color(0xFFFFFFFF), Color(0xFFFFFFFF))
+            baseColors = listOf(Color(0xFFFFFFFF), Color(0xFFF8FAFC)),
+            orbColors = listOf(Color(0xFFFFFFFF), Color(0xFFF8FAFC))
         ),
         ChatWallpaperPreset(
-            id = "soft_light",
-            label = "Soft Light",
-            baseColors = listOf(Color(0xFFF8FAFC), Color(0xFFF8FAFC)),
-            orbColors = listOf(Color(0xFFF8FAFC), Color(0xFFF8FAFC), Color(0xFFF8FAFC), Color(0xFFF8FAFC))
+            id = "soft_mint",
+            label = "Soft Mint",
+            baseColors = listOf(Color(0xFFECFDF5), Color(0xFFD1FAE5)),
+            orbColors = listOf(Color(0xFFECFDF5), Color(0xFFA7F3D0))
+        ),
+        ChatWallpaperPreset(
+            id = "sky_breeze",
+            label = "Sky Breeze",
+            baseColors = listOf(Color(0xFFEFF6FF), Color(0xFFDBEAFE)),
+            orbColors = listOf(Color(0xFFEFF6FF), Color(0xFFBFDBFE))
+        ),
+        ChatWallpaperPreset(
+            id = "warm_linen",
+            label = "Warm Linen",
+            baseColors = listOf(Color(0xFFFFFBEB), Color(0xFFFEF3C7)),
+            orbColors = listOf(Color(0xFFFFFBEB), Color(0xFFFDE68A))
+        ),
+        ChatWallpaperPreset(
+            id = "cool_lavender",
+            label = "Soft Lavender",
+            baseColors = listOf(Color(0xFFF5F3FF), Color(0xFFEDE9FE)),
+            orbColors = listOf(Color(0xFFF5F3FF), Color(0xFFDDD6FE))
         ),
         ChatWallpaperPreset(
             id = "cool_slate",
             label = "Cool Slate",
-            baseColors = listOf(Color(0xFFF1F5F9), Color(0xFFF1F5F9)),
-            orbColors = listOf(Color(0xFFF1F5F9), Color(0xFFF1F5F9), Color(0xFFF1F5F9), Color(0xFFF1F5F9))
-        ),
-        ChatWallpaperPreset(
-            id = "subtle_zinc",
-            label = "Subtle Zinc",
-            baseColors = listOf(Color(0xFFF4F4F5), Color(0xFFF4F4F5)),
-            orbColors = listOf(Color(0xFFF4F4F5), Color(0xFFF4F4F5), Color(0xFFF4F4F5), Color(0xFFF4F4F5))
+            baseColors = listOf(Color(0xFFF1F5F9), Color(0xFFE2E8F0)),
+            orbColors = listOf(Color(0xFFF1F5F9), Color(0xFFCBD5E1))
         )
     )
 
@@ -167,9 +179,13 @@ object ChatVisualCatalog {
         bubbleThemes.firstOrNull { it.id == themeId } ?: bubbleThemes.first()
 
     fun wallpaper(wallpaperId: String, isThread: Boolean): ChatWallpaperPreset {
-        val exact = wallpapers.firstOrNull { it.id == wallpaperId }
-        if (exact != null) return exact
-        return wallpapers.first()
+        val normalizedId = when (wallpaperId) {
+            "ambient_glow" -> "studio_white"
+            "soft_light", "ocean_mist" -> "sky_breeze"
+            "subtle_zinc" -> "cool_slate"
+            else -> wallpaperId
+        }
+        return wallpapers.firstOrNull { it.id == normalizedId } ?: wallpapers.first()
     }
 }
 
@@ -179,8 +195,9 @@ fun Modifier.animatedChatGlowBackdrop(
     wallpaperId: String = "studio_white"
 ): Modifier {
     val preset = ChatVisualCatalog.wallpaper(wallpaperId, isThread)
-    val bgColor = preset.baseColors.firstOrNull() ?: PureWhite
-    return this.background(bgColor)
+    val startColor = preset.baseColors.firstOrNull() ?: PureWhite
+    val endColor = preset.baseColors.lastOrNull() ?: startColor
+    return this.background(Brush.verticalGradient(listOf(startColor, endColor)))
 }
 
 private val RICH_TOKEN_REGEX = Regex(

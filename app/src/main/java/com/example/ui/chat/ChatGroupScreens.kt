@@ -33,11 +33,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.chat.ChatFileManager
 import com.example.chat.ChatQrGenerator
 import com.example.chat.ChatSettingsStore
 import com.example.chat.ChatUserPreferences
+import com.example.chat.realtime.MemberAvailability
+import com.example.chat.realtime.RtdbPresenceManager
+import com.example.domain.CatalogueSeedData
 import com.example.model.*
+import com.example.chat.StatusPrivacyEngine
+import com.example.ui.components.AvatarWithAvailabilityBadge
+import com.example.ui.components.SegmentedStatusAvatar
 import com.example.ui.components.StudioAvatar
 import com.example.ui.components.formatTitleCase
 import com.example.ui.theme.*
@@ -46,6 +53,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun CreateGroupSheet(
     colleagues: List<Member>,
+    statuses: List<ChatStatus> = emptyList(),
+    myMember: Member? = null,
+    onOpenStatuses: (List<ChatStatus>) -> Unit = {},
     onCreateGroup: (
         title: String,
         description: String,
@@ -65,6 +75,9 @@ fun CreateGroupSheet(
     var requireApproval by remember { mutableStateOf(false) }
     val selectedUids = remember { mutableStateListOf<String>() }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    val companyPresence by remember {
+        RtdbPresenceManager.observeCompanyPresence(CatalogueSeedData.DEFAULT_COMPANY_ID)
+    }.collectAsStateWithLifecycle(initialValue = emptyMap())
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
@@ -141,6 +154,7 @@ fun CreateGroupSheet(
                 Text("Add Members (${selectedUids.size} selected)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = StudioTextSecondary)
                 colleagues.forEach { person ->
                     val checked = person.uid in selectedUids
+                    val availability = RtdbPresenceManager.resolveAvailability(person, companyPresence[person.uid])
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -155,10 +169,44 @@ fun CreateGroupSheet(
                         Checkbox(checked = checked, onCheckedChange = {
                             if (checked) selectedUids.remove(person.uid) else selectedUids.add(person.uid)
                         })
-                        StudioAvatar(name = person.fullName, size = 32.dp, borderColor = PureWhite, photoBase64 = person.photoBase64)
+                        val prefsSnap = ChatSettingsStore.ensureLoaded(context)
+                        val memberStatuses = remember(statuses, person.uid, myMember?.uid, prefsSnap.blockedUserUids) {
+                            if (myMember == null) emptyList()
+                            else StatusPrivacyEngine.visibleActiveStatusesForOwner(
+                                statuses = statuses,
+                                ownerUid = person.uid,
+                                viewerUid = myMember.uid,
+                                viewerMember = myMember,
+                                blockedByViewerUids = prefsSnap.blockedUserUids
+                            )
+                        }
+                        SegmentedStatusAvatar(
+                            name = person.fullName,
+                            availability = availability,
+                            showAvailabilityBadge = true,
+                            size = 34.dp,
+                            borderColor = PureWhite,
+                            photoBase64 = person.photoBase64,
+                            activeStatuses = memberStatuses,
+                            viewerUid = myMember?.uid.orEmpty(),
+                            isOwnAvatar = false,
+                            badgeTestTag = "group_create_status_${person.uid}",
+                            onAvatarClick = if (memberStatuses.isNotEmpty()) {
+                                { onOpenStatuses(memberStatuses) }
+                            } else null
+                        )
                         Column(modifier = Modifier.weight(1f)) {
                             Text(formatTitleCase(person.fullName), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text(person.jobRoleName.ifBlank { person.departmentName }, style = MaterialTheme.typography.labelSmall, color = StudioTextSecondary)
+                            val roleLabel = person.jobRoleName.ifBlank { person.departmentName }
+                            Text(
+                                text = if (roleLabel.isNotBlank()) "${availability.label} • $roleLabel" else availability.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = when (availability) {
+                                    MemberAvailability.ACTIVE -> EmeraldApproved
+                                    MemberAvailability.BUSY -> CrimsonBlocked
+                                    MemberAvailability.AWAY -> StudioTextSecondary
+                                }
+                            )
                         }
                     }
                 }
@@ -248,7 +296,9 @@ fun EnhancedConversationInfoSheet(
     onExitGroup: () -> Unit,
     onReportGroup: () -> Unit,
     onOpenAttachment: (ChatMessage) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    statuses: List<ChatStatus> = emptyList(),
+    onOpenMemberStatuses: (List<ChatStatus>) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -265,6 +315,9 @@ fun EnhancedConversationInfoSheet(
     var showQrDialog by remember { mutableStateOf(false) }
     var showAddMemberPicker by remember { mutableStateOf(false) }
     var sharedTab by remember { mutableStateOf(0) } // 0=Media, 1=Docs, 2=Links
+    val companyPresence by remember {
+        RtdbPresenceManager.observeCompanyPresence(CatalogueSeedData.DEFAULT_COMPANY_ID)
+    }.collectAsStateWithLifecycle(initialValue = emptyMap())
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null && canEditInfo) {
@@ -547,6 +600,7 @@ fun EnhancedConversationInfoSheet(
                     channel.participantUids.forEach { uid ->
                         val mem = allMembers.firstOrNull { it.uid == uid }
                         val isAdmin = uid in channel.adminUids || uid == channel.createdByUid
+                        val availability = RtdbPresenceManager.resolveAvailability(mem, companyPresence[uid])
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = PureWhite,
@@ -558,15 +612,43 @@ fun EnhancedConversationInfoSheet(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                StudioAvatar(
+                                val meMember = remember(allMembers, myUid) { allMembers.firstOrNull { it.uid == myUid } }
+                                val memberStatuses = remember(statuses, uid, myUid, prefs.blockedUserUids) {
+                                    StatusPrivacyEngine.visibleActiveStatusesForOwner(
+                                        statuses = statuses,
+                                        ownerUid = uid,
+                                        viewerUid = myUid,
+                                        viewerMember = meMember,
+                                        blockedByViewerUids = prefs.blockedUserUids
+                                    )
+                                }
+                                SegmentedStatusAvatar(
                                     name = mem?.fullName ?: "Member",
-                                    size = 34.dp,
+                                    availability = availability,
+                                    showAvailabilityBadge = true,
+                                    size = 36.dp,
                                     borderColor = PureWhite,
-                                    photoBase64 = mem?.photoBase64.orEmpty()
+                                    photoBase64 = mem?.photoBase64.orEmpty(),
+                                    activeStatuses = memberStatuses,
+                                    viewerUid = myUid,
+                                    isOwnAvatar = uid == myUid,
+                                    badgeTestTag = "group_member_status_$uid",
+                                    onAvatarClick = if (memberStatuses.isNotEmpty()) {
+                                        { onOpenMemberStatuses(memberStatuses) }
+                                    } else null
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(formatTitleCase(mem?.fullName ?: uid) + if (uid == myUid) " (You)" else "", fontWeight = FontWeight.Bold)
-                                    Text(if (isAdmin) "Admin" else "Member", style = MaterialTheme.typography.labelSmall, color = if (isAdmin) EmeraldApproved else StudioTextSecondary)
+                                    val rolePart = if (isAdmin) "Admin" else "Member"
+                                    Text(
+                                        text = "${availability.label} • $rolePart",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = when (availability) {
+                                            MemberAvailability.ACTIVE -> EmeraldApproved
+                                            MemberAvailability.BUSY -> CrimsonBlocked
+                                            MemberAvailability.AWAY -> StudioTextSecondary
+                                        }
+                                    )
                                 }
                                 if (isChannelAdmin && uid != myUid) {
                                     TextButton(onClick = { onToggleAdmin(uid) }) {

@@ -6,12 +6,16 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.chat.ChatFileManager
 import com.example.chat.ChatQrGenerator
 import com.example.chat.ChatSettingsStore
+import com.example.chat.realtime.MemberAvailability
+import com.example.chat.realtime.MemberPresenceState
+import com.example.chat.realtime.RtdbPresenceManager
 import com.example.chat.remote.WorkerBridgeClient
 import com.example.model.ChatAttachmentType
 import com.example.model.ChatChannel
 import com.example.model.ChatChannelType
 import com.example.model.ChatMessage
 import com.example.model.ChatStatus
+import com.example.model.Member
 import com.example.ui.chat.formatChatRichText
 import org.junit.Assert.*
 import org.junit.Before
@@ -56,6 +60,8 @@ class ChatFeatureInfraTest {
     fun `chat settings store manages salted sha256 secret code, locks, lists, and wallpapers`() {
         ChatSettingsStore.ensureLoaded(context)
         assertFalse(ChatSettingsStore.prefsFlow.value.hasSecretCode)
+        assertEquals("studio_white", ChatSettingsStore.prefsFlow.value.globalWallpaperId)
+        assertEquals("studio_dark", ChatSettingsStore.prefsFlow.value.bubbleThemeId)
 
         ChatSettingsStore.setSecretCode(context, "4829")
         assertTrue(ChatSettingsStore.prefsFlow.value.hasSecretCode)
@@ -136,5 +142,19 @@ class ChatFeatureInfraTest {
         val expiredStatus = ChatStatus(id = "s2", expiresAtMillis = now - 1_000L)
         assertTrue(activeStatus.isActive(now))
         assertFalse(expiredStatus.isActive(now))
+
+        val memberStub = Member(uid = "u_mem", fullName = "Riya")
+        assertEquals(
+            MemberAvailability.ACTIVE,
+            RtdbPresenceManager.resolveAvailability(memberStub, MemberPresenceState(online = true, availability = MemberAvailability.ACTIVE))
+        )
+        assertEquals(
+            MemberAvailability.BUSY,
+            RtdbPresenceManager.resolveAvailability(memberStub, MemberPresenceState(online = true, availability = MemberAvailability.BUSY))
+        )
+        assertEquals(
+            MemberAvailability.AWAY,
+            RtdbPresenceManager.resolveAvailability(memberStub, MemberPresenceState(online = false, availability = MemberAvailability.ACTIVE))
+        )
     }
 }

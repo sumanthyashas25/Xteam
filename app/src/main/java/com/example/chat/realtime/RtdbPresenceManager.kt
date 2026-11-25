@@ -25,10 +25,17 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 
+enum class MemberAvailability(val label: String) {
+    ACTIVE("Active"),
+    BUSY("Busy"),
+    AWAY("Away")
+}
+
 data class MemberPresenceState(
     val uid: String = "",
     val online: Boolean = false,
-    val lastSeenMillis: Long = 0L
+    val lastSeenMillis: Long = 0L,
+    val availability: MemberAvailability = MemberAvailability.AWAY
 )
 
 data class EphemeralChatActivity(
@@ -38,7 +45,7 @@ data class EphemeralChatActivity(
 
 /**
  * Spark-tier Firebase Realtime Database manager for ephemeral online presence,
- * typing indicators, and voice-recording indicators.
+ * member availability (Active / Busy / Away), typing indicators, and voice-recording indicators.
  * Disconnects cleanly on background to conserve Spark's 100 concurrent connection limit.
  */
 object RtdbPresenceManager : DefaultLifecycleObserver {
@@ -49,6 +56,8 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var observerRegistered = false
     private var currentUid: String = ""
+    private var currentCompanyId: String = "xmax"
+    private var currentAvailability: MemberAvailability = MemberAvailability.ACTIVE
     private var currentDeviceId: String = "android"
     private var typingClearJob: Job? = null
     private var activeTypingChatId: String = ""
@@ -71,6 +80,7 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
 
     fun bindUserSession(context: Context, companyId: String, uid: String) {
         currentUid = uid
+        currentCompanyId = companyId.trim().ifBlank { "xmax" }
         currentDeviceId = runCatching {
             Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
                 ?.replace(Regex("[^A-Za-z0-9_-]"), "_")
@@ -83,13 +93,14 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
                 ProcessLifecycleOwner.get().lifecycle.addObserver(this@RtdbPresenceManager)
             }
         }
-        setOnline(context, companyId, uid, online = true)
+        setOnline(context, currentCompanyId, uid, online = true)
     }
 
     fun unbindUserSession(context: Context, companyId: String) {
         val uid = currentUid
+        val cid = companyId.trim().ifBlank { currentCompanyId }
         if (uid.isNotBlank()) {
-            setOnline(context, companyId, uid, online = false)
+            setOnline(context, cid, uid, online = false)
         }
         currentUid = ""
     }
@@ -97,14 +108,42 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
     override fun onStart(owner: LifecycleOwner) {
         val uid = currentUid
         if (uid.isNotBlank()) {
-            setOnline(null, "xmax", uid, online = true)
+            setOnline(null, currentCompanyId, uid, online = true)
         }
     }
 
     override fun onStop(owner: LifecycleOwner) {
         val uid = currentUid
         if (uid.isNotBlank()) {
-            setOnline(null, "xmax", uid, online = false)
+            setOnline(null, currentCompanyId, uid, online = false)
+        }
+    }
+
+    fun setAvailability(
+        context: Context? = null,
+        companyId: String = currentCompanyId,
+        uid: String = currentUid,
+        availability: MemberAvailability
+    ) {
+        currentAvailability = availability
+        if (uid.isBlank()) return
+        val cid = companyId.trim().ifBlank { currentCompanyId }
+        val ref = rootRef(cid, context)?.child("presence")?.child(uid)?.child(currentDeviceId) ?: return
+        runCatching {
+            ref.onDisconnect().setValue(
+                mapOf(
+                    "online" to false,
+                    "status" to MemberAvailability.AWAY.name,
+                    "lastSeen" to ServerValue.TIMESTAMP
+                )
+            )
+            ref.setValue(
+                mapOf(
+                    "online" to (availability != MemberAvailability.AWAY),
+                    "status" to availability.name,
+                    "lastSeen" to ServerValue.TIMESTAMP
+                )
+            )
         }
     }
 
@@ -115,12 +154,14 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
             if (online) {
                 val offlinePayload = mapOf(
                     "online" to false,
+                    "status" to MemberAvailability.AWAY.name,
                     "lastSeen" to ServerValue.TIMESTAMP
                 )
                 ref.onDisconnect().setValue(offlinePayload)
                 ref.setValue(
                     mapOf(
                         "online" to true,
+                        "status" to currentAvailability.name,
                         "lastSeen" to ServerValue.TIMESTAMP
                     )
                 )
@@ -128,6 +169,7 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
                 ref.setValue(
                     mapOf(
                         "online" to false,
+                        "status" to MemberAvailability.AWAY.name,
                         "lastSeen" to ServerValue.TIMESTAMP
                     )
                 )
@@ -177,6 +219,52 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
         }
     }
 
+    private fun parseMemberSnapshot(uid: String, snapshot: DataSnapshot): MemberPresenceState {
+        var anyOnline = false
+        var anyBusy = false
+        var anyActive = false
+        var latestSeen = 0L
+        for (child in snapshot.children) {
+            val isOnline = child.child("online").getValue(Boolean::class.java) == true
+            val seen = child.child("lastSeen").getValue(Long::class.java) ?: 0L
+            val rawStatus = child.child("status").getValue(String::class.java).orEmpty()
+            val parsedStatus = runCatching { MemberAvailability.valueOf(rawStatus.uppercase()) }.getOrNull()
+            if (isOnline) {
+                anyOnline = true
+                when (parsedStatus) {
+                    MemberAvailability.BUSY -> anyBusy = true
+                    MemberAvailability.ACTIVE, null -> anyActive = true
+                    MemberAvailability.AWAY -> Unit
+                }
+            }
+            if (seen > latestSeen) latestSeen = seen
+        }
+        val availability = when {
+            !anyOnline -> MemberAvailability.AWAY
+            anyBusy -> MemberAvailability.BUSY
+            anyActive -> MemberAvailability.ACTIVE
+            else -> MemberAvailability.AWAY
+        }
+        return MemberPresenceState(
+            uid = uid,
+            online = anyOnline,
+            lastSeenMillis = latestSeen,
+            availability = availability
+        )
+    }
+
+    fun resolveAvailability(member: com.example.model.Member?, presence: MemberPresenceState?): MemberAvailability {
+        if (presence != null && (presence.online || presence.lastSeenMillis > 0L)) {
+            return presence.availability
+        }
+        val lastActive = member?.lastActiveAtMillis ?: 0L
+        return if (lastActive > 0L && (System.currentTimeMillis() - lastActive) < 15 * 60_000L) {
+            MemberAvailability.ACTIVE
+        } else {
+            MemberAvailability.AWAY
+        }
+    }
+
     fun observeMemberPresence(companyId: String, targetUid: String): Flow<MemberPresenceState> {
         if (targetUid.isBlank()) return flowOf(MemberPresenceState())
         val ref = rootRef(companyId)?.child("presence")?.child(targetUid)
@@ -184,19 +272,34 @@ object RtdbPresenceManager : DefaultLifecycleObserver {
         return callbackFlow {
             val listener = object : ValueEventListener {
                 override fun onDataChange(snapshot: DataSnapshot) {
-                    var anyOnline = false
-                    var latestSeen = 0L
-                    for (child in snapshot.children) {
-                        val isOnline = child.child("online").getValue(Boolean::class.java) == true
-                        val seen = child.child("lastSeen").getValue(Long::class.java) ?: 0L
-                        if (isOnline) anyOnline = true
-                        if (seen > latestSeen) latestSeen = seen
-                    }
-                    trySend(MemberPresenceState(uid = targetUid, online = anyOnline, lastSeenMillis = latestSeen))
+                    trySend(parseMemberSnapshot(targetUid, snapshot))
                 }
 
                 override fun onCancelled(error: DatabaseError) {
                     trySend(MemberPresenceState(uid = targetUid))
+                }
+            }
+            ref.addValueEventListener(listener)
+            awaitClose { ref.removeEventListener(listener) }
+        }
+    }
+
+    fun observeCompanyPresence(companyId: String): Flow<Map<String, MemberPresenceState>> {
+        val ref = rootRef(companyId)?.child("presence") ?: return flowOf(emptyMap())
+        return callbackFlow {
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    val map = buildMap<String, MemberPresenceState> {
+                        for (userChild in snapshot.children) {
+                            val uid = userChild.key ?: continue
+                            put(uid, parseMemberSnapshot(uid, userChild))
+                        }
+                    }
+                    trySend(map)
+                }
+
+                override fun onCancelled(error: DatabaseError) {
+                    trySend(emptyMap())
                 }
             }
             ref.addValueEventListener(listener)

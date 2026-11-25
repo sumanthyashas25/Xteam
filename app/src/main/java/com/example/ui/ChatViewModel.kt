@@ -16,8 +16,10 @@ import com.example.chat.realtime.MemberPresenceState
 import com.example.chat.realtime.RtdbPresenceManager
 import com.example.data.AgencyRepository
 import com.example.data.ChatRepository
+import com.example.data.NewStatusSubmission
 import com.example.data.SendMessageOptions
 import com.example.model.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -45,6 +47,24 @@ data class FailedOutgoingMessage(
     val options: SendMessageOptions,
     val reason: String,
     val createdAtMillis: Long = System.currentTimeMillis()
+)
+
+enum class StatusUploadJobStatus {
+    QUEUED,
+    UPLOADING,
+    FAILED,
+    DONE,
+    CANCELLED
+}
+
+data class StatusUploadJob(
+    val id: String,
+    val label: String,
+    val kind: StatusKind,
+    val progress: Float = 0f,
+    val status: StatusUploadJobStatus = StatusUploadJobStatus.QUEUED,
+    val errorMessage: String = "",
+    val submission: NewStatusSubmission? = null
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -106,6 +126,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _statusBanner = MutableStateFlow<String?>(null)
     val statusBanner: StateFlow<String?> = _statusBanner.asStateFlow()
+
+    private val _statusUploadJobs = MutableStateFlow<List<StatusUploadJob>>(emptyList())
+    val statusUploadJobs: StateFlow<List<StatusUploadJob>> = _statusUploadJobs.asStateFlow()
+
+    private val statusCoroutines = mutableMapOf<String, Job>()
+    private val statusHttpCalls = mutableMapOf<String, okhttp3.Call>()
 
     private var messagesJob: Job? = null
     private var activityJob: Job? = null
@@ -708,12 +734,243 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun enqueueStatusUploads(
+        submissions: List<NewStatusSubmission>,
+        actor: Member,
+        onQueued: () -> Unit = {}
+    ) {
+        if (submissions.isEmpty()) return
+        val createdJobs = submissions.mapIndexed { idx, sub ->
+            val jobId = "stjob_${System.currentTimeMillis()}_$idx"
+            val label = when (sub.kind) {
+                StatusKind.TEXT -> sub.text.take(28).ifBlank { "Text status" }
+                StatusKind.IMAGE -> sub.caption.take(24).ifBlank { "Photo status ${idx + 1}" }
+                StatusKind.VIDEO -> sub.caption.take(24).ifBlank { "Video status ${idx + 1}" }
+                StatusKind.VOICE -> sub.caption.take(24).ifBlank { "Voice status ${idx + 1}" }
+            }
+            StatusUploadJob(
+                id = jobId,
+                label = label,
+                kind = sub.kind,
+                progress = 0.05f,
+                status = StatusUploadJobStatus.QUEUED,
+                submission = sub
+            )
+        }
+        _statusUploadJobs.value = createdJobs + _statusUploadJobs.value
+        onQueued()
+
+        createdJobs.forEach { job ->
+            launchSingleStatusUpload(job, actor)
+        }
+    }
+
+    private fun launchSingleStatusUpload(job: StatusUploadJob, actor: Member) {
+        val sub = job.submission ?: return
+        val coroutineJob = viewModelScope.launch {
+            updateUploadJob(job.id) {
+                it.copy(status = StatusUploadJobStatus.UPLOADING, progress = 0.08f, errorMessage = "")
+            }
+            try {
+                chatRepo.postRichStatus(
+                    submission = sub,
+                    actor = actor,
+                    progressKey = job.id,
+                    onProgress = { p ->
+                        updateUploadJob(job.id) { cur ->
+                            if (cur.status == StatusUploadJobStatus.CANCELLED) cur
+                            else cur.copy(progress = p.coerceIn(0.05f, 1f))
+                        }
+                    },
+                    onCallCreated = { call ->
+                        statusHttpCalls[job.id] = call
+                    }
+                )
+                statusHttpCalls.remove(job.id)
+                statusCoroutines.remove(job.id)
+                updateUploadJob(job.id) {
+                    it.copy(status = StatusUploadJobStatus.DONE, progress = 1f)
+                }
+                _statusBanner.value = "${sub.kind.label} status shared for 24h"
+                delay(1500L)
+                _statusUploadJobs.value = _statusUploadJobs.value.filterNot { it.id == job.id && it.status == StatusUploadJobStatus.DONE }
+            } catch (_: CancellationException) {
+                statusHttpCalls.remove(job.id)
+                statusCoroutines.remove(job.id)
+                updateUploadJob(job.id) {
+                    it.copy(status = StatusUploadJobStatus.CANCELLED, errorMessage = "Upload cancelled")
+                }
+            } catch (err: Throwable) {
+                statusHttpCalls.remove(job.id)
+                statusCoroutines.remove(job.id)
+                updateUploadJob(job.id) {
+                    it.copy(
+                        status = StatusUploadJobStatus.FAILED,
+                        errorMessage = err.message ?: "Upload failed"
+                    )
+                }
+            }
+        }
+        statusCoroutines[job.id] = coroutineJob
+    }
+
+    fun cancelStatusUpload(jobId: String) {
+        statusHttpCalls.remove(jobId)?.cancel()
+        statusCoroutines.remove(jobId)?.cancel()
+        _statusUploadJobs.value = _statusUploadJobs.value.filterNot { it.id == jobId }
+    }
+
+    fun retryStatusUpload(jobId: String, actor: Member) {
+        val job = _statusUploadJobs.value.firstOrNull { it.id == jobId } ?: return
+        launchSingleStatusUpload(job, actor)
+    }
+
+    fun dismissStatusUploadJob(jobId: String) {
+        _statusUploadJobs.value = _statusUploadJobs.value.filterNot { it.id == jobId }
+    }
+
+    private fun updateUploadJob(jobId: String, transform: (StatusUploadJob) -> StatusUploadJob) {
+        _statusUploadJobs.value = _statusUploadJobs.value.map { cur ->
+            if (cur.id == jobId) transform(cur) else cur
+        }
+    }
+
     fun markStatusViewed(statusId: String, myUid: String) {
         viewModelScope.launch { runCatching { chatRepo.markStatusViewed(statusId, myUid) } }
     }
 
-    fun deleteStatus(statusId: String) {
-        viewModelScope.launch { runCatching { chatRepo.deleteStatus(statusId) } }
+    fun reactToStatusAndSendDm(
+        status: ChatStatus,
+        ownerMember: Member,
+        actor: Member,
+        emoji: String,
+        onChannelReady: (ChatChannel) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                chatRepo.reactToStatus(status.id, actor.uid, emoji)
+                chatRepo.sendStatusInteractionToDm(
+                    ownerMember = ownerMember,
+                    actor = actor,
+                    status = status,
+                    replyText = "",
+                    reactionEmoji = emoji
+                )
+            }.onSuccess { ch ->
+                _statusBanner.value = "Reacted $emoji to ${ownerMember.fullName.substringBefore(" ")}'s status"
+                onChannelReady(ch)
+            }.onFailure { err ->
+                _statusBanner.value = err.message ?: "Unable to react to status"
+            }
+        }
+    }
+
+    fun replyToStatusInDm(
+        status: ChatStatus,
+        ownerMember: Member,
+        actor: Member,
+        replyText: String,
+        onChannelReady: (ChatChannel) -> Unit = {}
+    ) {
+        val clean = replyText.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            runCatching {
+                chatRepo.sendStatusInteractionToDm(
+                    ownerMember = ownerMember,
+                    actor = actor,
+                    status = status,
+                    replyText = clean,
+                    reactionEmoji = ""
+                )
+            }.onSuccess { ch ->
+                _statusBanner.value = "Reply sent to ${ownerMember.fullName.substringBefore(" ")}"
+                onChannelReady(ch)
+            }.onFailure { err ->
+                _statusBanner.value = err.message ?: "Unable to reply to status"
+            }
+        }
+    }
+
+    fun syncBlockedAndPrivacyToMyStatuses(
+        activeMyStatuses: List<ChatStatus>,
+        privacyMode: StatusPrivacyMode,
+        allowedUids: List<String>,
+        excludedUids: List<String>,
+        blockedUids: List<String>
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                chatRepo.updateMyActiveStatusesPrivacyAndBlocks(
+                    activeMyStatuses = activeMyStatuses,
+                    privacyMode = privacyMode,
+                    allowedUids = allowedUids,
+                    excludedUids = excludedUids,
+                    blockedUids = blockedUids
+                )
+            }
+        }
+    }
+
+    fun reportStatus(
+        status: ChatStatus,
+        reason: String,
+        actor: Member,
+        onComplete: (Boolean) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            runCatching { chatRepo.reportStatus(status, reason, actor) }
+                .onSuccess {
+                    _statusBanner.value = "Status report sent to admin"
+                    onComplete(true)
+                }
+                .onFailure {
+                    _statusBanner.value = it.message ?: "Failed to report status"
+                    onComplete(false)
+                }
+        }
+    }
+
+    fun deleteStatus(
+        statusId: String,
+        storagePath: String = "",
+        onDeleted: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            runCatching { chatRepo.deleteStatus(statusId, storagePath) }
+                .onSuccess {
+                    _statusBanner.value = "Status deleted"
+                    onDeleted()
+                }
+                .onFailure { _statusBanner.value = it.message ?: "Unable to delete status" }
+        }
+    }
+
+    fun deleteAllMyStatuses(
+        myStatuses: List<ChatStatus>,
+        onDeleted: () -> Unit = {}
+    ) {
+        if (myStatuses.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { chatRepo.deleteAllStatuses(myStatuses) }
+                .onSuccess {
+                    _statusBanner.value = "All active statuses deleted"
+                    onDeleted()
+                }
+                .onFailure { _statusBanner.value = it.message ?: "Unable to delete statuses" }
+        }
+    }
+
+    fun openOrStartDm(
+        targetMember: Member,
+        actor: Member,
+        onReady: (ChatChannel) -> Unit
+    ) {
+        viewModelScope.launch {
+            runCatching { chatRepo.createOrGetDirectChannel(targetMember, actor) }
+                .onSuccess { ch -> onReady(ch) }
+                .onFailure { err -> _statusBanner.value = err.message ?: "Unable to open direct chat" }
+        }
     }
 
     fun clearBanner() {

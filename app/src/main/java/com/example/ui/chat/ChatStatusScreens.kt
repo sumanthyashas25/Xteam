@@ -64,33 +64,33 @@ fun StatusAvatarBar(
     onOpenStatusesForOwner: (ownerUid: String, items: List<ChatStatus>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeStatuses = remember(statuses) {
-        val now = System.currentTimeMillis()
-        statuses.filter { it.isActive(now) }
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        com.example.chat.ChatSettingsStore.ensureLoaded(context)
     }
-    val groupedByOwner = remember(activeStatuses) {
-        activeStatuses.groupBy { it.ownerUid }
-    }
-    val myStatuses = groupedByOwner[myMember.uid].orEmpty()
+    val prefs by com.example.chat.ChatSettingsStore.prefsFlow.collectAsState()
 
-    // Order: other active status posters first, then active colleagues cleanly matching Mengrobol top strip
-    val statusOwners = remember(groupedByOwner, colleagues, myMember.uid) {
-        val activeOthers = groupedByOwner.keys.filter { it != myMember.uid }
-        val result = mutableListOf<Pair<Member, List<ChatStatus>>>()
-        activeOthers.forEach { uid ->
-            val list = groupedByOwner[uid].orEmpty()
-            val m = colleagues.firstOrNull { it.uid == uid }
-                ?: Member(
-                    id = uid,
-                    uid = uid,
-                    fullName = list.firstOrNull()?.ownerName ?: "Member",
-                    jobRoleName = list.firstOrNull()?.ownerRole ?: "",
-                    photoBase64 = list.firstOrNull()?.ownerPhotoBase64 ?: ""
-                )
-            result += m to list
+    var liveNowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(20_000L)
+            liveNowMillis = System.currentTimeMillis()
         }
-        result
     }
+
+    val categorized = remember(statuses, myMember, colleagues, prefs.mutedStatusOwnerUids, prefs.blockedUserUids, liveNowMillis) {
+        com.example.chat.StatusPrivacyEngine.categorizeStatuses(
+            statuses = statuses,
+            myMember = myMember,
+            allMembers = colleagues + myMember,
+            mutedOwnerUids = prefs.mutedStatusOwnerUids,
+            blockedByViewerUids = prefs.blockedUserUids,
+            nowMillis = liveNowMillis
+        )
+    }
+
+    val myStatuses = categorized.myStatuses
+    val activeOtherSummaries = categorized.recentUpdates + categorized.viewedUpdates
 
     Row(
         modifier = modifier
@@ -100,7 +100,7 @@ fun StatusAvatarBar(
         horizontalArrangement = Arrangement.spacedBy(14.dp),
         verticalAlignment = Alignment.Top
     ) {
-        // Dashed "+" circle to post a new Status (or view my own if long-pressed / badge tapped)
+        // My Status / Add Status button
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -112,46 +112,17 @@ fun StatusAvatarBar(
                 modifier = Modifier.size(58.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape)
-                        .background(PureWhite.copy(alpha = 0.6f))
-                        .clickable {
-                            if (myStatuses.isNotEmpty()) {
-                                onOpenStatusesForOwner(myMember.uid, myStatuses)
-                            } else {
-                                onAddStatus()
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        drawCircle(
-                            color = ObsidianCharcoal.copy(alpha = 0.35f),
-                            style = Stroke(
-                                width = 2.dp.toPx(),
-                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
-                            )
-                        )
-                    }
-                    if (myStatuses.isNotEmpty()) {
-                        StudioAvatar(
-                            name = myMember.fullName,
-                            size = 48.dp,
-                            borderColor = PureWhite,
-                            photoBase64 = myMember.photoBase64
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Post status",
-                            tint = ObsidianCharcoal,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-                }
                 if (myStatuses.isNotEmpty()) {
+                    com.example.ui.components.SegmentedStatusAvatar(
+                        name = myMember.fullName,
+                        size = 50.dp,
+                        borderColor = PureWhite,
+                        photoBase64 = myMember.photoBase64,
+                        activeStatuses = myStatuses,
+                        viewerUid = myMember.uid,
+                        isOwnAvatar = true,
+                        onAvatarClick = { onOpenStatusesForOwner(myMember.uid, myStatuses) }
+                    )
                     Surface(
                         onClick = onAddStatus,
                         shape = CircleShape,
@@ -165,6 +136,31 @@ fun StatusAvatarBar(
                             Icon(Icons.Default.Add, contentDescription = "Add another status", tint = PureWhite, modifier = Modifier.size(12.dp))
                         }
                     }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(CircleShape)
+                            .background(PureWhite.copy(alpha = 0.6f))
+                            .clickable { onAddStatus() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawCircle(
+                                color = ObsidianCharcoal.copy(alpha = 0.35f),
+                                style = Stroke(
+                                    width = 2.dp.toPx(),
+                                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f), 0f)
+                                )
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Post status",
+                            tint = ObsidianCharcoal,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
             Text(
@@ -177,14 +173,11 @@ fun StatusAvatarBar(
             )
         }
 
-        // Active status posters
-        statusOwners.forEach { (person, list) ->
-            val hasUnseen = list.any { myMember.uid !in it.viewerUids }
-            val ringColors = if (hasUnseen) {
-                listOf(Color(0xFF10B981), Color(0xFF06B6D4), Color(0xFF8B5CF6))
-            } else {
-                listOf(Color(0xFFCBD5E1), Color(0xFF94A3B8))
-            }
+        // Active status posters with segmented indicators
+        activeOtherSummaries.forEach { summary ->
+            val person = summary.owner
+            val list = summary.statuses
+            val hasUnseen = summary.hasUnviewed
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -193,21 +186,16 @@ fun StatusAvatarBar(
                     .clickable { onOpenStatusesForOwner(person.uid, list) }
                     .testTag("status_avatar_${person.uid}")
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(58.dp)
-                        .clip(CircleShape)
-                        .border(2.5.dp, Brush.linearGradient(ringColors), CircleShape)
-                        .padding(3.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    StudioAvatar(
-                        name = person.fullName,
-                        size = 50.dp,
-                        borderColor = PureWhite,
-                        photoBase64 = person.photoBase64
-                    )
-                }
+                com.example.ui.components.SegmentedStatusAvatar(
+                    name = person.fullName,
+                    size = 50.dp,
+                    borderColor = PureWhite,
+                    photoBase64 = person.photoBase64,
+                    activeStatuses = list,
+                    viewerUid = myMember.uid,
+                    isOwnAvatar = false,
+                    onAvatarClick = { onOpenStatusesForOwner(person.uid, list) }
+                )
                 Text(
                     text = formatTitleCase(person.fullName.substringBefore(" ")),
                     style = MaterialTheme.typography.labelSmall,

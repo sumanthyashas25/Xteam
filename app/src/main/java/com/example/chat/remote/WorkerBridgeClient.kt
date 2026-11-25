@@ -42,18 +42,6 @@ data class WorkerHealthStatus(
     val firestoreDbId: String
 )
 
-data class SignedUploadGrant(
-    val signedUrl: String,
-    val storagePath: String,
-    val bucket: String,
-    val expiresInSec: Int
-)
-
-data class SignedDownloadGrant(
-    val signedUrl: String,
-    val expiresInSec: Int
-)
-
 data class ResetChunkResult(
     val completed: Boolean,
     val nextCollection: String,
@@ -217,13 +205,137 @@ object WorkerBridgeClient {
         finalResult
     }
 
+    internal fun buildStatusUploadUrl(
+        base: String,
+        companyId: String,
+        bucket: String,
+        fileName: String,
+        sha256: String
+    ): String? {
+        val parsed = base.trimEnd('/').toHttpUrlOrNull() ?: return null
+        return parsed.newBuilder()
+            .addPathSegments("v1/storage/upload")
+            .addQueryParameter("companyId", companyId)
+            .addQueryParameter("chatId", "status_feed")
+            .addQueryParameter("scope", "status")
+            .addQueryParameter("bucket", bucket)
+            .addQueryParameter("fileName", fileName)
+            .addQueryParameter("sha256", sha256)
+            .build()
+            .toString()
+    }
+
+    internal fun buildStatusDownloadUrl(
+        base: String,
+        companyId: String,
+        storagePath: String,
+        statusId: String = ""
+    ): String? {
+        val parsed = base.trimEnd('/').toHttpUrlOrNull() ?: return null
+        val builder = parsed.newBuilder()
+            .addPathSegments("v1/storage/download")
+            .addQueryParameter("companyId", companyId)
+            .addQueryParameter("chatId", "status_feed")
+            .addQueryParameter("scope", "status")
+            .addQueryParameter("storagePath", storagePath)
+        if (statusId.isNotBlank()) builder.addQueryParameter("statusId", statusId)
+        return builder.build().toString()
+    }
+
+    suspend fun uploadStatusMediaToCloudflare(
+        companyId: String,
+        bucket: String,
+        fileName: String,
+        mimeType: String,
+        file: File,
+        sha256: String,
+        progressKey: String,
+        onProgress: (Float) -> Unit = {},
+        onCallCreated: (okhttp3.Call) -> Unit = {}
+    ): WorkerResult<CloudflareUploadResult> = withContext(Dispatchers.IO) {
+        if (!isConfigured()) return@withContext WorkerResult.NotConfigured
+        if (!file.exists() || file.length() <= 0L) {
+            return@withContext WorkerResult.Error("Status media file does not exist locally.")
+        }
+        val uploadUrl = buildStatusUploadUrl(baseUrl(), companyId, bucket, fileName, sha256)
+            ?: return@withContext WorkerResult.NotConfigured
+
+        val initialToken = fetchFirebaseIdToken(forceRefresh = false)
+            ?: return@withContext WorkerResult.Error("Sign in required to upload status media.")
+
+        updateTransferProgress(progressKey, 0.05f)
+        onProgress(0.05f)
+        val firstAttempt = executeFileUpload(
+            uploadUrl = uploadUrl,
+            idToken = initialToken,
+            mimeType = mimeType,
+            file = file,
+            fallbackBucket = bucket,
+            progressKey = progressKey,
+            onProgress = onProgress,
+            onCallCreated = onCallCreated
+        )
+        val finalResult = if (firstAttempt is WorkerResult.Error && firstAttempt.code == 401) {
+            val refreshed = fetchFirebaseIdToken(forceRefresh = true)
+            if (!refreshed.isNullOrBlank() && refreshed != initialToken) {
+                executeFileUpload(
+                    uploadUrl = uploadUrl,
+                    idToken = refreshed,
+                    mimeType = mimeType,
+                    file = file,
+                    fallbackBucket = bucket,
+                    progressKey = progressKey,
+                    onProgress = onProgress,
+                    onCallCreated = onCallCreated
+                )
+            } else firstAttempt
+        } else firstAttempt
+        updateTransferProgress(progressKey, null)
+        finalResult
+    }
+
+    suspend fun downloadStatusMediaFromCloudflare(
+        companyId: String,
+        storagePath: String,
+        destination: File,
+        statusId: String = "",
+        progressKey: String = storagePath
+    ): WorkerResult<File> = withContext(Dispatchers.IO) {
+        if (!isConfigured()) return@withContext WorkerResult.NotConfigured
+        if (storagePath.isBlank()) {
+            return@withContext WorkerResult.Error("Missing Cloudflare storage path.", 400)
+        }
+        val downloadUrl = buildStatusDownloadUrl(baseUrl(), companyId, storagePath, statusId)
+            ?: return@withContext WorkerResult.NotConfigured
+        val initialToken = fetchFirebaseIdToken(forceRefresh = false)
+            ?: return@withContext WorkerResult.Error("Sign in required to download status media.")
+
+        updateTransferProgress(progressKey, 0.05f)
+        val firstAttempt = executeAuthenticatedDownload(downloadUrl, initialToken, destination, progressKey)
+        val finalResult = if (firstAttempt is WorkerResult.Error && firstAttempt.code == 401) {
+            val refreshed = fetchFirebaseIdToken(forceRefresh = true)
+            if (!refreshed.isNullOrBlank() && refreshed != initialToken) {
+                executeAuthenticatedDownload(downloadUrl, refreshed, destination, progressKey)
+            } else firstAttempt
+        } else firstAttempt
+        updateTransferProgress(progressKey, null)
+        finalResult
+    }
+
+    suspend fun deleteStatusMediaFromCloudflare(
+        companyId: String,
+        storagePath: String
+    ): WorkerResult<Unit> = deleteChatFileFromCloudflare(companyId, "status_feed", storagePath)
+
     private fun executeFileUpload(
         uploadUrl: String,
         idToken: String,
         mimeType: String,
         file: File,
         fallbackBucket: String,
-        progressKey: String = ""
+        progressKey: String = "",
+        onProgress: (Float) -> Unit = {},
+        onCallCreated: (okhttp3.Call) -> Unit = {}
     ): WorkerResult<CloudflareUploadResult> {
         return runCatching {
             val mediaType = mimeType.ifBlank { "application/octet-stream" }.toMediaType()
@@ -240,7 +352,9 @@ object WorkerBridgeClient {
                             if (read <= 0) break
                             sink.write(buf, 0, read)
                             uploaded += read
-                            updateTransferProgress(progressKey, uploaded.toFloat() / totalBytes.toFloat())
+                            val frac = (uploaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 0.96f)
+                            updateTransferProgress(progressKey, frac)
+                            onProgress(frac)
                         }
                     }
                 }
@@ -250,7 +364,9 @@ object WorkerBridgeClient {
                 .header("Authorization", "Bearer $idToken")
                 .post(countingBody)
                 .build()
-            client.newCall(req).execute().use { resp ->
+            val call = client.newCall(req)
+            onCallCreated(call)
+            call.execute().use { resp ->
                 if (resp.code == 429) {
                     val retry = resp.header("Retry-After")?.toIntOrNull() ?: 30
                     return@use WorkerResult.RateLimited(retry)
@@ -267,6 +383,7 @@ object WorkerBridgeClient {
                     return@use WorkerResult.Error("Worker returned empty Cloudflare R2 storage path.", 502)
                 }
                 updateTransferProgress(progressKey, 1f)
+                onProgress(1f)
                 WorkerResult.Success(parsed)
             }
         }.getOrElse { err ->
@@ -395,107 +512,6 @@ object WorkerBridgeClient {
             WorkerResult.Error(err.message ?: "Worker delete failure")
         }
     }
-
-    suspend fun requestSignedUploadUrl(
-        companyId: String,
-        bucket: String,
-        storagePath: String,
-        mimeType: String,
-        byteSize: Long,
-        sha256: String,
-        chatId: String = ""
-    ): WorkerResult<SignedUploadGrant> = withContext(Dispatchers.IO) {
-        if (!isConfigured()) return@withContext WorkerResult.NotConfigured
-        val idToken = fetchFirebaseIdToken()
-            ?: return@withContext WorkerResult.Error("Sign in required to authorize upload.")
-
-        val payload = JSONObject().apply {
-            put("companyId", companyId)
-            put("bucket", bucket)
-            put("storagePath", storagePath)
-            put("mimeType", mimeType)
-            put("byteSize", byteSize)
-            put("sha256", sha256)
-            put("chatId", chatId)
-        }
-        executeWorkerPost("/v1/storage/sign-upload", idToken, payload) { json ->
-            SignedUploadGrant(
-                signedUrl = json.optString("signedUrl"),
-                storagePath = json.optString("storagePath", storagePath),
-                bucket = json.optString("bucket", bucket),
-                expiresInSec = json.optInt("expiresInSec", 60)
-            )
-        }
-    }
-
-    suspend fun uploadFileToSignedUrl(
-        signedUrl: String,
-        file: File,
-        mimeType: String
-    ): WorkerResult<Unit> = withContext(Dispatchers.IO) {
-        runCatching {
-            val req = Request.Builder()
-                .url(signedUrl)
-                .put(file.asRequestBody(mimeType.toMediaType()))
-                .header("x-upsert", "true")
-                .build()
-            client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    WorkerResult.Success(Unit)
-                } else {
-                    WorkerResult.Error("Storage upload failed (${resp.code})", resp.code)
-                }
-            }
-        }.getOrElse { err ->
-            WorkerResult.Error(err.message ?: "Network upload failure")
-        }
-    }
-
-    suspend fun requestSignedDownloadUrl(
-        companyId: String,
-        bucket: String,
-        storagePath: String,
-        chatId: String = ""
-    ): WorkerResult<SignedDownloadGrant> = withContext(Dispatchers.IO) {
-        if (!isConfigured()) return@withContext WorkerResult.NotConfigured
-        val idToken = fetchFirebaseIdToken()
-            ?: return@withContext WorkerResult.Error("Sign in required to read attachment.")
-
-        val payload = JSONObject().apply {
-            put("companyId", companyId)
-            put("bucket", bucket)
-            put("storagePath", storagePath)
-            put("chatId", chatId)
-        }
-        executeWorkerPost("/v1/storage/sign-download", idToken, payload) { json ->
-            SignedDownloadGrant(
-                signedUrl = json.optString("signedUrl"),
-                expiresInSec = json.optInt("expiresInSec", 300)
-            )
-        }
-    }
-
-    suspend fun downloadSignedFile(signedUrl: String, destination: File): WorkerResult<File> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                destination.parentFile?.mkdirs()
-                val req = Request.Builder().url(signedUrl).get().build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        return@withContext WorkerResult.Error("Download failed (${resp.code})", resp.code)
-                    }
-                    val body = resp.body ?: return@withContext WorkerResult.Error("Empty response body")
-                    body.byteStream().use { input ->
-                        destination.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    WorkerResult.Success(destination)
-                }
-            }.getOrElse { err ->
-                WorkerResult.Error(err.message ?: "File download failed")
-            }
-        }
 
     suspend fun dispatchPushNotification(
         companyId: String,
